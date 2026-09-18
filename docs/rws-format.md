@@ -365,6 +365,39 @@ recovers 40 sectors, 109,855 triangles, and 178,532 vertices; the collision Worl
 recovers 326 sectors, 99,653 triangles, and 84,884 vertices with 14 materials.
 Successful recovery does not suppress the original truncation diagnostics.
 
+### Recovered BSP topology
+
+The physical World node order is confirmed as preorder: a Plane Section's leading
+Struct is followed by its left subtree and then its right subtree. Each child-kind
+word selects a Plane (`0`) or World/Atomic Section (`nonzero`). RenderWare plane
+axis values in the studied streams are `0`, `4`, and `8` for source X, Y, and Z.
+`left_value` supplies the left child's upper bound on that axis and `right_value`
+supplies the right child's lower bound; the World bounds seed the root. Source Y is
+therefore the map-space vertical axis. This source convention is distinct from the
+exporter's unit conversion: glTF remains Y-up but scales every RWS unit by `0.01`.
+
+Topology recovery is a separate read-only view over the same accepted leaves. A
+Plane candidate must have the World library stamp, a complete 24-byte Struct,
+axis `0/4/8`, and finite split/boundary values. The preorder child kinds, unique
+physical ranges, parent ownership, acyclicity, resolved leaf identity, derived
+bounds, and declared Plane/leaf totals are then validated. References are vector
+indices rather than pointers. Invalid, ambiguous, truncated, unreachable, duplicate,
+multiple-parent, cyclic, and bounds-conflict categories are reported independently.
+Partial or failed topology never discards usable flat recovered geometry and never
+changes the conservative `Chunk` tree.
+
+On the read-only FR01 collision World, this process validates 325 Planes and 326
+leaves, links all sectors, reaches maximum depth 16, and reports complete topology.
+These are observed corpus results rather than guessed constants in automated tests.
+The known four-byte Pyro World Sector size overstatement is handled by physical
+candidate validation; bytes and declared chunk sizes remain untouched.
+
+Range-safe core accessors expose recovered vertex positions, exact eight-byte
+triangle source offsets, vertex indices, and resolved material slots. Collision
+picking first intersects sector bounds, then performs double-sided triangle tests;
+degenerate or invalid triangles cannot produce a hit. Collision export consumes
+the same accessors and topology-independent sector list.
+
 ### `ST05_COL.rws`
 
 - Physical size: 6,187,753 bytes.

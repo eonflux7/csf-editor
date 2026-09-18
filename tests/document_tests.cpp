@@ -1,12 +1,17 @@
 #include "rws/document.hpp"
 #include "rws/decoded.hpp"
 #include "rws/world_recovery.hpp"
+#include "rws/scene_export.hpp"
+#include "rws/obj_export.hpp"
 
 #include <bit>
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -70,14 +75,16 @@ std::vector<std::byte> make_world(const std::uint32_t format,
                                   const std::int32_t declared_triangles,
                                   const std::int32_t declared_vertices,
                                   const std::int32_t materials,
-                                  const std::vector<std::vector<std::byte>>& sectors) {
+                                  const std::vector<std::vector<std::byte>>& sectors,
+                                  const std::int32_t declared_planes = 0,
+                                  const bool root_is_sector = true) {
     std::vector<std::byte> payload;
     append_header(payload, 0x01, 64);
-    append_u32(payload, 1);
+    append_u32(payload, root_is_sector ? 1U : 0U);
     append_f32(payload, 0); append_f32(payload, 0); append_f32(payload, 0);
     append_u32(payload, static_cast<std::uint32_t>(declared_triangles));
     append_u32(payload, static_cast<std::uint32_t>(declared_vertices));
-    append_u32(payload, 0);
+    append_u32(payload, static_cast<std::uint32_t>(declared_planes));
     append_u32(payload, static_cast<std::uint32_t>(declared_sectors));
     append_u32(payload, 0); append_u32(payload, format);
     for (const float value : {4.0F, 5.0F, 6.0F, -1.0F, -2.0F, -3.0F}) append_f32(payload, value);
@@ -92,6 +99,22 @@ std::vector<std::byte> make_world(const std::uint32_t format,
     append_header(bytes, 0x0B, static_cast<std::uint32_t>(payload.size()));
     bytes.insert(bytes.end(), payload.begin(), payload.end());
     return bytes;
+}
+
+void append_plane(std::vector<std::byte>& output, const std::int32_t axis,
+                  const bool left_sector, const bool right_sector,
+                  const float split, const float left_value, const float right_value) {
+    append_header(output, 0x0A, 36);
+    append_header(output, 0x01, 24);
+    append_u32(output, static_cast<std::uint32_t>(axis)); append_f32(output, split);
+    append_u32(output, left_sector ? 1U : 0U); append_u32(output, right_sector ? 1U : 0U);
+    append_f32(output, left_value); append_f32(output, right_value);
+}
+
+void write_f32(std::vector<std::byte>& bytes, const std::size_t offset, const float value) {
+    const auto bits = std::bit_cast<std::uint32_t>(value);
+    for (unsigned shift = 0; shift < 32; shift += 8)
+        bytes[offset + shift / 8U] = static_cast<std::byte>((bits >> shift) & 0xFFU);
 }
 
 } // namespace
@@ -541,6 +564,96 @@ int main() {
         const auto world = rws::recover_world(document.chunks()[0], document.bytes());
         assert(world.status == rws::WorldRecoveryStatus::complete);
         assert(world.sectors.size() == 1 && world.invalid_candidates == 0);
+    }
+    {
+        std::vector<std::byte> plane, left, right;
+        append_plane(plane, 0, true, true, 1.0F, 4.0F, -1.0F);
+        append_world_sector(left, 0, 0, 3, {{{0, 1, 2, 0}}});
+        append_world_sector(right, 0, 0, 3, {{{0, 1, 2, 0}}});
+        const auto bytes = make_world(0, 2, 2, 6, 1, {plane, left, right}, 1, false);
+        const auto original = bytes;
+        const auto document = rws::Document::from_bytes(bytes);
+        const auto world = rws::recover_world(document.chunks()[0], document.bytes());
+        assert(world.topology_status == rws::WorldTopologyStatus::complete);
+        assert(world.planes.size() == 1 && world.topology_nodes.size() == 3);
+        assert(world.topology_root == 0 && world.planes[0].left_node == 1 && world.planes[0].right_node == 2);
+        assert(world.topology_nodes[1].parent == 0 && world.topology_nodes[1].is_left_child == true);
+        assert(world.topology_nodes[2].parent == 0 && world.topology_nodes[2].is_left_child == false);
+        assert(world.topology_stats.maximum_depth == 1 && world.topology_stats.linked_sectors == 2);
+        assert(std::equal(original.begin(), original.end(), document.bytes().begin()));
+    }
+    {
+        std::vector<std::byte> root, branch, a, b, c;
+        append_plane(root, 0, false, true, 1.0F, 4.0F, -1.0F);
+        append_plane(branch, 8, true, true, 0.0F, 6.0F, -3.0F);
+        append_world_sector(a,0,0,3,{{{0,1,2,0}}});
+        append_world_sector(b,0,0,3,{{{0,1,2,0}}});
+        append_world_sector(c,0,0,3,{{{0,1,2,0}}});
+        const auto document=rws::Document::from_bytes(make_world(0,3,3,9,1,{root,branch,a,b,c},2,false));
+        const auto world=rws::recover_world(document.chunks()[0],document.bytes());
+        assert(world.topology_status==rws::WorldTopologyStatus::complete);
+        assert(world.topology_nodes.size()==5&&world.topology_stats.maximum_depth==2);
+        assert(world.topology_nodes[4].parent==0&&world.topology_nodes[4].is_left_child==false);
+    }
+    {
+        std::vector<std::byte> invalid, sector;
+        append_plane(invalid, 3, true, true, std::numeric_limits<float>::infinity(), 4.0F, -1.0F);
+        append_world_sector(sector,0,0,3,{{{0,1,2,0}}});
+        const auto document=rws::Document::from_bytes(make_world(0,1,1,3,1,{invalid,sector},1,false));
+        const auto world=rws::recover_world(document.chunks()[0],document.bytes());
+        assert(world.status==rws::WorldRecoveryStatus::complete&&world.sectors.size()==1);
+        assert(world.topology_status==rws::WorldTopologyStatus::failed);
+        assert(world.topology_stats.invalid_candidates==1||world.topology_stats.ambiguous_candidates==1);
+    }
+    {
+        std::vector<std::byte> sector;
+        append_world_sector(sector, 0, 0, 3, {{{0, 1, 2, 0}}});
+        // Positions begin 68 bytes into this synthetic Atomic Section.
+        for (const auto [offset, value] : std::array<std::pair<std::size_t, float>, 9>{{
+            {68,0.0F},{72,0.0F},{76,0.0F},{80,1.0F},{84,0.0F},{88,0.0F},
+            {92,0.0F},{96,1.0F},{100,0.0F}}})
+            write_f32(sector, offset, value);
+        const auto bytes = make_world(0, 1, 1, 3, 1, {sector});
+        const auto original = bytes;
+        const auto document = rws::Document::from_bytes(bytes);
+        const auto worlds = rws::recover_worlds(document.chunks(), document.bytes());
+        const auto vertex = rws::decode_recovered_world_vertex(worlds[0].sectors[0], 2, document.bytes());
+        assert(vertex && vertex.value->x == 0 && vertex.value->y == 1);
+        assert(!rws::decode_recovered_world_vertex(worlds[0].sectors[0], -1, document.bytes()));
+        assert(!rws::decode_recovered_world_vertex(worlds[0].sectors[0], 3, document.bytes()));
+        const auto triangle = rws::decode_recovered_world_triangle_resolved(worlds[0], 0, 0, document.bytes());
+        assert(triangle && triangle.value->source_offset == worlds[0].sectors[0].triangles_offset);
+        assert(!rws::decode_recovered_world_triangle_resolved(worlds[0], 1, 0, document.bytes()));
+        const rws::CollisionRay ray{{0.25F,0.25F,1.0F},{0,0,-1}};
+        const auto hit = rws::pick_collision_worlds(worlds, document.bytes(), ray);
+        assert(hit && hit->sector_index == 0 && hit->triangle_index == 0 && hit->material_slot == 0);
+        assert(std::abs(hit->position.z) < 1.0e-6F && hit->geometric_normal.z > 0.99F);
+        assert(std::abs(hit->barycentric[0] - 0.5F) < 1.0e-5F);
+        const std::array clips{rws::CollisionClipPlane{true, 0, true, 0.5F}};
+        assert(!rws::pick_collision_worlds(worlds, document.bytes(), ray, clips));
+        const auto measurement = rws::measure_points({0,0,0},{3,4,12});
+        assert(measurement.distance == 13 && measurement.absolute_delta.y == 4);
+        assert(std::equal(original.begin(), original.end(), document.bytes().begin()));
+
+        const auto directory = std::filesystem::temp_directory_path() / "rws-man-s02-tests";
+        std::filesystem::create_directories(directory);
+        const auto gltf = directory / "collision.gltf";
+        const auto obj = directory / "collision.obj";
+        const auto gltf_stats = rws::export_collision_gltf(document.chunks(), document.bytes(), gltf);
+        const auto obj_stats = rws::export_collision_obj(document.chunks(), document.bytes(), obj);
+        assert(gltf_stats.triangles == 1 && obj_stats.triangles == 1 && obj_stats.skipped_triangles == 0);
+        const auto read_text = [](const std::filesystem::path& path) {
+            std::ifstream input(path, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(input), {});
+        };
+        const auto gltf_text = read_text(gltf), obj_text = read_text(obj);
+        assert(gltf_text.find("rws_source_offset") != std::string::npos);
+        assert(gltf_text.find("rws_sector_index") != std::string::npos);
+        assert(gltf_text.find("NORMAL") != std::string::npos);
+        assert(obj_text.find("world_0_sector_0") != std::string::npos);
+        assert(obj_text.find("usemtl world_0_collision_material_0") != std::string::npos);
+        assert(std::equal(original.begin(), original.end(), document.bytes().begin()));
+        std::filesystem::remove_all(directory);
     }
     return 0;
 }

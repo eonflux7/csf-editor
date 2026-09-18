@@ -65,7 +65,7 @@ if(RWSMAN_BUILD_GUI)
     add_executable(rws-man WIN32 app/main.cpp app/geometry_preview.cpp)
     target_link_libraries(rws-man PRIVATE rws::core imgui_backend)
     if(WIN32)
-        target_link_libraries(rws-man PRIVATE Shell32)
+        target_link_libraries(rws-man PRIVATE Shell32 Comdlg32)
     endif()
 endif()
 

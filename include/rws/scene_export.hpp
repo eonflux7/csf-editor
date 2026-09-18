@@ -40,4 +40,8 @@ struct SceneExportStats {
     const Chunk& clump, std::span<const std::byte> bytes,
     const std::filesystem::path& output_path);
 
+[[nodiscard]] SceneExportStats export_collision_gltf(
+    const std::vector<Chunk>& chunks, std::span<const std::byte> bytes,
+    const std::filesystem::path& output_path);
+
 } // namespace rws

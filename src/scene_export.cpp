@@ -38,6 +38,8 @@ struct MaterialRecord {
     std::string lightmap_texture;
     std::uint64_t owner_offset{};
     std::uint32_t slot{};
+    std::string surface_name;
+    std::optional<std::uint32_t> surface_id;
 };
 
 struct PrimitiveRecord {
@@ -50,6 +52,8 @@ struct MeshRecord {
     std::string kind;
     std::uint64_t owner_offset{};
     std::uint64_t source_offset{};
+    std::optional<std::size_t> world_index;
+    std::optional<std::size_t> sector_index;
     std::vector<Vec3> positions;
     std::vector<Vec3> normals;
     std::vector<Uv> uv0;
@@ -232,6 +236,13 @@ std::vector<MaterialRecord> decode_materials(const Chunk* list_chunk,
             if (texture) item.base_texture = texture.value->name;
         }
         if (const auto* extension = find_child(chunk, 0x03)) {
+            if (const auto* pyro = find_child(*extension, 0xFFFFFF00U)) {
+                const auto metadata = decode_pyro_extension(*pyro, 0x07, bytes);
+                if (metadata) {
+                    item.surface_name = std::string(metadata.value->object_name());
+                    item.surface_id = metadata.value->material_surface_type();
+                }
+            }
             if (const auto* effects_chunk = find_child(*extension, 0x120)) {
                 const auto effects = decode_material_effects(*effects_chunk, 0x07, bytes);
                 if (effects && effects.value->has_dual_texture)
@@ -422,7 +433,7 @@ void append_instances(const std::span<const SceneInstance> instances,
 
 void append_world(const std::vector<Chunk>& chunks, const std::span<const std::byte> bytes,
                   std::vector<MeshRecord>& meshes, std::vector<MaterialRecord>& materials,
-                  SceneExportStats& stats) {
+                  SceneExportStats& stats, const bool preserve_valid_faces) {
     const auto world_it = std::find_if(chunks.begin(), chunks.end(),
         [](const Chunk& chunk) { return chunk.type == 0x0B; });
     if (world_it == chunks.end()) return;
@@ -436,7 +447,8 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
         "world_" + hex_offset(world_chunk.offset), {155, 158, 150, 255});
     const auto material_base = materials.size();
     materials.insert(materials.end(), world_materials.begin(), world_materials.end());
-    for (const auto& sector : recovered.sectors) {
+    for (std::size_t sector_index = 0; sector_index < recovered.sectors.size(); ++sector_index) {
+        const auto& sector = recovered.sectors[sector_index];
         const auto triangle_count = sector.triangle_count;
         const auto vertex_count = sector.vertex_count;
         const auto uv_sets = sector.texcoord_sets;
@@ -444,6 +456,8 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
         mesh.kind = "world_sector";
         mesh.owner_offset = world_chunk.offset;
         mesh.source_offset = sector.chunk_offset;
+        mesh.world_index = 0;
+        mesh.sector_index = sector_index;
         mesh.name = "world_" + hex_offset(world_chunk.offset) + "_sector_" + hex_offset(sector.chunk_offset);
         mesh.positions.reserve(static_cast<std::size_t>(vertex_count));
         for (std::int32_t i = 0; i < vertex_count; ++i) {
@@ -482,23 +496,27 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
         std::map<TrianglePositionKey, std::size_t> triangle_by_position;
         for (std::int32_t i = 0; i < triangle_count; ++i) {
             const auto decoded_triangle = decode_recovered_world_triangle(sector, i, bytes);
-            if (!decoded_triangle) continue;
+            if (!decoded_triangle) { ++stats.skipped; continue; }
             const auto indices = decoded_triangle.value->vertices;
             if (indices[0] >= mesh.positions.size() || indices[1] >= mesh.positions.size() ||
-                indices[2] >= mesh.positions.size()) continue;
-            const auto& a = mesh.positions[indices[0]];
-            const auto& b = mesh.positions[indices[1]];
-            const auto& c = mesh.positions[indices[2]];
+                indices[2] >= mesh.positions.size()) { ++stats.skipped; continue; }
+            const auto source_a = decode_recovered_world_vertex(sector, indices[0], bytes);
+            const auto source_b = decode_recovered_world_vertex(sector, indices[1], bytes);
+            const auto source_c = decode_recovered_world_vertex(sector, indices[2], bytes);
+            if (!source_a || !source_b || !source_c) { ++stats.skipped; continue; }
+            const auto& a = *source_a.value;
+            const auto& b = *source_b.value;
+            const auto& c = *source_c.value;
             const Vec3 ab{b.x - a.x, b.y - a.y, b.z - a.z};
             const Vec3 ac{c.x - a.x, c.y - a.y, c.z - a.z};
             const Vec3 cross{ab.y * ac.z - ab.z * ac.y,
                              ab.z * ac.x - ab.x * ac.z,
                              ab.x * ac.y - ab.y * ac.x};
-            if (cross.x * cross.x + cross.y * cross.y + cross.z * cross.z <= 1.0e-20F) continue;
+            if (cross.x * cross.x + cross.y * cross.y + cross.z * cross.z <= 1.0e-20F) { ++stats.skipped; continue; }
             const auto resolved_material = static_cast<std::int64_t>(sector.material_window_base) +
                                            decoded_triangle.value->material;
             if (resolved_material < 0 ||
-                resolved_material >= static_cast<std::int64_t>(world_materials.size())) continue;
+                resolved_material >= static_cast<std::int64_t>(world_materials.size())) { ++stats.skipped; continue; }
             const auto material = static_cast<std::size_t>(resolved_material);
             TrianglePositionKey key{};
             for (std::size_t vertex = 0; vertex < 3; ++vertex) {
@@ -510,7 +528,7 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
             std::sort(key.begin(), key.end());
             const WorldTriangle triangle{indices, static_cast<std::size_t>(material)};
             if (const auto duplicate = triangle_by_position.find(key);
-                duplicate != triangle_by_position.end()) {
+                duplicate != triangle_by_position.end() && !preserve_valid_faces) {
                 // RenderWare's less-or-equal depth test makes the later coplanar
                 // face win. Retain that face explicitly because glTF material
                 // grouping otherwise reorders both faces and causes z-fighting.
@@ -521,6 +539,21 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
             }
         }
         std::map<std::size_t, std::vector<std::uint32_t>> grouped;
+        if (mesh.normals.empty()) {
+            mesh.normals.assign(mesh.positions.size(), {});
+            for (const auto& triangle : triangles) {
+                const auto& a = mesh.positions[triangle.indices[0]];
+                const auto& b = mesh.positions[triangle.indices[1]];
+                const auto& c = mesh.positions[triangle.indices[2]];
+                const Vec3 ab{b.x-a.x,b.y-a.y,b.z-a.z}, ac{c.x-a.x,c.y-a.y,c.z-a.z};
+                const Vec3 face{ab.y*ac.z-ab.z*ac.y,ab.z*ac.x-ab.x*ac.z,ab.x*ac.y-ab.y*ac.x};
+                for (const auto index : triangle.indices) {
+                    mesh.normals[index].x += face.x; mesh.normals[index].y += face.y;
+                    mesh.normals[index].z += face.z;
+                }
+            }
+            for (auto& normal : mesh.normals) normal = normalize(normal);
+        }
         for (const auto& triangle : triangles) {
             auto& output = grouped[triangle.material];
             output.insert(output.end(), triangle.indices.begin(), triangle.indices.end());
@@ -555,10 +588,11 @@ void write_text(const std::filesystem::path& path, const std::string& text) {
 
 } // namespace
 
-SceneExportStats export_scene_gltf(const std::vector<Chunk>& chunks,
+static SceneExportStats export_gltf(const std::vector<Chunk>& chunks,
                                    const std::span<const SceneInstance> instances,
                                    const std::span<const std::byte> bytes,
-                                   const std::filesystem::path& requested_path) {
+                                   const std::filesystem::path& requested_path,
+                                   const bool preserve_world_faces) {
     auto output_path = requested_path;
     if (output_path.extension() != ".gltf") output_path.replace_extension(".gltf");
     if (output_path.has_parent_path()) std::filesystem::create_directories(output_path.parent_path());
@@ -571,7 +605,7 @@ SceneExportStats export_scene_gltf(const std::vector<Chunk>& chunks,
     std::map<std::uint32_t, PrototypeRecord> prototypes;
     append_clumps(chunks, bytes, meshes, materials, stats, prototypes);
     append_instances(instances, prototypes, meshes, stats);
-    append_world(chunks, bytes, meshes, materials, stats);
+    append_world(chunks, bytes, meshes, materials, stats, preserve_world_faces);
     stats.materials = materials.size();
     if (meshes.empty()) throw std::runtime_error("No exportable Clump or World geometry was found");
 
@@ -637,7 +671,10 @@ SceneExportStats export_scene_gltf(const std::vector<Chunk>& chunks,
         json << "    {\"name\": \"" << json_escape(mesh.name) << "\", \"mesh\": " << i
              << ", \"extras\": {\"rws_kind\": \"" << mesh.kind << "\", \"rws_owner_offset\": \""
              << hex_offset(mesh.owner_offset) << "\", \"rws_source_offset\": \""
-             << hex_offset(mesh.source_offset) << "\"}}" << (i + 1 == meshes.size() ? "\n" : ",\n");
+             << hex_offset(mesh.source_offset) << "\"";
+        if (mesh.world_index) json << ", \"rws_world_index\": " << *mesh.world_index;
+        if (mesh.sector_index) json << ", \"rws_sector_index\": " << *mesh.sector_index;
+        json << "}}" << (i + 1 == meshes.size() ? "\n" : ",\n");
     }
     json << "  ],\n  \"meshes\": [\n";
     for (std::size_t i = 0; i < gltf_meshes.size(); ++i) {
@@ -665,6 +702,10 @@ SceneExportStats export_scene_gltf(const std::vector<Chunk>& chunks,
              << "], \"metallicFactor\": 0, \"roughnessFactor\": 1}, \"extras\": {"
              << "\"rws_owner_offset\": \"" << hex_offset(material.owner_offset)
              << "\", \"rws_material_slot\": " << material.slot
+             << ", \"rws_surface_name\": \"" << json_escape(material.surface_name) << "\""
+             << ", \"rws_surface_id\": ";
+        if (material.surface_id) json << *material.surface_id; else json << "null";
+        json
              << ", \"rws_base_texture\": \"" << json_escape(material.base_texture)
              << "\", \"rws_lightmap_texture\": \"" << json_escape(material.lightmap_texture) << "\"}}"
              << (i + 1 == materials.size() ? "\n" : ",\n");
@@ -706,21 +747,34 @@ SceneExportStats export_scene_gltf(const std::vector<Chunk>& chunks,
                  << hex_offset(mesh.source_offset) << "\", \"vertices\": " << mesh.positions.size()
                  << ", \"triangles\": ";
         std::size_t triangles{}; for (const auto& primitive : mesh.primitives) triangles += primitive.indices.size() / 3U;
-        manifest << triangles << '}' << (i + 1 == meshes.size() ? "\n" : ",\n");
+        manifest << triangles;
+        if (mesh.world_index) manifest << ", \"world_index\": " << *mesh.world_index;
+        if (mesh.sector_index) manifest << ", \"sector_index\": " << *mesh.sector_index;
+        manifest << '}' << (i + 1 == meshes.size() ? "\n" : ",\n");
     }
     manifest << "  ],\n  \"materials\": [\n";
     for (std::size_t i = 0; i < materials.size(); ++i) {
         const auto& material = materials[i];
         manifest << "    {\"gltf_material\": " << i << ", \"name\": \"" << json_escape(material.name)
                  << "\", \"owner_offset\": \"" << hex_offset(material.owner_offset)
-                 << "\", \"slot\": " << material.slot << ", \"base_texture\": \""
-                 << json_escape(material.base_texture) << "\", \"lightmap_texture\": \""
+                 << "\", \"slot\": " << material.slot << ", \"surface_name\": \""
+                 << json_escape(material.surface_name) << "\", \"surface_id\": ";
+        if (material.surface_id) manifest << *material.surface_id; else manifest << "null";
+        manifest << ", \"base_texture\": \"" << json_escape(material.base_texture)
+                 << "\", \"lightmap_texture\": \""
                  << json_escape(material.lightmap_texture) << "\"}"
                  << (i + 1 == materials.size() ? "\n" : ",\n");
     }
     manifest << "  ]\n}\n";
     write_text(manifest_path, manifest.str());
     return stats;
+}
+
+SceneExportStats export_scene_gltf(const std::vector<Chunk>& chunks,
+                                   const std::span<const SceneInstance> instances,
+                                   const std::span<const std::byte> bytes,
+                                   const std::filesystem::path& output_path) {
+    return export_gltf(chunks, instances, bytes, output_path, false);
 }
 
 SceneExportStats export_clump_gltf(const Chunk& clump,
@@ -730,6 +784,15 @@ SceneExportStats export_clump_gltf(const Chunk& clump,
     // Chunk objects only describe offsets and hierarchy; payload bytes remain
     // in the shared span, so this temporary one-root document is inexpensive.
     return export_scene_gltf(std::vector<Chunk>{clump}, {}, bytes, output_path);
+}
+
+SceneExportStats export_collision_gltf(const std::vector<Chunk>& chunks,
+                                       const std::span<const std::byte> bytes,
+                                       const std::filesystem::path& output_path) {
+    std::vector<Chunk> worlds;
+    for (const auto& chunk : chunks) if (chunk.type == 0x0B) worlds.push_back(chunk);
+    if (worlds.empty()) throw std::runtime_error("No World collision geometry was found");
+    return export_gltf(worlds, {}, bytes, output_path, true);
 }
 
 } // namespace rws

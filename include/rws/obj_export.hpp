@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rws/decoded.hpp"
+#include "rws/chunk.hpp"
 
 #include <cstddef>
 #include <filesystem>
@@ -13,5 +14,11 @@ namespace rws {
 void export_geometry_obj(const GeometryInfo& geometry, std::span<const std::byte> bytes,
                          const std::filesystem::path& output_path);
 
-} // namespace rws
+struct CollisionExportStats {
+    std::uint64_t worlds{}, sectors{}, vertices{}, triangles{}, skipped_triangles{}, materials{};
+};
+[[nodiscard]] CollisionExportStats export_collision_obj(
+    const std::vector<Chunk>& chunks, std::span<const std::byte> bytes,
+    const std::filesystem::path& output_path);
 
+} // namespace rws

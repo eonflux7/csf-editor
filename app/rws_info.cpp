@@ -93,6 +93,40 @@ void print_world_report(const std::vector<rws::RecoveredWorld>& worlds, const bo
     }
 }
 
+void print_bsp_report(const std::vector<rws::RecoveredWorld>& worlds, const bool nodes) {
+    if (worlds.empty()) { std::cout << "BSP recovery: no World chunks\n"; return; }
+    for (const auto& world : worlds) {
+        const auto& s = world.topology_stats;
+        std::cout << "World at 0x" << std::hex << world.world_offset << std::dec << '\n'
+                  << "  Planes recovered/declared: " << world.planes.size() << '/'
+                  << world.header.plane_sector_count << '\n'
+                  << "  Leaves linked/recovered/declared: " << s.linked_sectors << '/'
+                  << world.sectors.size() << '/' << world.header.world_sector_count << '\n'
+                  << "  Unlinked sectors: " << s.unlinked_sectors << '\n'
+                  << "  Maximum validated depth: " << s.maximum_depth << '\n'
+                  << "  Candidates invalid=" << s.invalid_candidates << " ambiguous="
+                  << s.ambiguous_candidates << " duplicate=" << s.duplicate_candidates
+                  << " overlapping=" << s.overlapping_candidates << " truncated=" << s.truncated_candidates << '\n'
+                  << "  Graph unreachable=" << s.unreachable_nodes << " cycles=" << s.cycles
+                  << " multiple-parent=" << s.multiple_parents << " bounds-conflicts=" << s.bounds_conflicts << '\n'
+                  << "  Topology: " << rws::world_topology_status_name(world.topology_status) << '\n';
+        for (const auto& diagnostic : world.topology_diagnostics)
+            std::cout << "  Diagnostic: " << diagnostic << '\n';
+        if (nodes) for (std::size_t i = 0; i < world.topology_nodes.size(); ++i) {
+            const auto& node = world.topology_nodes[i];
+            std::cout << "  Node " << i << " kind="
+                      << (node.kind == rws::RecoveredWorldNode::Kind::plane ? "plane" : "sector")
+                      << " value=" << node.value_index << " parent=";
+            if (node.parent) std::cout << *node.parent; else std::cout << '-';
+            std::cout << " side=" << (!node.is_left_child ? "root" : (*node.is_left_child ? "left" : "right"))
+                      << " depth=" << node.depth << " bounds=(" << node.bounding_box_inf.x << ','
+                      << node.bounding_box_inf.y << ',' << node.bounding_box_inf.z << ")..("
+                      << node.bounding_box_sup.x << ',' << node.bounding_box_sup.y << ','
+                      << node.bounding_box_sup.z << ")\n";
+        }
+    }
+}
+
 struct ValidationStats {
     std::uint64_t decoded{}, failed{};
     std::uint64_t triangles_stream{}, triangles_memory{}, triangles_ambiguous{};
@@ -252,7 +286,7 @@ void print_instances(const rws::Document& document) {
 
 int main(const int argc, char** argv) {
     if (argc < 2 || argc > 5) {
-        std::cerr << "Usage: rws-info <file.rws> [--summary|--world-report[=sectors]|--instances|--validate-types|--export-obj <directory>|--export-scene-gltf <file.gltf>|--export-clump-gltf <offset> <file.gltf>]\n";
+        std::cerr << "Usage: rws-info <file.rws> [--summary|--world-report[=sectors]|--bsp-report[=nodes]|--instances|--validate-types|--export-obj <directory>|--export-scene-gltf <file.gltf>|--export-collision-gltf <file.gltf>|--export-collision-obj <file.obj>|--export-clump-gltf <offset> <file.gltf>]\n";
         return 2;
     }
     try {
@@ -286,22 +320,32 @@ int main(const int argc, char** argv) {
                           << world.recovered_triangles << '/' << world.header.triangle_count
                           << ", vertices " << world.recovered_vertices << '/'
                           << world.header.vertex_count << ", "
-                          << rws::world_recovery_status_name(world.status) << '\n';
+                          << rws::world_recovery_status_name(world.status) << "; BSP planes "
+                          << world.planes.size() << '/' << world.header.plane_sector_count << ", "
+                          << rws::world_topology_status_name(world.topology_status) << '\n';
             }
         } else if (mode == "--world-report" || mode == "--world-report=sectors") {
             print_world_report(recovered_worlds, mode == "--world-report=sectors");
+        } else if (mode == "--bsp-report" || mode == "--bsp-report=nodes") {
+            print_bsp_report(recovered_worlds, mode == "--bsp-report=nodes");
         } else if (mode == "--instances") {
             print_instances(document);
         } else if (mode == "--validate-types") {
             ValidationStats stats;
             validate_types(document.chunks(), document.bytes(), stats);
             std::set<std::uint64_t> nested_sectors;
+            std::set<std::uint64_t> nested_planes;
             collect_offsets(document.chunks(), 0x09, nested_sectors);
+            collect_offsets(document.chunks(), 0x0A, nested_planes);
             for (const auto& world : recovered_worlds) {
                 for (const auto& sector : world.sectors)
                     if (!nested_sectors.contains(sector.chunk_offset)) ++stats.decoded;
+                for (const auto& plane : world.planes)
+                    if (!nested_planes.contains(plane.chunk_offset)) ++stats.decoded;
                 auto recovery_failures = world.invalid_candidates + world.invalid_triangles +
                     world.invalid_material_references + world.duplicate_or_overlapping_ranges;
+                recovery_failures += world.topology_stats.invalid_candidates +
+                    world.topology_stats.ambiguous_candidates + world.topology_stats.bounds_conflicts;
                 // A partial result can consist solely of aggregate count mismatches,
                 // and a failed result can have no recognizable sector candidate at all.
                 if (world.status != rws::WorldRecoveryStatus::complete && recovery_failures == 0)
@@ -331,6 +375,16 @@ int main(const int argc, char** argv) {
                       << stats.world_sectors << " exported World meshes, " << stats.vertices << " vertices, "
                       << stats.triangles << " triangles, " << stats.materials << " materials ("
                       << stats.skipped << " skipped)\n";
+        } else if (mode == "--export-collision-gltf" && argc == 4) {
+            const auto stats = rws::export_collision_gltf(document.chunks(), document.bytes(), argv[3]);
+            std::cout << "Exported collision glTF: " << stats.world_sectors << " sectors, "
+                      << stats.triangles << " triangles, " << stats.materials << " materials ("
+                      << stats.skipped << " skipped)\n";
+        } else if (mode == "--export-collision-obj" && argc == 4) {
+            const auto stats = rws::export_collision_obj(document.chunks(), document.bytes(), argv[3]);
+            std::cout << "Exported collision OBJ: " << stats.sectors << " sectors, "
+                      << stats.triangles << " triangles, " << stats.materials << " materials ("
+                      << stats.skipped_triangles << " skipped triangles)\n";
         } else if (mode == "--export-clump-gltf" && argc == 5) {
             const auto offset = std::stoull(argv[3], nullptr, 0);
             const auto* clump = [&]() -> const rws::Chunk* {

@@ -27,10 +27,10 @@ that partially understood assets can still be inspected safely.
   wireframe modes. Map previews automatically discover a same-directory
   `_col.rws` sibling and can show its recovered level collision as a translucent,
   surface-colored, wireframe, or X-ray overlay.
-- Shared, range-checked World-sector recovery used by the GUI, glTF exporter,
+- Shared, range-checked World-sector and validated BSP topology recovery used by the GUI, glTF exporter,
   `rws-info`, and `rws-corpus`, while the conservative parsed chunk tree remains
   unchanged.
-- Wavefront OBJ export for individual geometry.
+- Wavefront OBJ export for individual geometry and collision-only Worlds.
 - glTF 2.0 export for Clumps and assembled scenes, with two UV channels,
   materials, world sectors, CSF placements, and a texture/source manifest.
 - Corpus-wide inventory and validation tools for reverse-engineering collections
@@ -125,10 +125,14 @@ Additional modes are:
 | `--summary` | Print counts, payload sizes, and truncation counts by chunk type |
 | `--world-report` | Compare declared and recovered World sectors, triangles, vertices, materials, and diagnostics |
 | `--world-report=sectors` | Include offsets, counts, material bases, and bounds for every recovered sector |
+| `--bsp-report` | Report declared/recovered Plane and leaf totals, topology status, depth, and failure categories |
+| `--bsp-report=nodes` | Also list validated topology nodes, parents, sides, bounds, and source identities |
 | `--instances` | List decoded CSF placements and their correlated Clump prototypes |
 | `--validate-types` | Decode every supported typed structure and return a nonzero exit code on failures |
 | `--export-obj <directory>` | Export every decoded Geometry as a separate OBJ file |
 | `--export-scene-gltf <file.gltf>` | Export the assembled scene and its manifest |
+| `--export-collision-gltf <file.gltf>` | Export only validated World collision geometry to glTF |
+| `--export-collision-obj <file.obj>` | Export only validated World collision geometry to OBJ/MTL |
 | `--export-clump-gltf <offset> <file.gltf>` | Export the top-level Clump at a decimal or `0x` byte offset |
 
 Examples:
@@ -139,10 +143,13 @@ $output = "C:\path\to\exports"
 
 .\build\Release\rws-info.exe $asset --summary
 .\build\Release\rws-info.exe $asset --world-report
+.\build\Release\rws-info.exe $asset --bsp-report
 .\build\Release\rws-info.exe $asset --instances
 .\build\Release\rws-info.exe $asset --validate-types
 .\build\Release\rws-info.exe $asset --export-obj "$output\obj"
 .\build\Release\rws-info.exe $asset --export-scene-gltf "$output\map.gltf"
+.\build\Release\rws-info.exe $asset --export-collision-gltf "$output\map.collision.gltf"
+.\build\Release\rws-info.exe $asset --export-collision-obj "$output\map.collision.obj"
 .\build\Release\rws-info.exe $asset --export-clump-gltf 0x1234 "$output\clump.gltf"
 ```
 
@@ -160,10 +167,32 @@ It is read-only: it does not modify the files it scans.
 
 ## GUI usage
 
-The left pane contains the parsed RenderWare tree and decoded CSF scene instances.
-Select a node to see its typed fields and raw payload. Selecting a Geometry, or a
-child of one, opens an individual `3D Preview`; the `Whole RWS Scene` tab combines
-standard Clumps, correlated CSF placements, and recovered World sectors.
+The GUI opens maximized and treats the 3D viewport as its main workspace. When a
+loaded document contains Clumps, scene instances, or a World, the assembled
+`Scene` workspace opens automatically; otherwise it falls back to a previewable
+`Geometry` and then to the `Inspector`. Use the top toolbar or the `1`, `2`, and
+`3` keys to switch workspaces. `Ctrl+Space` temporarily hides the optional side
+panels so the viewport uses the full application content area.
+
+`View > Scene tree` opens the parsed RenderWare tree and decoded CSF scene
+instances on the left. `View > Selection inspector` opens a compact selection
+summary on the right. Both panels start hidden and can also be toggled from the
+toolbar. Select a tree node or click visible scene geometry to synchronize the
+selection; the full `Inspector` workspace shows typed fields and the editable raw
+payload.
+
+The `File`, `View`, `Tools`, `Export`, and `Help` menus group document lifecycle,
+layout, preview utilities, export operations, and control reminders. `Ctrl+O`
+opens an RWS and `Ctrl+S` retains the safe save-copy behavior.
+
+The scene itself has one compact viewport toolbar for visual/collision visibility,
+render style, projection, framing, measurement mode, and the **Tools** panel. Scene
+counts, geometry totals, collision totals, and camera distance appear as a small
+overlay inside the viewport rather than consuming rows above it. **Viewport tools**
+opens on the right and contains the less frequent rendering, texture/lightmap,
+collision-style, clipping, measurement, BSP, surface, and selected-triangle
+controls. The individual-Geometry workspace uses the same compact approach, with
+advanced options kept in its **Options** popup.
 
 The preview offers textured, material-index, material-color, UV-checker,
 lightmap-UV, lightmap-only, combined base/lightmap, and wireframe views. Its DDS
@@ -172,7 +201,7 @@ mask-based RGB/RGBA images. Base
 textures use UV1 (`TEXCOORD_0`) and MatFX lightmaps use UV2 (`TEXCOORD_1`). DDS
 textures are resolved from a `Textures` directory beside the loaded asset.
 
-When `NAME.rws` is opened, the GUI checks only for `NAME_col.rws` in the same
+When `NAME.rws` is opened, the GUI first checks for `NAME_col.rws` in the same
 directory. A valid companion remains a separate read-only document; a missing,
 invalid, or partially recovered companion never prevents the visual file from
 loading. Opening an `_col.rws` file directly provides collision-only viewing.
@@ -182,6 +211,22 @@ material-index, or single-color display, and adjust overlay opacity. Surface mod
 uses Pyro Material names/IDs when present and a deterministic palette otherwise.
 The translucent pass is intentionally unsorted in this first slice; it is stable
 and depth-tested but may show ordinary alpha-ordering artifacts in dense overlaps.
+
+Use **Open RWS...** to choose a main document and **Open collision companion...**
+to pair an unusually named World. Pairing is transactional: cancellation or failed
+World recovery leaves the active companion unchanged. A bounded recent-pairing list
+stores normalized paths in the user's local application-data directory, never in
+the repository; recent entries are reloaded and validated before use.
+
+Clicking collision reports stable World/sector/triangle identities, byte offsets,
+material and raw surface label, vertices, hit position, geometric normal, and
+barycentric coordinates without adding synthetic nodes to the parsed tree. The
+selected triangle is highlighted independently of main-tree selection. Inspection
+tools provide source-space X/Y/Z clipping, two-hit distance and absolute-axis
+deltas, selection framing, coordinate copy, leaf/BSP status controls, and an
+explicit collision-picking preference. Fixed orthographic **Top (X/Z)**,
+**Front (X/Y)**, and **Side (Z/Y)** views share the collision picker; source RWS
+uses Y as the vertical map axis.
 
 Here, a level collision World is the static geometry stored in the sibling file.
 It is distinct from the Collision Plugin (`0x11D`) attached to some geometry and
@@ -201,6 +246,8 @@ from RenderWare Physics body/ragdoll definitions (`0x907`/`0x909`).
 | `Shift` | Move faster |
 
 The whole-scene view also has a logarithmic movement-speed control for large maps.
+Orbit/look gestures are disabled in fixed orthographic views; pan and wheel zoom
+remain available.
 
 ### Editing and saving
 
@@ -238,6 +285,14 @@ DDS textures are referenced in the manifest but are not copied or converted.
 **Export selected Clump (glTF)** exports the top-level Clump containing the current
 tree selection. Its default filename includes the Clump's source offset. The CLI
 equivalent accepts that offset explicitly with `--export-clump-gltf`.
+
+**Export collision only (glTF/OBJ)** uses only validated sectors in the active
+collision document (or a directly opened `_col.rws`). It never discovers a sibling
+in the CLI. glTF applies the documented `0.01x` conversion and records source
+offset/material/surface metadata in extras and its manifest. OBJ preserves source
+RWS axes and units, uses stable World/sector groups and sanitized material names,
+and writes sibling MTL and manifest files. Invalid triangles are omitted and
+reported; input RWS bytes are never modified.
 
 ## Blender lightmap workflow
 

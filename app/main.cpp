@@ -3,6 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#include <commdlg.h>
 #endif
 
 #include "rws/document.hpp"
@@ -24,18 +25,73 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 
 namespace {
 
 std::optional<std::filesystem::path> dropped_file;
+
+enum class Workspace {
+    scene,
+    geometry,
+    inspector,
+};
+
+const char* workspace_name(const Workspace workspace) {
+    switch (workspace) {
+    case Workspace::scene: return "Scene";
+    case Workspace::geometry: return "Geometry";
+    case Workspace::inspector: return "Inspector";
+    }
+    return "Scene";
+}
+
+#ifdef _WIN32
+std::optional<std::filesystem::path> choose_rws_file(const std::filesystem::path& directory) {
+    std::array<wchar_t, 32768> path{};
+    const auto initial=directory.wstring();
+    OPENFILENAMEW dialog{}; dialog.lStructSize=sizeof(dialog); dialog.lpstrFile=path.data();
+    dialog.nMaxFile=static_cast<DWORD>(path.size()); dialog.lpstrFilter=L"RenderWare streams (*.rws)\0*.rws\0All files\0*.*\0\0";
+    dialog.lpstrInitialDir=initial.empty()?nullptr:initial.c_str();
+    dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&dialog)) return std::nullopt;
+    return std::filesystem::path(path.data());
+}
+#endif
+
+struct RecentPair { std::filesystem::path main, collision; };
+
+std::filesystem::path pairing_settings_path() {
+#ifdef _WIN32
+    if (const auto* local=std::getenv("LOCALAPPDATA")) return std::filesystem::path(local)/"CSF RWS Tools"/"recent-pairings.txt";
+#endif
+    return std::filesystem::temp_directory_path()/"csf-rws-tools-recent-pairings.txt";
+}
+
+std::vector<RecentPair> load_recent_pairs() {
+    std::vector<RecentPair> result; std::ifstream input(pairing_settings_path()); std::string line;
+    while (std::getline(input,line) && result.size()<8) {
+        const auto tab=line.find('\t'); if (tab==std::string::npos) continue;
+        result.push_back({std::filesystem::path(line.substr(0,tab)),std::filesystem::path(line.substr(tab+1))});
+    }
+    return result;
+}
+
+void save_recent_pairs(const std::vector<RecentPair>& pairs) {
+    const auto path=pairing_settings_path(); std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path,std::ios::trunc);
+    for (const auto& pair:pairs) output<<pair.main.string()<<'\t'<<pair.collision.string()<<'\n';
+}
 
 void drop_callback(GLFWwindow*, const int count, const char** paths) {
     if (count > 0) {
@@ -723,6 +779,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
     auto* window = glfwCreateWindow(1400, 850, "CSF RWS Tools - rws-man", nullptr, nullptr);
     if (!window) {
         glfwTerminate();
@@ -740,28 +797,68 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
 
     std::unique_ptr<rws::Document> document;
     std::unique_ptr<rws::Document> collision_document;
+    auto recent_pairs = load_recent_pairs();
     std::string collision_status = "No document loaded";
     bool main_is_collision{};
     rwsman::GeometryPreview geometry_preview;
     std::optional<std::uint64_t> selected;
     ChunkDisplayNames display_names;
+    Workspace workspace = Workspace::scene;
+    bool show_scene_tree = false;
+    bool show_inspector = false;
+    bool show_viewport_tools = false;
+    bool maximize_viewport = false;
+    std::optional<std::uint64_t> previous_selection;
     std::string status = "Drop an .rws file on this window or pass one on the command line.";
-    auto load = [&](const std::filesystem::path& path) {
-        collision_document.reset();
-        collision_status.clear();
-        main_is_collision = false;
-        geometry_preview.clear();
+    auto pair_collision = [&](const std::filesystem::path& candidate_path, const bool remember) {
+        if (!document)
+            return false;
         try {
-            document = std::make_unique<rws::Document>(rws::Document::load(path));
+            auto candidate = std::make_unique<rws::Document>(rws::Document::load(candidate_path));
+            const auto worlds = rws::recover_worlds(candidate->chunks(), candidate->bytes());
+            if (worlds.empty() ||
+                std::none_of(worlds.begin(), worlds.end(), [](const auto& world) { return !world.sectors.empty(); }))
+                throw std::runtime_error("Selected companion has no recoverable World sectors");
+            collision_document = std::move(candidate);
+            collision_status = "Loaded manual companion " + candidate_path.string();
+            geometry_preview.clear();
+            if (remember) {
+                std::error_code error;
+                const auto main_path = std::filesystem::weakly_canonical(document->source_path(), error);
+                const auto collision_path = std::filesystem::weakly_canonical(candidate_path, error);
+                recent_pairs.erase(std::remove_if(recent_pairs.begin(), recent_pairs.end(),
+                                                  [&](const RecentPair& pair) {
+                                                      return pair.main == main_path && pair.collision == collision_path;
+                                                  }),
+                                   recent_pairs.end());
+                recent_pairs.insert(recent_pairs.begin(), {main_path, collision_path});
+                if (recent_pairs.size() > 8)
+                    recent_pairs.resize(8);
+                save_recent_pairs(recent_pairs);
+            }
+            return true;
+        } catch (const std::exception& error) {
+            status = "Collision companion unchanged: " + std::string(error.what());
+            return false;
+        }
+    };
+    auto load = [&](const std::filesystem::path& path) {
+        try {
+            auto loaded_document = std::make_unique<rws::Document>(rws::Document::load(path));
+            document = std::move(loaded_document);
+            collision_document.reset();
+            collision_status.clear();
+            main_is_collision = false;
+            geometry_preview.clear();
             auto stem = path.stem().string();
-            std::transform(stem.begin(), stem.end(), stem.begin(), [](const unsigned char value) {
-                return static_cast<char>(std::tolower(value));
-            });
+            std::transform(stem.begin(), stem.end(), stem.begin(),
+                           [](const unsigned char value) { return static_cast<char>(std::tolower(value)); });
             main_is_collision = stem.size() >= 4 && stem.ends_with("_col");
             if (main_is_collision) {
                 const auto worlds = rws::recover_worlds(document->chunks(), document->bytes());
-                collision_status = !worlds.empty() && !worlds.front().sectors.empty() ?
-                    "Opened collision World directly" : "The _col file has no recoverable World";
+                collision_status = !worlds.empty() && !worlds.front().sectors.empty()
+                                       ? "Opened collision World directly"
+                                       : "The _col file has no recoverable World";
             } else {
                 auto companion = path;
                 companion.replace_filename(path.stem().string() + "_col" + path.extension().string());
@@ -783,12 +880,23 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                     collision_status = "Companion not found: " + companion.string();
                 }
             }
-            display_names = resolve_chunk_display_names(
-                document->chunks(), document->bytes(), document->scene_instances());
-            if (const auto* geometry = find_first_chunk(document->chunks(), 0x0F)) selected = geometry->offset;
-            else if (!document->chunks().empty()) selected = document->chunks().front().offset;
-            else selected.reset();
+            display_names =
+                resolve_chunk_display_names(document->chunks(), document->bytes(), document->scene_instances());
+            const auto *first_geometry = find_first_chunk(document->chunks(), 0x0F);
+            if (first_geometry)
+                selected = first_geometry->offset;
+            else if (!document->chunks().empty())
+                selected = document->chunks().front().offset;
+            else
+                selected.reset();
+            previous_selection.reset();
+            const bool has_scene = !document->scene_instances().empty() ||
+                                   find_first_chunk(document->chunks(), 0x10) != nullptr ||
+                                   find_first_chunk(document->chunks(), 0x0B) != nullptr;
+            workspace = has_scene ? Workspace::scene : (first_geometry ? Workspace::geometry : Workspace::inspector);
             status = "Loaded " + path.string();
+            const auto title = path.filename().string() + " - CSF RWS Tools";
+            glfwSetWindowTitle(window, title.c_str());
         } catch (const std::exception& error) {
             status = error.what();
         }
@@ -805,160 +913,400 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        const auto open_document = [&] {
+#ifdef _WIN32
+            if (const auto path = choose_rws_file(document ? document->source_path().parent_path() :
+                                                   std::filesystem::path{}))
+                load(*path);
+#endif
+        };
+        const auto save_copy = [&] {
+            if (!document) return;
+            try {
+                auto output = document->source_path();
+                output.replace_filename(output.stem().string() + ".edited" + output.extension().string());
+                document->save_as(output);
+                status = "Saved " + output.string();
+            } catch (const std::exception& error) { status = error.what(); }
+        };
+
+        const auto& io = ImGui::GetIO();
+        const bool shortcuts_enabled = !io.WantTextInput && !io.WantCaptureKeyboard;
+        if (shortcuts_enabled && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) open_document();
+        if (shortcuts_enabled && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) save_copy();
+        if (shortcuts_enabled && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space) &&
+            (maximize_viewport || show_scene_tree || show_inspector || show_viewport_tools))
+            maximize_viewport = !maximize_viewport;
+        if (shortcuts_enabled && !io.KeyCtrl && !io.KeyAlt) {
+            if (ImGui::IsKeyPressed(ImGuiKey_1)) workspace = Workspace::scene;
+            if (ImGui::IsKeyPressed(ImGuiKey_2)) workspace = Workspace::geometry;
+            if (ImGui::IsKeyPressed(ImGuiKey_3)) workspace = Workspace::inspector;
+        }
+
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         int width = 0, height = 0;
         glfwGetFramebufferSize(window, &width, &height);
-        ImGui::SetNextWindowSize(ImVec2(static_cast<float>(width), static_cast<float>(height)));
+        ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::Begin("CSF RWS Tools", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoResize | ImGuiWindowFlags_MenuBar);
+            ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_MenuBar);
+
+        const auto* selected_chunk = document && selected ? find_chunk(document->chunks(), *selected) : nullptr;
+        const auto* selected_instance = document && selected ?
+            find_instance(document->scene_instances(), *selected) : nullptr;
+        const auto* selected_clump = document && selected ?
+            find_enclosing_clump(document->chunks(), *selected) : nullptr;
+        const auto* collision_export_document = main_is_collision ? document.get() : collision_document.get();
+        static std::string previous_window_title;
+        const std::string window_title = document ?
+            document->source_path().filename().string() + (document->dirty() ? " *" : "") +
+                " - CSF RWS Tools" :
+            "CSF RWS Tools - rws-man";
+        if (window_title != previous_window_title) {
+            glfwSetWindowTitle(window, window_title.c_str());
+            previous_window_title = window_title;
+        }
+
         if (ImGui::BeginMenuBar()) {
-            if (document && ImGui::MenuItem("Save copy", nullptr, false, true)) {
-                try {
-                    auto output = document->source_path();
-                    output.replace_filename(output.stem().string() + ".edited" + output.extension().string());
-                    document->save_as(output);
-                    status = "Saved " + output.string();
-                } catch (const std::exception& error) { status = error.what(); }
+            if (ImGui::BeginMenu("File")) {
+                if (ImGui::MenuItem("Open RWS...", "Ctrl+O")) open_document();
+                if (ImGui::BeginMenu("Collision companion", document && !main_is_collision)) {
+                    if (ImGui::MenuItem("Open companion...")) {
+#ifdef _WIN32
+                        if (const auto path = choose_rws_file(document->source_path().parent_path()))
+                            pair_collision(*path, true);
+#endif
+                    }
+                    if (ImGui::MenuItem("Clear companion", nullptr, false, collision_document != nullptr)) {
+                        collision_document.reset();
+                        collision_status = "Collision companion cleared";
+                        geometry_preview.clear();
+                    }
+                    if (ImGui::BeginMenu("Recent pairings", !recent_pairs.empty())) {
+                        for (const auto& pair : recent_pairs) {
+                            const auto label = pair.main.filename().string() + " + " +
+                                               pair.collision.filename().string();
+                            if (ImGui::MenuItem(label.c_str())) {
+                                if (!document || document->source_path() != pair.main) load(pair.main);
+                                if (document) pair_collision(pair.collision, false);
+                            }
+                        }
+                        ImGui::EndMenu();
+                    }
+                    ImGui::EndMenu();
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Save copy", "Ctrl+S", false, document != nullptr)) save_copy();
+                ImGui::Separator();
+                if (ImGui::MenuItem("Exit")) glfwSetWindowShouldClose(window, GLFW_TRUE);
+                ImGui::EndMenu();
             }
-            if (document && ImGui::MenuItem("Export whole scene (glTF)", nullptr, false, true)) {
-                try {
-                    auto output = document->source_path();
-                    output.replace_filename(output.stem().string() + ".scene.gltf");
-                    const auto stats = rws::export_scene_gltf(document->chunks(),
-                        document->scene_instances(), document->bytes(), output);
-                    std::ostringstream message;
-                    message << "Exported " << stats.atomic_instances << " atomic meshes ("
-                            << stats.custom_instances << " CSF placements, "
-                            << stats.unresolved_instances << " unresolved) and "
-                            << stats.recovered_world_sectors << " recovered World sectors ("
-                            << stats.world_sectors << " exported meshes) to " << output.string();
-                    status = message.str();
-                } catch (const std::exception& error) { status = error.what(); }
+            if (ImGui::BeginMenu("View")) {
+                if (ImGui::MenuItem("Scene", "1", workspace == Workspace::scene, document != nullptr))
+                    workspace = Workspace::scene;
+                if (ImGui::MenuItem("Selected geometry", "2", workspace == Workspace::geometry,
+                                    document != nullptr))
+                    workspace = Workspace::geometry;
+                if (ImGui::MenuItem("Inspector / Hex", "3", workspace == Workspace::inspector,
+                                    document != nullptr))
+                    workspace = Workspace::inspector;
+                ImGui::Separator();
+                ImGui::MenuItem("Scene tree", nullptr, &show_scene_tree);
+                if (ImGui::MenuItem("Selection inspector", nullptr,
+                                    show_inspector && !show_viewport_tools)) {
+                    show_inspector = !(show_inspector && !show_viewport_tools);
+                    show_viewport_tools = false;
+                }
+                if (ImGui::MenuItem("Maximize viewport", "Ctrl+Space", maximize_viewport,
+                                    maximize_viewport || show_scene_tree || show_inspector ||
+                                        show_viewport_tools))
+                    maximize_viewport = !maximize_viewport;
+                ImGui::Separator();
+                if (ImGui::MenuItem("Maximize window")) glfwMaximizeWindow(window);
+                if (ImGui::MenuItem("Restore window")) glfwRestoreWindow(window);
+                ImGui::EndMenu();
             }
-            const auto* selected_clump = document && selected ?
-                find_enclosing_clump(document->chunks(), *selected) : nullptr;
-            if (ImGui::MenuItem("Export selected Clump (glTF)", nullptr, false,
-                                selected_clump != nullptr)) {
-                try {
-                    auto output = document->source_path();
-                    std::ostringstream suffix;
-                    suffix << document->source_path().stem().string() << ".clump_0x" << std::hex
-                           << std::uppercase << selected_clump->offset << ".gltf";
-                    output.replace_filename(suffix.str());
-                    const auto stats = rws::export_clump_gltf(
-                        *selected_clump, document->bytes(), output);
-                    status = "Exported Clump with " + std::to_string(stats.atomic_instances) +
-                             " Atomics to " + output.string();
-                } catch (const std::exception& error) { status = error.what(); }
+            if (ImGui::BeginMenu("Tools")) {
+                if (ImGui::MenuItem("Reload preview from edited bytes", nullptr, false, document != nullptr)) {
+                    geometry_preview.clear();
+                    status = "Preview will reload from the current in-memory document";
+                }
+                if (ImGui::MenuItem("Open scene / collision tools", nullptr, false,
+                                    document != nullptr)) {
+                    workspace = Workspace::scene;
+                    maximize_viewport = false;
+                    show_inspector = true;
+                    show_viewport_tools = true;
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Export")) {
+                if (ImGui::MenuItem("Whole scene (glTF)", nullptr, false, document != nullptr)) {
+                    try {
+                        auto output = document->source_path();
+                        output.replace_filename(output.stem().string() + ".scene.gltf");
+                        const auto stats = rws::export_scene_gltf(document->chunks(),
+                            document->scene_instances(), document->bytes(), output);
+                        std::ostringstream message;
+                        message << "Exported " << stats.atomic_instances << " atomic meshes ("
+                                << stats.custom_instances << " CSF placements, "
+                                << stats.unresolved_instances << " unresolved) and "
+                                << stats.recovered_world_sectors << " recovered World sectors ("
+                                << stats.world_sectors << " exported meshes) to " << output.string();
+                        status = message.str();
+                    } catch (const std::exception& error) { status = error.what(); }
+                }
+                if (ImGui::MenuItem("Selected Clump (glTF)", nullptr, false, selected_clump != nullptr)) {
+                    try {
+                        auto output = document->source_path();
+                        std::ostringstream suffix;
+                        suffix << document->source_path().stem().string() << ".clump_0x" << std::hex
+                               << std::uppercase << selected_clump->offset << ".gltf";
+                        output.replace_filename(suffix.str());
+                        const auto stats = rws::export_clump_gltf(*selected_clump, document->bytes(), output);
+                        status = "Exported Clump with " + std::to_string(stats.atomic_instances) +
+                                 " Atomics to " + output.string();
+                    } catch (const std::exception& error) { status = error.what(); }
+                }
+                ImGui::Separator();
+                if (ImGui::MenuItem("Collision only (glTF)", nullptr, false,
+                                    collision_export_document != nullptr)) {
+                    try {
+                        auto output = collision_export_document->source_path();
+                        output.replace_filename(output.stem().string() + ".collision.gltf");
+                        const auto stats = rws::export_collision_gltf(collision_export_document->chunks(),
+                            collision_export_document->bytes(), output);
+                        status = "Exported collision glTF: " + std::to_string(stats.triangles) +
+                                 " triangles to " + output.string();
+                    } catch (const std::exception& error) { status = error.what(); }
+                }
+                if (ImGui::MenuItem("Collision only (OBJ)", nullptr, false,
+                                    collision_export_document != nullptr)) {
+                    try {
+                        auto output = collision_export_document->source_path();
+                        output.replace_filename(output.stem().string() + ".collision.obj");
+                        const auto stats = rws::export_collision_obj(collision_export_document->chunks(),
+                            collision_export_document->bytes(), output);
+                        status = "Exported collision OBJ: " + std::to_string(stats.triangles) +
+                                 " triangles to " + output.string();
+                    } catch (const std::exception& error) { status = error.what(); }
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Help")) {
+                ImGui::TextDisabled("Viewport controls");
+                ImGui::Separator();
+                ImGui::TextUnformatted("Left drag: look   Right drag: orbit   Middle drag: pan");
+                ImGui::TextUnformatted("Wheel: zoom   Double-click: frame   WASD/QE: move");
+                ImGui::TextUnformatted("1/2/3: workspace   Ctrl+Space: maximize viewport");
+                ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
         }
-        ImGui::TextUnformatted(status.c_str());
-        ImGui::Separator();
+
+        const float toolbar_height = ImGui::GetFrameHeight() +
+            ImGui::GetStyle().WindowPadding.y * 2.0F;
+        ImGui::BeginChild("main_toolbar", {0.0F, toolbar_height}, ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        if (ImGui::Button("Open")) open_document();
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(130.0F);
+        if (ImGui::BeginCombo("##workspace", workspace_name(workspace)))
+        {
+            if (ImGui::Selectable("Scene", workspace == Workspace::scene))
+                workspace = Workspace::scene;
+            if (ImGui::Selectable("Geometry", workspace == Workspace::geometry))
+                workspace = Workspace::geometry;
+            if (ImGui::Selectable("Inspector", workspace == Workspace::inspector))
+                workspace = Workspace::inspector;
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!document);
+        if (ImGui::Button(show_scene_tree && !maximize_viewport ? "Hide tree" : "Scene tree")) {
+            show_scene_tree = maximize_viewport ? true : !show_scene_tree;
+            maximize_viewport = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(show_inspector && !show_viewport_tools && !maximize_viewport ? "Hide inspector"
+                                                                                       : "Inspector")) {
+            show_inspector = maximize_viewport ? true : !(show_inspector && !show_viewport_tools);
+            show_viewport_tools = false;
+            maximize_viewport = false;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!maximize_viewport && !show_scene_tree && !show_inspector && !show_viewport_tools);
+        if (ImGui::Button(maximize_viewport ? "Restore panels" : "Maximize viewport"))
+            maximize_viewport = !maximize_viewport;
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
         if (document) {
-            static std::optional<std::uint64_t> previous_selection;
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s%s", document->source_path().filename().string().c_str(),
+                                document->dirty() ? " *" : "");
+        }
+        ImGui::EndChild();
+
+        const float status_height = ImGui::GetTextLineHeightWithSpacing() + 7.0F;
+        ImGui::BeginChild("workspace_area", {0.0F, -status_height}, ImGuiChildFlags_None);
+        if (!document) {
+            const auto available = ImGui::GetContentRegionAvail();
+            ImGui::SetCursorPosY(std::max(available.y * 0.42F, 20.0F));
+            const char* prompt = "Drop an .rws file here or press Ctrl+O";
+            ImGui::SetCursorPosX(std::max((available.x - ImGui::CalcTextSize(prompt).x) * 0.5F, 12.0F));
+            ImGui::TextDisabled("%s", prompt);
+        } else {
             float minimum_clump_size = std::numeric_limits<float>::max();
             float maximum_clump_size = std::numeric_limits<float>::lowest();
             find_clump_size_range(document->chunks(), minimum_clump_size, maximum_clump_size);
             const bool reveal_selected = selected != previous_selection;
-            ImGui::BeginChild("tree", ImVec2(490, 0), ImGuiChildFlags_Borders);
-            ImGui::Text("%zu bytes | %zu chunks | %zu CSF instances | %zu diagnostics%s",
-                document->bytes().size(), document->chunks().size(), document->scene_instances().size(),
-                document->diagnostics().size(),
-                document->dirty() ? " | modified" : "");
-            draw_tree(document->chunks(), selected, display_names, minimum_clump_size,
-                      maximum_clump_size, reveal_selected);
-            draw_instance_tree(document->scene_instances(), selected, reveal_selected);
-            ImGui::EndChild();
-            previous_selection = selected;
-            ImGui::SameLine();
-            ImGui::BeginChild("details", ImVec2(0, 0), ImGuiChildFlags_Borders);
-            const auto* chunk = selected ? find_chunk(document->chunks(), *selected) : nullptr;
-            const auto* instance = selected ? find_instance(document->scene_instances(), *selected) : nullptr;
-            if (chunk) {
-                ImGui::Text("%s (0x%08X)", rws::chunk_name(chunk->type).data(), chunk->type);
-                ImGui::Text("Header: 0x%llX   Payload: 0x%llX", static_cast<unsigned long long>(chunk->offset),
-                    static_cast<unsigned long long>(chunk->payload_offset));
-                ImGui::Text("Declared: %u   Available: %llu   Library ID: 0x%08X", chunk->declared_size,
-                    static_cast<unsigned long long>(chunk->available_size), chunk->library_id);
-                ImGui::Text("Vendor: %s (0x%06X)   Object ID: 0x%02X",
-                    rws::chunk_vendor_name(rws::chunk_vendor_id(chunk->type)).data(),
-                    rws::chunk_vendor_id(chunk->type), rws::chunk_object_id(chunk->type));
-                const auto payload_offset = chunk->payload_offset;
-                const auto available_size = chunk->available_size;
-                const auto* owner = find_owning_object(document->chunks(), chunk->offset);
-                const auto* geometry = find_preview_geometry(*chunk, document->chunks());
-                if (ImGui::BeginTabBar("chunk_views")) {
-                    if (geometry && ImGui::BeginTabItem("3D Preview")) {
-                        if (chunk->type == 0x10 || chunk->type == 0x1A)
-                            ImGui::TextDisabled("Previewing the first Geometry contained by this %s.",
-                                rws::chunk_name(chunk->type).data());
-                        geometry_preview.draw(*geometry, document->bytes(), document->source_path());
-                        ImGui::EndTabItem();
-                    }
-                    if (ImGui::BeginTabItem("Whole RWS Scene")) {
-                        geometry_preview.draw_scene(document->chunks(), document->bytes(),
-                            document->scene_instances(), document->source_path(), selected,
-                            main_is_collision ? document.get() : collision_document.get(),
-                            main_is_collision, collision_status);
-                        ImGui::EndTabItem();
-                    }
-                    if (ImGui::BeginTabItem("Inspector / Hex")) {
-                        draw_typed_details(*chunk, *document, status, owner ? owner->type : 0);
-                        draw_hex(*document, payload_offset, available_size);
-                        ImGui::EndTabItem();
-                    }
-                    ImGui::EndTabBar();
+            const bool tree_visible = show_scene_tree && !maximize_viewport;
+            const bool inspector_visible = (show_inspector || show_viewport_tools) && !maximize_viewport;
+            const int visible_panel_count = static_cast<int>(tree_visible) + static_cast<int>(inspector_visible);
+            const float workspace_width = ImGui::GetContentRegionAvail().x;
+            const float panel_width =
+                visible_panel_count == 0
+                    ? 0.0F
+                    : std::clamp((workspace_width - 320.0F - ImGui::GetStyle().ItemSpacing.x * visible_panel_count) /
+                                     static_cast<float>(visible_panel_count),
+                                 180.0F, 390.0F);
+
+            if (tree_visible) {
+                ImGui::BeginChild("scene_tree", {panel_width, 0.0F}, ImGuiChildFlags_Borders);
+                ImGui::Text("%zu chunks | %zu instances | %zu diagnostics", document->chunks().size(),
+                            document->scene_instances().size(), document->diagnostics().size());
+                ImGui::Separator();
+                draw_tree(document->chunks(), selected, display_names, minimum_clump_size, maximum_clump_size,
+                          reveal_selected);
+                draw_instance_tree(document->scene_instances(), selected, reveal_selected);
+                ImGui::EndChild();
+                ImGui::SameLine();
+            }
+
+            const float inspector_width = inspector_visible ? panel_width : 0.0F;
+            ImGui::BeginChild(
+                "primary_workspace",
+                {inspector_width > 0.0F ? -(inspector_width + ImGui::GetStyle().ItemSpacing.x) : 0.0F, 0.0F},
+                ImGuiChildFlags_Borders);
+            if (workspace == Workspace::scene) {
+                if (geometry_preview.draw_scene(document->chunks(), document->bytes(), document->scene_instances(),
+                                                document->source_path(), selected,
+                                                main_is_collision ? document.get() : collision_document.get(),
+                                                main_is_collision, collision_status)) {
+                    show_inspector = true;
+                    show_viewport_tools = true;
+                    maximize_viewport = false;
                 }
-            } else if (instance) {
-                ImGui::Text("CSF Scene Instance @ 0x%llX",
-                            static_cast<unsigned long long>(instance->offset));
-                if (instance->prototype_id >= 1000U)
-                    ImGui::Text("Prototype: %u (Pyro object index %u)   Instance ID: %u",
-                                instance->prototype_id, instance->prototype_id - 1000U,
-                                instance->instance_id);
+            } else if (workspace == Workspace::geometry) {
+                const auto* geometry =
+                    selected_chunk ? find_preview_geometry(*selected_chunk, document->chunks()) : nullptr;
+                if (!geometry)
+                    geometry = find_first_chunk(document->chunks(), 0x0F);
+                if (geometry)
+                    geometry_preview.draw(*geometry, document->bytes(), document->source_path());
                 else
-                    ImGui::Text("Prototype: %u   Instance ID: %u", instance->prototype_id,
-                                instance->instance_id);
-                ImGui::Text("Name: %s", instance->prototype_name.empty() ? "(unnamed)" :
-                                                              instance->prototype_name.c_str());
-                ImGui::Text("Flags: 0x%08X   Declared: %u   Physical: %llu", instance->flags,
-                            instance->declared_size,
-                            static_cast<unsigned long long>(instance->physical_size));
-                ImGui::Text("Flag meanings: %s",
-                            rws::scene_instance_flag_names(instance->flags).c_str());
+                    ImGui::TextDisabled("This document has no previewable Geometry.");
+            } else if (selected_chunk) {
+                ImGui::Text("%s (0x%08X)", rws::chunk_name(selected_chunk->type).data(), selected_chunk->type);
+                ImGui::Text("Header: 0x%llX   Payload: 0x%llX", static_cast<unsigned long long>(selected_chunk->offset),
+                            static_cast<unsigned long long>(selected_chunk->payload_offset));
+                ImGui::Text("Declared: %u   Available: %llu   Library ID: 0x%08X", selected_chunk->declared_size,
+                            static_cast<unsigned long long>(selected_chunk->available_size),
+                            selected_chunk->library_id);
+                ImGui::Text("Vendor: %s (0x%06X)   Object ID: 0x%02X",
+                            rws::chunk_vendor_name(rws::chunk_vendor_id(selected_chunk->type)).data(),
+                            rws::chunk_vendor_id(selected_chunk->type), rws::chunk_object_id(selected_chunk->type));
+                const auto* owner = find_owning_object(document->chunks(), selected_chunk->offset);
+                draw_typed_details(*selected_chunk, *document, status, owner ? owner->type : 0);
+                draw_hex(*document, selected_chunk->payload_offset, selected_chunk->available_size);
+            } else if (selected_instance) {
+                ImGui::Text("CSF Scene Instance @ 0x%llX", static_cast<unsigned long long>(selected_instance->offset));
+                ImGui::Text("Prototype: %u   Instance ID: %u", selected_instance->prototype_id,
+                            selected_instance->instance_id);
+                ImGui::Text("Name: %s", selected_instance->prototype_name.empty()
+                                            ? "(unnamed)"
+                                            : selected_instance->prototype_name.c_str());
+                ImGui::Text("Declared: %u   Physical: %llu", selected_instance->declared_size,
+                            static_cast<unsigned long long>(selected_instance->physical_size));
+                ImGui::Text("Position: %.6g, %.6g, %.6g", selected_instance->position.x, selected_instance->position.y,
+                            selected_instance->position.z);
+                ImGui::Text("Flags: 0x%08X (%s)", selected_instance->flags,
+                            rws::scene_instance_flag_names(selected_instance->flags).c_str());
                 ImGui::Text("Visibility distance: max %.6g, min %.6g, fade %.6g",
-                            instance->maximum_visibility_distance,
-                            instance->minimum_visibility_distance,
-                            instance->visibility_fade_range);
-                ImGui::Text("Position: %.6g, %.6g, %.6g", instance->position.x,
-                            instance->position.y, instance->position.z);
-                ImGui::Text("Matrix flags: 0x%08X", instance->matrix_flags);
-                ImGui::Text("Rotation: [%.5g %.5g %.5g]", instance->rotation[0],
-                            instance->rotation[1], instance->rotation[2]);
-                ImGui::Text("          [%.5g %.5g %.5g]", instance->rotation[3],
-                            instance->rotation[4], instance->rotation[5]);
-                ImGui::Text("          [%.5g %.5g %.5g]", instance->rotation[6],
-                            instance->rotation[7], instance->rotation[8]);
-                if (ImGui::BeginTabBar("instance_views")) {
-                    if (ImGui::BeginTabItem("Whole RWS Scene")) {
-                        geometry_preview.draw_scene(document->chunks(), document->bytes(),
-                            document->scene_instances(), document->source_path(), selected,
-                            main_is_collision ? document.get() : collision_document.get(),
-                            main_is_collision, collision_status);
-                        ImGui::EndTabItem();
-                    }
-                    if (ImGui::BeginTabItem("Raw record")) {
-                        draw_hex(*document, instance->offset, instance->physical_size);
-                        ImGui::EndTabItem();
-                    }
-                    ImGui::EndTabBar();
-                }
+                            selected_instance->maximum_visibility_distance,
+                            selected_instance->minimum_visibility_distance, selected_instance->visibility_fade_range);
+                ImGui::Text("Matrix flags: 0x%08X", selected_instance->matrix_flags);
+                ImGui::Text("Rotation: [%.5g %.5g %.5g]", selected_instance->rotation[0],
+                            selected_instance->rotation[1], selected_instance->rotation[2]);
+                ImGui::Text("          [%.5g %.5g %.5g]", selected_instance->rotation[3],
+                            selected_instance->rotation[4], selected_instance->rotation[5]);
+                ImGui::Text("          [%.5g %.5g %.5g]", selected_instance->rotation[6],
+                            selected_instance->rotation[7], selected_instance->rotation[8]);
+                draw_hex(*document, selected_instance->offset, selected_instance->physical_size);
             } else {
-                ImGui::TextDisabled("Select a chunk or CSF scene instance to inspect it.");
+                ImGui::TextDisabled("Select a chunk or scene instance to inspect it.");
             }
             ImGui::EndChild();
+
+            if (inspector_width > 0.0F) {
+                ImGui::SameLine();
+                ImGui::BeginChild("selection_inspector", {0.0F, 0.0F}, ImGuiChildFlags_Borders);
+                if (workspace == Workspace::scene) {
+                    if (ImGui::Button("Selection", {110.0F, 0.0F}))
+                        show_viewport_tools = false;
+                    ImGui::SameLine();
+                    if (ImGui::Button("Viewport tools", {130.0F, 0.0F}))
+                        show_viewport_tools = true;
+                    ImGui::SameLine();
+                    if (ImGui::Button("Close", {-1.0F, 0.0F})) {
+                        show_inspector = false;
+                        show_viewport_tools = false;
+                    }
+                    ImGui::Separator();
+                }
+                if (show_viewport_tools && workspace == Workspace::scene) {
+                    geometry_preview.draw_scene_tools(collision_status);
+                } else {
+                    ImGui::SeparatorText("Selection");
+                    if (selected_chunk) {
+                        ImGui::TextWrapped("%s", rws::chunk_name(selected_chunk->type).data());
+                        ImGui::TextDisabled("Type 0x%08X", selected_chunk->type);
+                        ImGui::Text("Offset  0x%llX", static_cast<unsigned long long>(selected_chunk->offset));
+                        ImGui::Text("Size    %u bytes", selected_chunk->declared_size);
+                        if (const auto name = display_names.find(selected_chunk->offset); name != display_names.end())
+                            ImGui::TextWrapped("Name    %s", name->second.c_str());
+                    } else if (selected_instance) {
+                        ImGui::TextWrapped("%s", selected_instance->prototype_name.empty()
+                                                     ? "Unnamed scene instance"
+                                                     : selected_instance->prototype_name.c_str());
+                        ImGui::Text("Prototype %u", selected_instance->prototype_id);
+                        ImGui::Text("Instance  %u", selected_instance->instance_id);
+                        ImGui::Text("Position  %.4g, %.4g, %.4g", selected_instance->position.x,
+                                    selected_instance->position.y, selected_instance->position.z);
+                    } else {
+                        ImGui::TextDisabled("Nothing selected");
+                    }
+                    ImGui::Spacing();
+                    if (ImGui::Button("Open full inspector", {-1.0F, 0.0F}))
+                        workspace = Workspace::inspector;
+                    ImGui::SeparatorText("Document");
+                    ImGui::TextWrapped("%s", document->source_path().filename().string().c_str());
+                    ImGui::Text("%zu bytes", document->bytes().size());
+                    ImGui::Text("%zu diagnostics", document->diagnostics().size());
+                    ImGui::TextDisabled("Collision: %s", collision_status.c_str());
+                }
+                ImGui::EndChild();
+            }
+            previous_selection = selected;
         }
+        ImGui::EndChild();
+
+        ImGui::Separator();
+        if (document)
+            ImGui::TextDisabled("%s%s  |  %s  |  %zu chunks  |  %zu scene instances",
+                                document->source_path().filename().string().c_str(), document->dirty() ? " *" : "",
+                                status.c_str(), document->chunks().size(), document->scene_instances().size());
+        else
+          ImGui::TextDisabled("%s", status.c_str());
         ImGui::End();
 
         ImGui::Render();

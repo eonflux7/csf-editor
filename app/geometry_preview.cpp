@@ -9,6 +9,7 @@
 #include <bit>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -477,6 +478,11 @@ void GeometryPreview::clear() {
     collision_diagnostics_.clear();
     collision_surface_labels_.clear();
     collision_source_path_.clear();
+    collision_worlds_.clear();
+    collision_document_ = nullptr;
+    selected_collision_.reset();
+    measurement_a_.reset(); measurement_b_.reset();
+    collision_triangle_mapping_.clear();
     vertices_.clear();
     uv_sets_.clear();
     faces_.clear();
@@ -519,6 +525,7 @@ void GeometryPreview::reset_view() {
     target_yaw_ = yaw_;
     target_pitch_ = pitch_;
     distance_ = std::max(radius_ * 3.0F, 0.01F);
+    orthographic_scale_ = std::max(radius_ * 1.15F, 0.01F);
     pan_x_ = pan_y_ = 0.0F;
     navigation_offset_ = {};
     target_navigation_offset_ = {};
@@ -540,50 +547,29 @@ void GeometryPreview::pan_camera(const float delta_x, const float delta_y) {
 rws::Vec3 GeometryPreview::camera_offset(const float yaw, const float pitch) const {
     const float cy = std::cos(yaw), sy = std::sin(yaw);
     const float cp = std::cos(pitch), sp = std::sin(pitch);
-    const std::array<rws::Vec3, 3> rows = scene_mode_ ?
-        std::array<rws::Vec3, 3>{{{cy, 0, -sy}, {-sp * sy, cp, -sp * cy}, {cp * sy, sp, cp * cy}}} :
-        std::array<rws::Vec3, 3>{{{cy, -sy, 0}, {-sp * sy, -sp * cy, cp}, {cp * sy, cp * cy, sp}}};
-    const rws::Vec3 view_offset{-pan_x_ * distance_,
-                                pan_y_ * distance_,
-                                distance_};
+    const std::array<rws::Vec3, 3> rows =
+        scene_mode_ ? std::array<rws::Vec3, 3>{{{cy, 0, -sy}, {-sp * sy, cp, -sp * cy}, {cp * sy, sp, cp * cy}}}
+                    : std::array<rws::Vec3, 3>{{{cy, -sy, 0}, {-sp * sy, -sp * cy, cp}, {cp * sy, cp * cy, sp}}};
+    const rws::Vec3 view_offset{-pan_x_ * distance_, pan_y_ * distance_, distance_};
     return {rows[0].x * view_offset.x + rows[1].x * view_offset.y + rows[2].x * view_offset.z,
             rows[0].y * view_offset.x + rows[1].y * view_offset.y + rows[2].y * view_offset.z,
             rows[0].z * view_offset.x + rows[1].z * view_offset.y + rows[2].z * view_offset.z};
 }
 
-std::optional<std::uint64_t> GeometryPreview::pick_scene(const float mouse_x,
-                                                         const float mouse_y) const {
-    if (!scene_mode_ || canvas_width_ <= 0.0F || canvas_height_ <= 0.0F) return std::nullopt;
-    const float ndc_x = 2.0F * (mouse_x - canvas_x_) / canvas_width_ - 1.0F;
-    const float ndc_y = 1.0F - 2.0F * (mouse_y - canvas_y_) / canvas_height_;
-    const float aspect = canvas_width_ / canvas_height_;
-    constexpr float tan_half_fov = 0.46630766F; // tan(25 degrees)
-    rws::Vec3 view_direction{ndc_x * aspect * tan_half_fov, ndc_y * tan_half_fov, -1.0F};
-    const float view_length = std::sqrt(view_direction.x * view_direction.x +
-        view_direction.y * view_direction.y + 1.0F);
-    view_direction.x /= view_length; view_direction.y /= view_length;
-    view_direction.z /= view_length;
-
-    const float cy = std::cos(yaw_), sy = std::sin(yaw_);
-    const float cp = std::cos(pitch_), sp = std::sin(pitch_);
-    const std::array<rws::Vec3, 3> rows = scene_mode_ ?
-        std::array<rws::Vec3, 3>{{{cy, 0, -sy}, {-sp * sy, cp, -sp * cy}, {cp * sy, sp, cp * cy}}} :
-        std::array<rws::Vec3, 3>{{{cy, -sy, 0}, {-sp * sy, -sp * cy, cp}, {cp * sy, cp * cy, sp}}};
-    auto inverse_rotate = [&](const rws::Vec3 value) {
-        return rws::Vec3{rows[0].x * value.x + rows[1].x * value.y + rows[2].x * value.z,
-                         rows[0].y * value.x + rows[1].y * value.y + rows[2].y * value.z,
-                         rows[0].z * value.x + rows[1].z * value.y + rows[2].z * value.z};
-    };
-    const auto camera_from_target = camera_offset(yaw_, pitch_);
-    const rws::Vec3 origin{center_.x + navigation_offset_.x + camera_from_target.x,
-                           center_.y + navigation_offset_.y + camera_from_target.y,
-                           center_.z + navigation_offset_.z + camera_from_target.z};
-    const auto direction = inverse_rotate(view_direction);
+std::optional<std::uint64_t> GeometryPreview::pick_scene(const float mouse_x, const float mouse_y) const {
+    if (!scene_mode_ || canvas_width_ <= 0.0F || canvas_height_ <= 0.0F)
+        return std::nullopt;
+    const auto ray = viewport_ray(mouse_x, mouse_y);
+    if (!ray)
+        return std::nullopt;
+    const auto origin = ray->origin;
+    const auto direction = ray->direction;
 
     float closest = std::numeric_limits<float>::max();
     std::optional<std::uint64_t> result;
     for (const auto& batch : draw_batches_) {
-        if (batch.layer == PreviewLayer::collision_world || !show_visual_) continue;
+        if (batch.layer == PreviewLayer::collision_world || !show_visual_)
+            continue;
         const auto end = static_cast<std::size_t>(batch.first) + batch.count;
         for (std::size_t i = batch.first; i + 2 < end; i += 3) {
             const auto& a = gpu_vertices_[i];
@@ -595,20 +581,22 @@ std::optional<std::uint64_t> GeometryPreview::pick_scene(const float mouse_x,
                               direction.z * edge2.x - direction.x * edge2.z,
                               direction.x * edge2.y - direction.y * edge2.x};
             const float determinant = edge1.x * p.x + edge1.y * p.y + edge1.z * p.z;
-            if (std::abs(determinant) < 0.000001F) continue;
+            if (std::abs(determinant) < 0.000001F)
+                continue;
             const float inverse_determinant = 1.0F / determinant;
             const rws::Vec3 offset{origin.x - a.x, origin.y - a.y, origin.z - a.z};
             const float u = (offset.x * p.x + offset.y * p.y + offset.z * p.z) * inverse_determinant;
-            if (u < 0.0F || u > 1.0F) continue;
-            const rws::Vec3 q{offset.y * edge1.z - offset.z * edge1.y,
-                              offset.z * edge1.x - offset.x * edge1.z,
+            if (u < 0.0F || u > 1.0F)
+                continue;
+            const rws::Vec3 q{offset.y * edge1.z - offset.z * edge1.y, offset.z * edge1.x - offset.x * edge1.z,
                               offset.x * edge1.y - offset.y * edge1.x};
-            const float v = (direction.x * q.x + direction.y * q.y + direction.z * q.z) *
-                inverse_determinant;
-            if (v < 0.0F || u + v > 1.0F) continue;
-            const float distance = (edge2.x * q.x + edge2.y * q.y + edge2.z * q.z) *
-                inverse_determinant;
-            if (distance > 0.0F && distance < closest) {
+            const float v = (direction.x * q.x + direction.y * q.y + direction.z * q.z) * inverse_determinant;
+            if (v < 0.0F || u + v > 1.0F)
+                continue;
+            const float distance = (edge2.x * q.x + edge2.y * q.y + edge2.z * q.z) * inverse_determinant;
+            const rws::Vec3 hit_position{origin.x + direction.x * distance, origin.y + direction.y * distance,
+                                         origin.z + direction.z * distance};
+            if (distance > 0.0F && distance < closest && rws::collision_point_visible(hit_position, clips_)) {
                 closest = distance;
                 result = batch.owner_offset;
             }
@@ -617,34 +605,118 @@ std::optional<std::uint64_t> GeometryPreview::pick_scene(const float mouse_x,
     return result;
 }
 
+std::optional<rws::CollisionRay> GeometryPreview::viewport_ray(const float mouse_x, const float mouse_y) const {
+    if (!scene_mode_ || canvas_width_ <= 0 || canvas_height_ <= 0)
+        return std::nullopt;
+    const float x = 2.0F * (mouse_x - canvas_x_) / canvas_width_ - 1.0F;
+    const float y = 1.0F - 2.0F * (mouse_y - canvas_y_) / canvas_height_;
+    const float aspect = canvas_width_ / canvas_height_;
+    const rws::Vec3 target{center_.x + navigation_offset_.x, center_.y + navigation_offset_.y,
+                           center_.z + navigation_offset_.z};
+    if (projection_ != 0) {
+        const float horizontal = (x * aspect - pan_x_) * orthographic_scale_;
+        const float vertical = (y + pan_y_) * orthographic_scale_;
+        if (projection_ == 1) // Top: source Y is vertical; screen is X/Z.
+            return rws::CollisionRay{{target.x + horizontal, target.y + distance_, target.z + vertical}, {0, -1, 0}};
+        if (projection_ == 2)
+            return rws::CollisionRay{{target.x + horizontal, target.y + vertical, target.z + distance_}, {0, 0, -1}};
+        return rws::CollisionRay{{target.x + distance_, target.y + vertical, target.z - horizontal}, {-1, 0, 0}};
+    }
+    constexpr float tan_half_fov = 0.46630766F;
+    rws::Vec3 view{x * aspect * tan_half_fov, y * tan_half_fov, -1};
+    const float length = std::sqrt(view.x * view.x + view.y * view.y + 1);
+    view = {view.x / length, view.y / length, view.z / length};
+    const float cy = std::cos(yaw_), sy = std::sin(yaw_), cp = std::cos(pitch_), sp = std::sin(pitch_);
+    const std::array<rws::Vec3, 3> rows{{{cy, 0, -sy}, {-sp * sy, cp, -sp * cy}, {cp * sy, sp, cp * cy}}};
+    const auto inverse = [&](const rws::Vec3 v) {
+        return rws::Vec3{rows[0].x * v.x + rows[1].x * v.y + rows[2].x * v.z,
+                         rows[0].y * v.x + rows[1].y * v.y + rows[2].y * v.z,
+                         rows[0].z * v.x + rows[1].z * v.y + rows[2].z * v.z};
+    };
+    const auto offset = camera_offset(yaw_, pitch_);
+    return rws::CollisionRay{{target.x + offset.x, target.y + offset.y, target.z + offset.z}, inverse(view)};
+}
+
+std::optional<rws::CollisionHit> GeometryPreview::pick_collision(const float mouse_x, const float mouse_y) const {
+    if (!show_collision_ || !collision_document_)
+        return std::nullopt;
+    const auto ray = viewport_ray(mouse_x, mouse_y);
+    if (!ray)
+        return std::nullopt;
+    return rws::pick_collision_worlds(collision_worlds_, collision_document_->bytes(), *ray, clips_);
+}
+
+std::optional<ImVec2> GeometryPreview::project_point(const rws::Vec3 point) const {
+    if (canvas_width_ <= 0 || canvas_height_ <= 0)
+        return std::nullopt;
+    const float yaw = projection_ == 3 ? 1.57079632679F : (projection_ == 0 ? yaw_ : 0.0F);
+    const float pitch = projection_ == 1 ? -1.57079632679F : (projection_ == 0 ? pitch_ : 0.0F);
+    const float cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch);
+    const rws::Vec3 p{point.x - center_.x - navigation_offset_.x, point.y - center_.y - navigation_offset_.y,
+                      point.z - center_.z - navigation_offset_.z};
+    const float rx = cy * p.x - sy * p.z, rz = sy * p.x + cy * p.z;
+    const float view_scale = projection_ == 0 ? distance_ : orthographic_scale_;
+    const rws::Vec3 view{rx + pan_x_ * view_scale, cp * p.y - sp * rz - pan_y_ * view_scale,
+                         sp * p.y + cp * rz - distance_};
+    const float aspect = canvas_width_ / canvas_height_;
+    float nx{}, ny{};
+    if (projection_ == 0) {
+        if (view.z >= -0.001F)
+            return std::nullopt;
+        const float f = 1.0F / 0.46630766F;
+        nx = view.x * f / (aspect * -view.z);
+        ny = view.y * f / -view.z;
+    } else {
+        nx = view.x / (orthographic_scale_ * aspect);
+        ny = view.y / orthographic_scale_;
+    }
+    if (!std::isfinite(nx) || !std::isfinite(ny))
+        return std::nullopt;
+    return ImVec2{canvas_x_ + (nx + 1) * 0.5F * canvas_width_, canvas_y_ + (1 - ny) * 0.5F * canvas_height_};
+}
+
 void GeometryPreview::update_keyboard_navigation() {
     const auto& io = ImGui::GetIO();
     const bool hovered = ImGui::IsItemHovered();
-    const bool fast = hovered &&
-        (ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift));
+    const bool fast = hovered && (ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift));
     // Distance-scaled movement gives level overview speed while zoomed out and
     // precise building/interior movement up close. Keep only a tiny world-scale
     // floor so a near-zero camera distance can never stall navigation entirely.
     const float speed_floor = scene_mode_ ? radius_ * 0.00005F : radius_ * 0.002F;
-    const float speed = std::max(distance_ * 0.35F, std::max(speed_floor, 0.01F)) *
-        navigation_speed_ * (fast ? 4.0F : 1.0F) * io.DeltaTime;
+    const float navigation_scale = projection_ == 0 ? distance_ : orthographic_scale_;
+    const float speed = std::max(navigation_scale * 0.35F, std::max(speed_floor, 0.01F)) * navigation_speed_ *
+                        (fast ? 4.0F : 1.0F) * io.DeltaTime;
     const float cy = std::cos(yaw_), sy = std::sin(yaw_);
-    const rws::Vec3 forward = scene_mode_ ? rws::Vec3{-sy, 0.0F, -cy} :
-                                                   rws::Vec3{-sy, -cy, 0.0F};
-    const rws::Vec3 right = scene_mode_ ? rws::Vec3{cy, 0.0F, -sy} :
-                                                 rws::Vec3{cy, -sy, 0.0F};
+    rws::Vec3 forward = scene_mode_ ? rws::Vec3{-sy, 0.0F, -cy} : rws::Vec3{-sy, -cy, 0.0F};
+    rws::Vec3 right = scene_mode_ ? rws::Vec3{cy, 0.0F, -sy} : rws::Vec3{cy, -sy, 0.0F};
+    if (scene_mode_ && projection_ == 1) {
+        forward = {0.0F, 0.0F, 1.0F};
+        right = {1.0F, 0.0F, 0.0F};
+    } else if (scene_mode_ && projection_ == 2) {
+        forward = {0.0F, 1.0F, 0.0F};
+        right = {1.0F, 0.0F, 0.0F};
+    } else if (scene_mode_ && projection_ == 3) {
+        forward = {0.0F, 1.0F, 0.0F};
+        right = {0.0F, 0.0F, -1.0F};
+    }
     auto move = [&](const rws::Vec3 direction, const float amount) {
         target_navigation_offset_.x += direction.x * amount;
         target_navigation_offset_.y += direction.y * amount;
         target_navigation_offset_.z += direction.z * amount;
     };
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_W)) move(forward, speed);
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_S)) move(forward, -speed);
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_D)) move(right, speed);
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_A)) move(right, -speed);
+    if (hovered && ImGui::IsKeyDown(ImGuiKey_W))
+        move(forward, speed);
+    if (hovered && ImGui::IsKeyDown(ImGuiKey_S))
+        move(forward, -speed);
+    if (hovered && ImGui::IsKeyDown(ImGuiKey_D))
+        move(right, speed);
+    if (hovered && ImGui::IsKeyDown(ImGuiKey_A))
+        move(right, -speed);
     const rws::Vec3 up = scene_mode_ ? rws::Vec3{0, 1, 0} : rws::Vec3{0, 0, 1};
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_E)) move(up, speed);
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_Q)) move(up, -speed);
+    if (hovered && ImGui::IsKeyDown(ImGuiKey_E))
+        move(up, speed);
+    if (hovered && ImGui::IsKeyDown(ImGuiKey_Q))
+        move(up, -speed);
 
     const float rotation_alpha = 1.0F - std::exp(-18.0F * std::min(io.DeltaTime, 0.1F));
     const auto old_camera_offset = camera_offset(yaw_, pitch_);
@@ -652,17 +724,15 @@ void GeometryPreview::update_keyboard_navigation() {
     pitch_ += (target_pitch_ - pitch_) * rotation_alpha;
     if (preserve_camera_position_) {
         const auto new_camera_offset = camera_offset(yaw_, pitch_);
-        const rws::Vec3 correction{old_camera_offset.x - new_camera_offset.x,
-                                  old_camera_offset.y - new_camera_offset.y,
-                                  old_camera_offset.z - new_camera_offset.z};
+        const rws::Vec3 correction{old_camera_offset.x - new_camera_offset.x, old_camera_offset.y - new_camera_offset.y,
+                                   old_camera_offset.z - new_camera_offset.z};
         navigation_offset_.x += correction.x;
         navigation_offset_.y += correction.y;
         navigation_offset_.z += correction.z;
         target_navigation_offset_.x += correction.x;
         target_navigation_offset_.y += correction.y;
         target_navigation_offset_.z += correction.z;
-        if (std::abs(target_yaw_ - yaw_) < 0.0001F &&
-            std::abs(target_pitch_ - pitch_) < 0.0001F)
+        if (std::abs(target_yaw_ - yaw_) < 0.0001F && std::abs(target_pitch_ - pitch_) < 0.0001F)
             preserve_camera_position_ = false;
     }
     const float movement_alpha = 1.0F - std::exp(-12.0F * std::min(io.DeltaTime, 0.1F));
@@ -1253,30 +1323,32 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                 struct SectorTriangle { std::array<std::uint16_t, 3> vertices; std::uint16_t material; };
                 std::vector<SectorTriangle> sector_triangles;
                 sector_triangles.reserve(static_cast<std::size_t>(triangle_count));
-                for (std::int32_t i = 0; i < triangle_count; ++i) {
+                for (std::int32_t i = 0; i < triangle_count; ++i)
+                {
                     const auto triangle = rws::decode_recovered_world_triangle(recovered_sector, i, bytes);
-                    if (triangle) sector_triangles.push_back({triangle.value->vertices,
-                                                              triangle.value->material});
+                    if (triangle)
+                        sector_triangles.push_back({triangle.value->vertices, triangle.value->material});
                 }
                 std::stable_sort(sector_triangles.begin(), sector_triangles.end(),
-                    [](const auto& left, const auto& right) { return left.material < right.material; });
-                for (const auto& triangle : sector_triangles) {
+                                 [](const auto &left, const auto &right) { return left.material < right.material; });
+                for (const auto &triangle : sector_triangles)
+                {
                     if (triangle.vertices[0] >= sector_vertices.size() ||
                         triangle.vertices[1] >= sector_vertices.size() ||
-                        triangle.vertices[2] >= sector_vertices.size()) continue;
+                        triangle.vertices[2] >= sector_vertices.size())
+                        continue;
                     const auto local_material = std::clamp<std::int64_t>(
-                        static_cast<std::int64_t>(recovered_sector.material_window_base) + triangle.material,
-                        0, static_cast<std::int64_t>(material_count - 1));
+                        static_cast<std::int64_t>(recovered_sector.material_window_base) + triangle.material, 0,
+                        static_cast<std::int64_t>(material_count - 1));
                     const auto global_material = material_base + static_cast<std::size_t>(local_material);
                     if (draw_batches_.empty() || draw_batches_.back().material != global_material ||
                         draw_batches_.back().owner_offset != world_chunk->offset)
                     {
-                        const auto& texture_name = material_texture_names_[global_material];
-                        const bool floor_material = texture_name.size() >= 4 &&
-                            texture_name.compare(0, 4, "FFLR") == 0;
+                        const auto &texture_name = material_texture_names_[global_material];
+                        const bool floor_material = texture_name.size() >= 4 && texture_name.compare(0, 4, "FFLR") == 0;
                         draw_batches_.push_back({static_cast<std::uint16_t>(global_material),
-                            static_cast<std::uint32_t>(gpu_vertices_.size()), 0,
-                            world_chunk->offset, floor_material, PreviewLayer::visual_world});
+                                                 static_cast<std::uint32_t>(gpu_vertices_.size()), 0,
+                                                 world_chunk->offset, floor_material, PreviewLayer::visual_world});
                     }
                     const auto& a = sector_vertices[triangle.vertices[0]];
                     const auto& b = sector_vertices[triangle.vertices[1]];
@@ -1285,19 +1357,24 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                     float ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
                     float nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
                     const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
-                    if (length > 0.0F) { nx /= length; ny /= length; nz /= length; }
+                    if (length > 0.0F) {
+                        nx /= length;
+                        ny /= length;
+                        nz /= length;
+                    }
                     for (const auto index : triangle.vertices) {
                         const auto& vertex = sector_vertices[index];
-                        const auto base = uv_sets > 0 ? recovered_sector.texcoord_offsets[0] +
-                            static_cast<std::uint64_t>(index) * 8U : 0U;
-                        const auto lightmap = uv_sets > 1 ? recovered_sector.texcoord_offsets[1] +
-                            static_cast<std::uint64_t>(index) * 8U : 0U;
+                        const auto base =
+                            uv_sets > 0 ? recovered_sector.texcoord_offsets[0] + static_cast<std::uint64_t>(index) * 8U
+                                        : 0U;
+                        const auto lightmap =
+                            uv_sets > 1 ? recovered_sector.texcoord_offsets[1] + static_cast<std::uint64_t>(index) * 8U
+                                        : 0U;
                         const Uv base_uv = base ? Uv{read_f32(bytes, base), read_f32(bytes, base + 4)} : Uv{};
-                        const Uv lightmap_uv = lightmap ?
-                            Uv{read_f32(bytes, lightmap), read_f32(bytes, lightmap + 4)} : Uv{};
-                        gpu_vertices_.push_back({vertex.x, vertex.y, vertex.z,
-                            base_uv.u, base_uv.v, lightmap_uv.u, lightmap_uv.v,
-                            lightmap_uv.u, lightmap_uv.v, nx, ny, nz, index});
+                        const Uv lightmap_uv =
+                            lightmap ? Uv{read_f32(bytes, lightmap), read_f32(bytes, lightmap + 4)} : Uv{};
+                        gpu_vertices_.push_back({vertex.x, vertex.y, vertex.z, base_uv.u, base_uv.v, lightmap_uv.u,
+                                                 lightmap_uv.v, lightmap_uv.u, lightmap_uv.v, nx, ny, nz, index});
                     }
                     faces_.push_back({});
                     draw_batches_.back().count += 3;
@@ -1311,157 +1388,217 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
     if (!vertices_.empty()) {
         visual_center_ = {(minimum.x + maximum.x) * 0.5F, (minimum.y + maximum.y) * 0.5F,
                           (minimum.z + maximum.z) * 0.5F};
-        const auto dx = maximum.x - minimum.x, dy = maximum.y - minimum.y,
-                   dz = maximum.z - minimum.z;
+        const auto dx = maximum.x - minimum.x, dy = maximum.y - minimum.y, dz = maximum.z - minimum.z;
         visual_radius_ = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 0.001F);
     }
 
     auto append_collision = [&](const rws::Document& collision) {
-        const auto collision_worlds = rws::recover_worlds(collision.chunks(), collision.bytes());
-        if (collision_worlds.empty()) {
+        collision_document_ = &collision;
+        collision_worlds_ = rws::recover_worlds(collision.chunks(), collision.bytes());
+        if (collision_worlds_.empty()) {
             collision_diagnostics_.emplace_back("Collision document has no World");
             return;
         }
-        const auto& recovered = collision_worlds.front();
-        collision_recovery_status_ = recovered.status;
-        collision_declared_sector_count_ = recovered.header.world_sector_count;
-        collision_sector_count_ = recovered.sectors.size();
-        collision_triangle_count_ = static_cast<std::size_t>(recovered.recovered_triangles);
-        collision_material_count_ = static_cast<std::size_t>(std::max(0, recovered.material_count));
-        collision_diagnostics_ = recovered.diagnostics;
         collision_source_path_ = collision.source_path();
-        collision_center_ = {(recovered.header.bounding_box_inf.x + recovered.header.bounding_box_sup.x) * 0.5F,
-                             (recovered.header.bounding_box_inf.y + recovered.header.bounding_box_sup.y) * 0.5F,
-                             (recovered.header.bounding_box_inf.z + recovered.header.bounding_box_sup.z) * 0.5F};
-        const auto collision_dx = recovered.header.bounding_box_sup.x - recovered.header.bounding_box_inf.x;
-        const auto collision_dy = recovered.header.bounding_box_sup.y - recovered.header.bounding_box_inf.y;
-        const auto collision_dz = recovered.header.bounding_box_sup.z - recovered.header.bounding_box_inf.z;
-        collision_radius_ = std::max(0.5F * std::sqrt(collision_dx * collision_dx +
-            collision_dy * collision_dy + collision_dz * collision_dz), 0.001F);
-        const auto collision_world = std::find_if(collision.chunks().begin(), collision.chunks().end(),
-            [&](const rws::Chunk& chunk) { return chunk.type == 0x0B && chunk.offset == recovered.world_offset; });
-        if (collision_world == collision.chunks().end() || recovered.sectors.empty()) return;
+        collision_surface_labels_.resize(collision_worlds_.size());
+        rws::Vec3 collision_minimum{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                                    std::numeric_limits<float>::max()};
+        rws::Vec3 collision_maximum{std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                                    std::numeric_limits<float>::lowest()};
+        bool have_collision_bounds = false;
+        collision_recovery_status_ = rws::WorldRecoveryStatus::complete;
 
-        const auto material_base = material_colors_.size();
-        const auto material_count = std::max<std::size_t>(1U, collision_material_count_);
-        material_colors_.resize(material_base + material_count);
-        material_textures_.resize(material_base + material_count);
-        material_lightmap_textures_.resize(material_base + material_count);
-        material_texture_names_.resize(material_base + material_count);
-        material_lightmap_texture_names_.resize(material_base + material_count);
-        collision_surface_labels_.assign(material_count, "Unknown");
-        for (std::size_t slot = 0; slot < material_count; ++slot)
-            material_colors_[material_base + slot] = collision_surface_color({}, static_cast<std::uint16_t>(slot));
+        for (std::size_t world_index = 0; world_index < collision_worlds_.size(); ++world_index) {
+            const auto& recovered = collision_worlds_[world_index];
+            if (recovered.status == rws::WorldRecoveryStatus::failed)
+                collision_recovery_status_ = rws::WorldRecoveryStatus::failed;
+            else if (recovered.status == rws::WorldRecoveryStatus::partial &&
+                     collision_recovery_status_ == rws::WorldRecoveryStatus::complete)
+                collision_recovery_status_ = rws::WorldRecoveryStatus::partial;
+            collision_declared_sector_count_ += recovered.header.world_sector_count;
+            collision_sector_count_ += recovered.sectors.size();
+            collision_triangle_count_ +=
+                static_cast<std::size_t>(std::max<std::int64_t>(0, recovered.recovered_triangles));
+            collision_material_count_ += static_cast<std::size_t>(std::max(0, recovered.material_count));
+            for (const auto& diagnostic : recovered.diagnostics) {
+                collision_diagnostics_.push_back(collision_worlds_.size() == 1
+                                                     ? diagnostic
+                                                     : "World " + std::to_string(world_index) + ": " + diagnostic);
+            }
 
-        if (const auto* list_chunk = rws::find_child(*collision_world, 0x08)) {
-            const auto list = rws::decode_material_list(*list_chunk, collision.bytes());
-            std::vector<const rws::Chunk*> materials;
-            for (const auto& child : list_chunk->children)
-                if (child.type == 0x07) materials.push_back(&child);
-            std::size_t next_material{};
-            for (std::size_t slot = 0; list && slot < material_count; ++slot) {
-                const auto remap = list.value->remap[slot];
-                if (remap >= 0 && static_cast<std::size_t>(remap) < slot) {
-                    material_colors_[material_base + slot] = material_colors_[material_base + remap];
-                    collision_surface_labels_[slot] = collision_surface_labels_[remap];
-                    continue;
+            const auto collision_world =
+                std::find_if(collision.chunks().begin(), collision.chunks().end(), [&](const rws::Chunk& chunk) {
+                    return chunk.type == 0x0B && chunk.offset == recovered.world_offset;
+                });
+            if (collision_world == collision.chunks().end() || recovered.sectors.empty())
+                continue;
+
+            const auto material_base = material_colors_.size();
+            const auto material_count =
+                std::max<std::size_t>(1U, static_cast<std::size_t>(std::max(0, recovered.material_count)));
+            material_colors_.resize(material_base + material_count);
+            material_textures_.resize(material_base + material_count);
+            material_lightmap_textures_.resize(material_base + material_count);
+            material_texture_names_.resize(material_base + material_count);
+            material_lightmap_texture_names_.resize(material_base + material_count);
+            auto& surface_labels = collision_surface_labels_[world_index];
+            surface_labels.assign(material_count, "Unknown");
+            for (std::size_t slot = 0; slot < material_count; ++slot)
+                material_colors_[material_base + slot] = collision_surface_color({}, static_cast<std::uint16_t>(slot));
+
+            if (const auto* list_chunk = rws::find_child(*collision_world, 0x08)) {
+                const auto list = rws::decode_material_list(*list_chunk, collision.bytes());
+                std::vector<const rws::Chunk*> materials;
+                for (const auto& child : list_chunk->children)
+                    if (child.type == 0x07)
+                        materials.push_back(&child);
+                std::size_t next_material{};
+                for (std::size_t slot = 0; list && slot < material_count; ++slot) {
+                    const auto remap = list.value->remap[slot];
+                    if (remap >= 0 && static_cast<std::size_t>(remap) < slot) {
+                        material_colors_[material_base + slot] = material_colors_[material_base + remap];
+                        surface_labels[slot] = surface_labels[remap];
+                        continue;
+                    }
+                    if (next_material >= materials.size())
+                        continue;
+                    const auto* extension = rws::find_child(*materials[next_material++], 0x03);
+                    const auto* pyro = extension ? rws::find_child(*extension, 0xFFFFFF00U) : nullptr;
+                    const auto metadata = pyro ? rws::decode_pyro_extension(*pyro, 0x07, collision.bytes())
+                                               : rws::DecodeResult<rws::PyroExtensionInfo>{};
+                    if (!metadata)
+                        continue;
+                    const auto name = std::string(metadata.value->object_name());
+                    const auto surface = metadata.value->material_surface_type();
+                    surface_labels[slot] = name.empty() ? "Unknown" : name;
+                    if (surface)
+                        surface_labels[slot] += " (ID " + std::to_string(*surface) + ')';
+                    material_colors_[material_base + slot] =
+                        collision_surface_color(name, static_cast<std::uint16_t>(slot));
                 }
-                if (next_material >= materials.size()) continue;
-                const auto* extension = rws::find_child(*materials[next_material++], 0x03);
-                const auto* pyro = extension ? rws::find_child(*extension, 0xFFFFFF00U) : nullptr;
-                const auto metadata = pyro ? rws::decode_pyro_extension(*pyro, 0x07, collision.bytes()) :
-                    rws::DecodeResult<rws::PyroExtensionInfo>{};
-                if (!metadata) continue;
-                const auto name = std::string(metadata.value->object_name());
-                const auto surface = metadata.value->material_surface_type();
-                collision_surface_labels_[slot] = name.empty() ? "Unknown" : name;
-                if (surface) collision_surface_labels_[slot] += " (ID " + std::to_string(*surface) + ')';
-                material_colors_[material_base + slot] =
-                    collision_surface_color(name, static_cast<std::uint16_t>(slot));
+            }
+
+            for (const auto& sector : recovered.sectors) {
+                std::vector<rws::Vec3> sector_vertices;
+                sector_vertices.reserve(static_cast<std::size_t>(sector.vertex_count));
+                for (std::int32_t i = 0; i < sector.vertex_count; ++i) {
+                    const auto offset = sector.vertices_offset + static_cast<std::uint64_t>(i) * 12U;
+                    const rws::Vec3 vertex{read_f32(collision.bytes(), offset),
+                                           read_f32(collision.bytes(), offset + 4U),
+                                           read_f32(collision.bytes(), offset + 8U)};
+                    sector_vertices.push_back(vertex);
+                    vertices_.push_back(vertex);
+                    have_collision_bounds = true;
+                    collision_minimum.x = std::min(collision_minimum.x, vertex.x);
+                    collision_minimum.y = std::min(collision_minimum.y, vertex.y);
+                    collision_minimum.z = std::min(collision_minimum.z, vertex.z);
+                    collision_maximum.x = std::max(collision_maximum.x, vertex.x);
+                    collision_maximum.y = std::max(collision_maximum.y, vertex.y);
+                    collision_maximum.z = std::max(collision_maximum.z, vertex.z);
+                    minimum.x = std::min(minimum.x, vertex.x);
+                    minimum.y = std::min(minimum.y, vertex.y);
+                    minimum.z = std::min(minimum.z, vertex.z);
+                    maximum.x = std::max(maximum.x, vertex.x);
+                    maximum.y = std::max(maximum.y, vertex.y);
+                    maximum.z = std::max(maximum.z, vertex.z);
+                }
+                struct CollisionTriangle {
+                    std::array<std::uint16_t, 3> vertices;
+                    std::uint16_t material;
+                    std::int32_t source;
+                };
+                std::vector<CollisionTriangle> triangles;
+                for (std::int32_t i = 0; i < sector.triangle_count; ++i) {
+                    const auto decoded_triangle = rws::decode_recovered_world_triangle(sector, i, collision.bytes());
+                    if (!decoded_triangle)
+                        continue;
+                    const auto resolved =
+                        static_cast<std::int64_t>(sector.material_window_base) + decoded_triangle.value->material;
+                    if (decoded_triangle.value->vertices[0] >= sector_vertices.size() ||
+                        decoded_triangle.value->vertices[1] >= sector_vertices.size() ||
+                        decoded_triangle.value->vertices[2] >= sector_vertices.size() || resolved < 0 ||
+                        resolved >= static_cast<std::int64_t>(material_count))
+                        continue;
+                    triangles.push_back({decoded_triangle.value->vertices, static_cast<std::uint16_t>(resolved), i});
+                }
+                std::stable_sort(triangles.begin(), triangles.end(),
+                                 [](const auto& left, const auto& right) { return left.material < right.material; });
+                for (const auto& triangle : triangles) {
+                    const auto global_material = material_base + triangle.material;
+                    if (draw_batches_.empty() || draw_batches_.back().material != global_material ||
+                        draw_batches_.back().owner_offset != sector.chunk_offset ||
+                        draw_batches_.back().layer != PreviewLayer::collision_world) {
+                        draw_batches_.push_back({static_cast<std::uint16_t>(global_material),
+                                                 static_cast<std::uint32_t>(gpu_vertices_.size()), 0,
+                                                 sector.chunk_offset, false, PreviewLayer::collision_world, world_index,
+                                                 static_cast<std::size_t>(&sector - recovered.sectors.data())});
+                    }
+                    collision_triangle_mapping_.push_back(
+                        {static_cast<std::uint32_t>(gpu_vertices_.size()), world_index,
+                         static_cast<std::size_t>(&sector - recovered.sectors.data()), triangle.source});
+                    const auto& a = sector_vertices[triangle.vertices[0]];
+                    const auto& b = sector_vertices[triangle.vertices[1]];
+                    const auto& c = sector_vertices[triangle.vertices[2]];
+                    float nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
+                    float ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
+                    float nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+                    const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
+                    if (length > 0.0F) {
+                        nx /= length;
+                        ny /= length;
+                        nz /= length;
+                    }
+                    for (const auto index : triangle.vertices) {
+                        const auto& vertex = sector_vertices[index];
+                        gpu_vertices_.push_back({vertex.x, vertex.y, vertex.z, 0, 0, 0, 0, 0, 0, nx, ny, nz, index});
+                    }
+                    faces_.push_back({});
+                    draw_batches_.back().count += 3;
+                }
             }
         }
-
-        for (const auto& sector : recovered.sectors) {
-            std::vector<rws::Vec3> sector_vertices;
-            sector_vertices.reserve(static_cast<std::size_t>(sector.vertex_count));
-            for (std::int32_t i = 0; i < sector.vertex_count; ++i) {
-                const auto offset = sector.vertices_offset + static_cast<std::uint64_t>(i) * 12U;
-                const rws::Vec3 vertex{read_f32(collision.bytes(), offset),
-                    read_f32(collision.bytes(), offset + 4U), read_f32(collision.bytes(), offset + 8U)};
-                sector_vertices.push_back(vertex);
-                vertices_.push_back(vertex);
-                minimum.x = std::min(minimum.x, vertex.x); minimum.y = std::min(minimum.y, vertex.y);
-                minimum.z = std::min(minimum.z, vertex.z); maximum.x = std::max(maximum.x, vertex.x);
-                maximum.y = std::max(maximum.y, vertex.y); maximum.z = std::max(maximum.z, vertex.z);
-            }
-            struct CollisionTriangle { std::array<std::uint16_t, 3> vertices; std::uint16_t material; };
-            std::vector<CollisionTriangle> triangles;
-            for (std::int32_t i = 0; i < sector.triangle_count; ++i) {
-                const auto decoded_triangle = rws::decode_recovered_world_triangle(sector, i, collision.bytes());
-                if (!decoded_triangle) continue;
-                const auto resolved = static_cast<std::int64_t>(sector.material_window_base) +
-                                      decoded_triangle.value->material;
-                if (decoded_triangle.value->vertices[0] >= sector_vertices.size() ||
-                    decoded_triangle.value->vertices[1] >= sector_vertices.size() ||
-                    decoded_triangle.value->vertices[2] >= sector_vertices.size() ||
-                    resolved < 0 || resolved >= static_cast<std::int64_t>(material_count)) continue;
-                triangles.push_back({decoded_triangle.value->vertices, static_cast<std::uint16_t>(resolved)});
-            }
-            std::stable_sort(triangles.begin(), triangles.end(), [](const auto& left, const auto& right) {
-                return left.material < right.material;
-            });
-            for (const auto& triangle : triangles) {
-                const auto global_material = material_base + triangle.material;
-                if (draw_batches_.empty() || draw_batches_.back().material != global_material ||
-                    draw_batches_.back().owner_offset != sector.chunk_offset ||
-                    draw_batches_.back().layer != PreviewLayer::collision_world) {
-                    draw_batches_.push_back({static_cast<std::uint16_t>(global_material),
-                        static_cast<std::uint32_t>(gpu_vertices_.size()), 0, sector.chunk_offset,
-                        false, PreviewLayer::collision_world});
-                }
-                const auto& a = sector_vertices[triangle.vertices[0]];
-                const auto& b = sector_vertices[triangle.vertices[1]];
-                const auto& c = sector_vertices[triangle.vertices[2]];
-                float nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
-                float ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
-                float nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-                const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
-                if (length > 0.0F) { nx /= length; ny /= length; nz /= length; }
-                for (const auto index : triangle.vertices) {
-                    const auto& vertex = sector_vertices[index];
-                    gpu_vertices_.push_back({vertex.x, vertex.y, vertex.z, 0, 0, 0, 0, 0, 0,
-                                             nx, ny, nz, index});
-                }
-                faces_.push_back({});
-                draw_batches_.back().count += 3;
-            }
+        if (have_collision_bounds)
+        {
+            collision_center_ = {(collision_minimum.x + collision_maximum.x) * 0.5F,
+                                 (collision_minimum.y + collision_maximum.y) * 0.5F,
+                                 (collision_minimum.z + collision_maximum.z) * 0.5F};
+            const auto dx = collision_maximum.x - collision_minimum.x;
+            const auto dy = collision_maximum.y - collision_minimum.y;
+            const auto dz = collision_maximum.z - collision_minimum.z;
+            collision_radius_ = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 0.001F);
         }
     };
 
     visual_material_slot_count_ = material_colors_.size();
-    if (collision_document) append_collision(*collision_document);
-    if (main_is_collision) {
+    if (collision_document)
+        append_collision(*collision_document);
+    if (main_is_collision)
+    {
         show_visual_ = false;
         show_collision_ = true;
-    } else {
+    }
+    else
+    {
         show_visual_ = true;
     }
 
-    if (gpu_vertices_.empty()) {
+    if (gpu_vertices_.empty())
+    {
         error_ = "No renderable standard Clump/Atomic instances were found";
         return false;
     }
-    center_ = {(minimum.x + maximum.x) * 0.5F, (minimum.y + maximum.y) * 0.5F,
-               (minimum.z + maximum.z) * 0.5F};
+    center_ = {(minimum.x + maximum.x) * 0.5F, (minimum.y + maximum.y) * 0.5F, (minimum.z + maximum.z) * 0.5F};
     radius_ = 0.0F;
-    for (const auto& vertex : vertices_) {
+    for (const auto &vertex : vertices_)
+    {
         const auto x = vertex.x - center_.x, y = vertex.y - center_.y, z = vertex.z - center_.z;
         radius_ = std::max(radius_, std::sqrt(x * x + y * y + z * z));
     }
     radius_ = std::max(radius_, 0.001F);
     all_center_ = center_;
     all_radius_ = radius_;
-    if (!create_gpu_resources()) return false;
+    if (!create_gpu_resources())
+        return false;
     reset_view();
     return true;
 }
@@ -1483,14 +1620,16 @@ layout(location=2) in vec2 aLightmapUv;
 layout(location=3) in vec2 aDebugUv;
 layout(location=4) in vec3 aNormal;
 uniform vec3 uCenter;
-uniform float uYaw, uPitch, uDistance;
+uniform float uYaw, uPitch, uDistance, uOrthographicScale;
 uniform vec2 uPan;
 uniform float uAspect, uTanHalfFov, uNear, uFar;
 uniform bool uYUp;
+uniform bool uOrthographic;
 out vec2 vUv;
 out vec2 vLightmapUv;
 out vec2 vDebugUv;
 out vec3 vNormal;
+out vec3 vWorld;
 void main() {
     vec3 p = aPosition - uCenter;
     float cy=cos(uYaw), sy=sin(uYaw), cp=cos(uPitch), sp=sin(uPitch);
@@ -1507,17 +1646,22 @@ void main() {
         vNormal=vec3(nrx, cp*aNormal.z-sp*nry, sp*aNormal.z+cp*nry);
     }
     float f=1.0/uTanHalfFov;
-    gl_Position=vec4(view.x*f/uAspect, view.y*f,
+    if (uOrthographic)
+        gl_Position=vec4(view.x/(uOrthographicScale*uAspect),view.y/uOrthographicScale,
+            ((uFar+uNear)/(uNear-uFar))*view.z+(2.0*uFar*uNear)/(uNear-uFar),1.0);
+    else gl_Position=vec4(view.x*f/uAspect, view.y*f,
         ((uFar+uNear)/(uNear-uFar))*view.z+(2.0*uFar*uNear)/(uNear-uFar), -view.z);
     vUv=aBaseUv;
     vLightmapUv=aLightmapUv;
     vDebugUv=aDebugUv;
+    vWorld=aPosition;
 })GLSL";
     constexpr const char* fragment_source = R"GLSL(#version 330 core
 in vec2 vUv;
 in vec2 vLightmapUv;
 in vec2 vDebugUv;
 in vec3 vNormal;
+in vec3 vWorld;
 uniform sampler2D uTexture;
 uniform sampler2D uLightmapTexture;
 uniform bool uUseTexture;
@@ -1528,8 +1672,15 @@ uniform bool uApplyLighting;
 uniform bool uForceOpaque;
 uniform float uLightmapIntensity;
 uniform vec4 uBaseColor;
+uniform vec4 uClip0, uClip1, uClip2;
 out vec4 FragColor;
+bool clipped(vec4 c) {
+    if (c.x < 0.5) return false;
+    float value=vWorld[int(c.y)];
+    return c.w > 0.0 ? value < c.z : value > c.z;
+}
 void main() {
+    if (clipped(uClip0)||clipped(uClip1)||clipped(uClip2)) discard;
     float light=0.42+0.58*abs(dot(normalize(vNormal), normalize(vec3(0.35,0.55,0.75))));
     vec2 uv=uUseDebugUv ? vDebugUv : vUv;
     vec4 color=uUseTexture ? texture(uTexture,uv) : uBaseColor;
@@ -1558,9 +1709,13 @@ void main() {
         return shader;
     };
     const GLuint vertex_shader = compile(gl_vertex_shader, vertex_source);
-    if (!vertex_shader) return false;
+    if (!vertex_shader)
+        return false;
     const GLuint fragment_shader = compile(gl_fragment_shader, fragment_source);
-    if (!fragment_shader) { gl.delete_shader(vertex_shader); return false; }
+    if (!fragment_shader) {
+        gl.delete_shader(vertex_shader);
+        return false;
+    }
     shader_program_ = gl.create_program();
     gl.attach_shader(shader_program_, vertex_shader);
     gl.attach_shader(shader_program_, fragment_shader);
@@ -1583,7 +1738,8 @@ void main() {
     gl.buffer_data(gl_array_buffer, static_cast<GlSizePtr>(gpu_vertices_.size() * sizeof(GpuVertex)),
                    gpu_vertices_.data(), gl_static_draw);
     gl.enable_vertex_attrib_array(0);
-    gl.vertex_attrib_pointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(GpuVertex), reinterpret_cast<void*>(offsetof(GpuVertex, x)));
+    gl.vertex_attrib_pointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(GpuVertex),
+                             reinterpret_cast<void*>(offsetof(GpuVertex, x)));
     gl.enable_vertex_attrib_array(1);
     gl.vertex_attrib_pointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(GpuVertex),
                              reinterpret_cast<void*>(offsetof(GpuVertex, base_u)));
@@ -1602,20 +1758,23 @@ void main() {
 
 void GeometryPreview::destroy_gpu_resources() {
     auto& gl = gl_api();
-    if (vertex_buffer_ && gl.delete_buffers) gl.delete_buffers(1, &vertex_buffer_);
-    if (vertex_array_ && gl.delete_vertex_arrays) gl.delete_vertex_arrays(1, &vertex_array_);
-    if (shader_program_ && gl.delete_program) gl.delete_program(shader_program_);
+    if (vertex_buffer_ && gl.delete_buffers)
+        gl.delete_buffers(1, &vertex_buffer_);
+    if (vertex_array_ && gl.delete_vertex_arrays)
+        gl.delete_vertex_arrays(1, &vertex_array_);
+    if (shader_program_ && gl.delete_program)
+        gl.delete_program(shader_program_);
     vertex_buffer_ = vertex_array_ = shader_program_ = 0;
 }
 
 void GeometryPreview::render_gpu() {
-    if (!shader_program_ || !vertex_array_ || draw_batches_.empty() ||
-        canvas_width_ < 1.0F || canvas_height_ < 1.0F) return;
+    if (!shader_program_ || !vertex_array_ || draw_batches_.empty() || canvas_width_ < 1.0F || canvas_height_ < 1.0F)
+        return;
     auto& gl = gl_api();
     const auto& io = ImGui::GetIO();
     const int viewport_x = static_cast<int>(canvas_x_ * io.DisplayFramebufferScale.x);
-    const int viewport_y = static_cast<int>((io.DisplaySize.y - canvas_y_ - canvas_height_) *
-                                             io.DisplayFramebufferScale.y);
+    const int viewport_y =
+        static_cast<int>((io.DisplaySize.y - canvas_y_ - canvas_height_) * io.DisplayFramebufferScale.y);
     const int viewport_width = std::max(1, static_cast<int>(canvas_width_ * io.DisplayFramebufferScale.x));
     const int viewport_height = std::max(1, static_cast<int>(canvas_height_ * io.DisplayFramebufferScale.y));
 
@@ -1628,26 +1787,31 @@ void GeometryPreview::render_gpu() {
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
-    if (cull_backfaces_) { glEnable(GL_CULL_FACE); glCullFace(GL_BACK); }
-    else glDisable(GL_CULL_FACE);
+    if (cull_backfaces_) {
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+    } else
+        glDisable(GL_CULL_FACE);
     gl.use_program(shader_program_);
     gl.bind_vertex_array(vertex_array_);
     gl.active_texture(gl_texture0);
 
-    const float pan_world_x = pan_x_ * distance_;
-    const float pan_world_z = -pan_y_ * distance_;
-    const float near_plane = std::max(distance_ * 0.001F,
-        std::max(radius_ * 0.000001F, 0.001F));
-    const float navigation_distance = std::sqrt(navigation_offset_.x * navigation_offset_.x +
-        navigation_offset_.y * navigation_offset_.y + navigation_offset_.z * navigation_offset_.z);
-    const float far_plane = std::max(distance_ + radius_ * 3.0F + navigation_distance,
-                                     near_plane + 1.0F);
-    gl.uniform_3f(gl.get_uniform_location(shader_program_, "uCenter"),
-                  center_.x + navigation_offset_.x, center_.y + navigation_offset_.y,
-                  center_.z + navigation_offset_.z);
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uYaw"), yaw_);
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uPitch"), pitch_);
+    const float view_scale = projection_ == 0 ? distance_ : orthographic_scale_;
+    const float pan_world_x = pan_x_ * view_scale;
+    const float pan_world_z = -pan_y_ * view_scale;
+    const float near_plane = std::max(distance_ * 0.001F, std::max(radius_ * 0.000001F, 0.001F));
+    const float navigation_distance =
+        std::sqrt(navigation_offset_.x * navigation_offset_.x + navigation_offset_.y * navigation_offset_.y +
+                  navigation_offset_.z * navigation_offset_.z);
+    const float far_plane = std::max(distance_ + radius_ * 3.0F + navigation_distance, near_plane + 1.0F);
+    gl.uniform_3f(gl.get_uniform_location(shader_program_, "uCenter"), center_.x + navigation_offset_.x,
+                  center_.y + navigation_offset_.y, center_.z + navigation_offset_.z);
+    const float render_yaw = projection_ == 3 ? 1.57079632679F : (projection_ == 0 ? yaw_ : 0.0F);
+    const float render_pitch = projection_ == 1 ? -1.57079632679F : (projection_ == 0 ? pitch_ : 0.0F);
+    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uYaw"), render_yaw);
+    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uPitch"), render_pitch);
     gl.uniform_1f(gl.get_uniform_location(shader_program_, "uDistance"), distance_);
+    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uOrthographicScale"), orthographic_scale_);
     gl.uniform_2f(gl.get_uniform_location(shader_program_, "uPan"), pan_world_x, pan_world_z);
     gl.uniform_1f(gl.get_uniform_location(shader_program_, "uAspect"),
                   static_cast<float>(viewport_width) / static_cast<float>(viewport_height));
@@ -1656,6 +1820,13 @@ void GeometryPreview::render_gpu() {
     gl.uniform_1f(gl.get_uniform_location(shader_program_, "uNear"), near_plane);
     gl.uniform_1f(gl.get_uniform_location(shader_program_, "uFar"), far_plane);
     gl.uniform_1i(gl.get_uniform_location(shader_program_, "uYUp"), scene_mode_);
+    gl.uniform_1i(gl.get_uniform_location(shader_program_, "uOrthographic"), projection_ != 0);
+    for (std::size_t i = 0; i < clips_.size(); ++i) {
+        const auto name = std::string("uClip") + std::to_string(i);
+        const auto& clip = clips_[i];
+        gl.uniform_4f(gl.get_uniform_location(shader_program_, name.c_str()), clip.enabled ? 1.0F : 0.0F,
+                      static_cast<float>(clip.axis), clip.position, clip.keep_greater ? 1.0F : -1.0F);
+    }
     gl.uniform_1i(gl.get_uniform_location(shader_program_, "uTexture"), 0);
     gl.uniform_1i(gl.get_uniform_location(shader_program_, "uLightmapTexture"), 1);
     const GLint use_texture_location = gl.get_uniform_location(shader_program_, "uUseTexture");
@@ -1672,45 +1843,55 @@ void GeometryPreview::render_gpu() {
         const auto material = batch.material;
         if ((batch.layer == PreviewLayer::collision_world && collision_color_mode_ == 1) ||
             (batch.layer != PreviewLayer::collision_world && view_style_ == 1)) {
-            const auto palette_material = batch.layer == PreviewLayer::collision_world &&
-                    static_cast<std::size_t>(material) >= visual_material_slot_count_ ?
-                static_cast<std::uint16_t>(static_cast<std::size_t>(material) -
-                                           visual_material_slot_count_) : material;
+            const auto palette_material =
+                batch.layer == PreviewLayer::collision_world &&
+                        static_cast<std::size_t>(material) >= visual_material_slot_count_
+                    ? static_cast<std::uint16_t>(static_cast<std::size_t>(material) - visual_material_slot_count_)
+                    : material;
             const auto packed = material_color(palette_material, 1.0F);
-            gl.uniform_4f(base_color_location,
-                static_cast<float>((packed >> IM_COL32_R_SHIFT) & 0xFFU) / 255.0F,
-                static_cast<float>((packed >> IM_COL32_G_SHIFT) & 0xFFU) / 255.0F,
-                static_cast<float>((packed >> IM_COL32_B_SHIFT) & 0xFFU) / 255.0F,
-                batch.layer == PreviewLayer::collision_world ? collision_opacity_ : 1.0F);
+            gl.uniform_4f(base_color_location, static_cast<float>((packed >> IM_COL32_R_SHIFT) & 0xFFU) / 255.0F,
+                          static_cast<float>((packed >> IM_COL32_G_SHIFT) & 0xFFU) / 255.0F,
+                          static_cast<float>((packed >> IM_COL32_B_SHIFT) & 0xFFU) / 255.0F,
+                          batch.layer == PreviewLayer::collision_world ? collision_opacity_ : 1.0F);
             return;
         }
-        if (batch.layer == PreviewLayer::collision_world && collision_color_mode_ == 2) {
+        if (batch.layer == PreviewLayer::collision_world && collision_color_mode_ == 2)
+        {
             gl.uniform_4f(base_color_location, 0.95F, 0.25F, 0.72F, collision_opacity_);
             return;
         }
         const auto index = static_cast<std::size_t>(material);
-        const auto rgba = index < material_colors_.size() ? material_colors_[index] :
-            std::array<std::uint8_t, 4>{190, 190, 190, 255};
-        gl.uniform_4f(base_color_location, rgba[0] / 255.0F, rgba[1] / 255.0F,
-                      rgba[2] / 255.0F, batch.layer == PreviewLayer::collision_world ?
-                          collision_opacity_ : rgba[3] / 255.0F);
+        const auto rgba =
+            index < material_colors_.size() ? material_colors_[index] : std::array<std::uint8_t, 4>{190, 190, 190, 255};
+        gl.uniform_4f(base_color_location, rgba[0] / 255.0F, rgba[1] / 255.0F, rgba[2] / 255.0F,
+                      batch.layer == PreviewLayer::collision_world ? collision_opacity_ : rgba[3] / 255.0F);
     };
 
-    if (view_style_ != 7 || show_collision_) {
+    if (view_style_ != 7 || show_collision_)
+    {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        for (const auto& batch : draw_batches_) {
+        for (const auto &batch : draw_batches_)
+        {
             const bool collision = batch.layer == PreviewLayer::collision_world;
             if ((!collision && !show_visual_) || (collision && (!show_collision_ || collision_style_ == 2)))
                 continue;
-            if (!collision && view_style_ == 7) continue;
-            if (collision) {
+            if (!collision && view_style_ == 7)
+                continue;
+            if (collision)
+            {
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 glDepthMask(GL_FALSE);
-                if (collision_style_ == 3) glDisable(GL_DEPTH_TEST);
-                else glEnable(GL_DEPTH_TEST);
-            } else {
-                glDisable(GL_BLEND); glDepthMask(GL_TRUE); glEnable(GL_DEPTH_TEST);
+                if (collision_style_ == 3)
+                    glDisable(GL_DEPTH_TEST);
+                else
+                    glEnable(GL_DEPTH_TEST);
+            }
+            else
+            {
+                glDisable(GL_BLEND);
+                glDepthMask(GL_TRUE);
+                glEnable(GL_DEPTH_TEST);
             }
             const auto material = static_cast<std::size_t>(batch.material);
             GLuint texture{}, lightmap{};
@@ -1734,8 +1915,8 @@ void GeometryPreview::render_gpu() {
             glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first), static_cast<GLsizei>(batch.count));
         }
     }
-    if (view_style_ == 7 || wireframe_ || (show_collision_ &&
-        (collision_style_ == 1 || collision_style_ == 2))) {
+    if (view_style_ == 7 || wireframe_ || (show_collision_ && (collision_style_ == 1 || collision_style_ == 2)))
+    {
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_TRUE);
@@ -1743,24 +1924,55 @@ void GeometryPreview::render_gpu() {
         gl.uniform_1i(use_lightmap_location, 0);
         gl.uniform_1i(force_opaque_location, 1);
         const float color = view_style_ == 7 ? 0.84F : 0.09F;
-        gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F,
-                      view_style_ == 7 ? 0.95F : 0.13F, 1.0F);
+        gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F, view_style_ == 7 ? 0.95F : 0.13F,
+                      1.0F);
         glDepthFunc(GL_LEQUAL);
         glEnable(GL_POLYGON_OFFSET_LINE);
         glPolygonOffset(-1.0F, -1.0F);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        for (const auto& batch : draw_batches_) {
+        for (const auto &batch : draw_batches_)
+        {
             const bool collision = batch.layer == PreviewLayer::collision_world;
             const bool draw_visual_wire = !collision && show_visual_ && (view_style_ == 7 || wireframe_);
-            const bool draw_collision_wire = collision && show_collision_ &&
-                (collision_style_ == 1 || collision_style_ == 2);
-            if (!draw_visual_wire && !draw_collision_wire) continue;
-            if (collision) gl.uniform_4f(base_color_location, 0.1F, 0.95F, 0.95F, 1.0F);
-            else gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F,
-                               view_style_ == 7 ? 0.95F : 0.13F, 1.0F);
+            const bool draw_collision_wire =
+                collision && show_collision_ && (collision_style_ == 1 || collision_style_ == 2);
+            if (!draw_visual_wire && !draw_collision_wire)
+                continue;
+            if (collision)
+                gl.uniform_4f(base_color_location, 0.1F, 0.95F, 0.95F, 1.0F);
+            else
+                gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F,
+                              view_style_ == 7 ? 0.95F : 0.13F, 1.0F);
             glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first), static_cast<GLsizei>(batch.count));
         }
         glDisable(GL_POLYGON_OFFSET_LINE);
+    }
+    if (selected_collision_)
+    {
+        const auto mapping = std::find_if(collision_triangle_mapping_.begin(), collision_triangle_mapping_.end(),
+                                          [&](const RenderedCollisionTriangle &item) {
+                                              return item.world == selected_collision_->world_index &&
+                                                     item.sector == selected_collision_->sector_index &&
+                                                     item.triangle == selected_collision_->triangle_index;
+                                          });
+        if (mapping != collision_triangle_mapping_.end())
+        {
+            glDisable(GL_BLEND);
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_TRUE);
+            gl.uniform_1i(use_texture_location, 0);
+            gl.uniform_1i(use_lightmap_location, 0);
+            gl.uniform_1i(force_opaque_location, 1);
+            gl.uniform_4f(base_color_location, 1.0F, 0.15F, 0.8F, 1.0F);
+            glDepthFunc(GL_LEQUAL);
+            glEnable(GL_POLYGON_OFFSET_LINE);
+            glPolygonOffset(-2, -2);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            glLineWidth(3.0F);
+            glDrawArrays(GL_TRIANGLES, static_cast<GLint>(mapping->first), 3);
+            glLineWidth(1.0F);
+            glDisable(GL_POLYGON_OFFSET_LINE);
+        }
     }
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glDepthFunc(GL_LESS);
@@ -1782,69 +1994,81 @@ void GeometryPreview::draw(const rws::Chunk& geometry_chunk,
     constexpr const char* styles[] = {
         "Textured", "Material index", "Material color", "UV checker", "Lightmap UV",
         "Lightmap texture", "Base + lightmap", "Wireframe"};
-    ImGui::SetNextItemWidth(165.0F);
-    if (ImGui::Combo("View style", &view_style_, styles, static_cast<int>(std::size(styles))) &&
+    constexpr const char* projections[] = {
+        "Perspective", "Top (X/Z)", "Front (X/Y)", "Side (Z/Y)"};
+    const float toolbar_height = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0F;
+    ImGui::BeginChild("geometry_toolbar", {0.0F, toolbar_height}, ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetNextItemWidth(160.0F);
+    if (ImGui::Combo("##geometry_style", &view_style_, styles, static_cast<int>(std::size(styles))) &&
         view_style_ >= 4 && view_style_ <= 6 && uv_sets_.size() > 1)
         select_uv_set(1);
     ImGui::SameLine();
-    if (view_style_ != 7) { ImGui::Checkbox("Wire overlay", &wireframe_); ImGui::SameLine(); }
-    ImGui::Checkbox("Cull backfaces", &cull_backfaces_); ImGui::SameLine();
-    if (ImGui::Button("Frame geometry")) reset_view(); ImGui::SameLine();
-    if (ImGui::Button("Reload edited bytes")) load(geometry_chunk, bytes, source_path);
-    if (view_style_ == 0) {
-        ImGui::Text("DDS files: %zu loaded | material slots unresolved: %zu | UV set: %s", loaded_texture_count_,
-            missing_texture_count_, !uv_sets_.empty() ? "present" : "missing");
-        if (!texture_status_.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", texture_status_.c_str()); }
-    }
-    if (view_style_ == 3 || view_style_ == 4) {
-        if (uv_sets_.empty()) {
-            ImGui::TextColored(ImVec4(1, 0.55F, 0.25F, 1), "This geometry has no UV sets.");
-        } else {
+    ImGui::SetNextItemWidth(135.0F);
+    ImGui::Combo("##geometry_projection", &projection_, projections, static_cast<int>(std::size(projections)));
+    ImGui::SameLine();
+    if (ImGui::Button("Frame"))
+        reset_view();
+    ImGui::SameLine();
+    if (ImGui::Button("Options"))
+        ImGui::OpenPopup("geometry_options");
+    if (ImGui::BeginPopup("geometry_options"))
+    {
+        ImGui::Checkbox("Wire overlay", &wireframe_);
+        ImGui::Checkbox("Cull backfaces", &cull_backfaces_);
+        if (!uv_sets_.empty())
+        {
             const std::string preview = "UV set " + std::to_string(selected_uv_set_ + 1);
-            ImGui::SetNextItemWidth(120.0F);
-            if (ImGui::BeginCombo("UV channel", preview.c_str())) {
-                for (std::size_t i = 0; i < uv_sets_.size(); ++i) {
-                    const std::string label = "UV set " + std::to_string(i + 1) +
-                        (i == 1 ? " (lightmap convention)" : "");
-                    if (ImGui::Selectable(label.c_str(), selected_uv_set_ == i)) select_uv_set(i);
-                    if (selected_uv_set_ == i) ImGui::SetItemDefaultFocus();
+            ImGui::SetNextItemWidth(180.0F);
+            if (ImGui::BeginCombo("UV channel", preview.c_str()))
+            {
+                for (std::size_t i = 0; i < uv_sets_.size(); ++i)
+                {
+                    const std::string label =
+                        "UV set " + std::to_string(i + 1) + (i == 1 ? " (lightmap convention)" : "");
+                    if (ImGui::Selectable(label.c_str(), selected_uv_set_ == i))
+                        select_uv_set(i);
                 }
                 ImGui::EndCombo();
             }
-            ImGui::SameLine();
-            ImGui::TextDisabled("%zu channel%s available", uv_sets_.size(), uv_sets_.size() == 1 ? "" : "s");
-            if (view_style_ == 4 && uv_sets_.size() < 2)
-                ImGui::TextColored(ImVec4(1, 0.55F, 0.25F, 1),
-                                   "UV2 is absent; showing the selected channel instead.");
         }
-    }
-    if (view_style_ == 5 || view_style_ == 6) {
-        ImGui::SetNextItemWidth(160.0F);
         ImGui::SliderFloat("Lightmap intensity", &lightmap_intensity_, 0.25F, 4.0F, "%.2fx");
-        const auto resolved = std::count_if(material_lightmap_textures_.begin(),
-            material_lightmap_textures_.end(), [](const unsigned int texture) { return texture != 0; });
-        ImGui::Text("Embedded MatFX lightmaps: %zu/%zu material slots resolved",
-                    static_cast<std::size_t>(resolved), material_lightmap_textures_.size());
-        if (!texture_status_.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", texture_status_.c_str()); }
-        if (uv_sets_.size() < 2)
-            ImGui::TextColored(ImVec4(1, 0.55F, 0.25F, 1),
-                               "UV2 is absent; MatFX lightmapping is disabled.");
-        else
-            ImGui::TextDisabled("MatFX lightmap coordinates: UV set 2");
+        ImGui::Separator();
+        ImGui::Text("Textures: %zu loaded, %zu unresolved", loaded_texture_count_, missing_texture_count_);
+        ImGui::Text("UV channels: %zu", uv_sets_.size());
+        if (!texture_status_.empty())
+            ImGui::TextWrapped("%s", texture_status_.c_str());
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reload edited bytes"))
+            load(geometry_chunk, bytes, source_path);
+        ImGui::EndPopup();
     }
-    ImGui::TextDisabled("WASD/QE: move | Left: look | Right: orbit | Middle: pan | Wheel: zoom | Shift: faster");
+    ImGui::EndChild();
 
     const auto available = ImGui::GetContentRegionAvail();
     const ImVec2 size{std::max(available.x, 64.0F), std::max(available.y, 160.0F)};
     const auto origin = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("geometry_canvas", size,
-        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
-    auto* draw_list = ImGui::GetWindowDrawList();
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle |
+                               ImGuiButtonFlags_MouseButtonRight);
+    auto *draw_list = ImGui::GetWindowDrawList();
     draw_list->AddRectFilled(origin, {origin.x + size.x, origin.y + size.y}, IM_COL32(22, 25, 31, 255));
     draw_list->AddRect(origin, {origin.x + size.x, origin.y + size.y}, IM_COL32(70, 76, 88, 255));
-    if (ImGui::IsItemHovered()) {
-        const auto& io = ImGui::GetIO();
-        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) reset_view();
+    if (ImGui::IsItemHovered())
+    {
+        const auto &io = ImGui::GetIO();
+        if (io.KeyCtrl)
+        {
+            if (const auto hover = pick_collision(io.MousePos.x, io.MousePos.y))
+            {
+                char coordinate[128]{};
+                std::snprintf(coordinate, sizeof(coordinate), "surface %.6g, %.6g, %.6g", hover->position.x,
+                              hover->position.y, hover->position.z);
+                draw_list->AddText({io.MousePos.x + 14, io.MousePos.y + 14}, IM_COL32(245, 245, 180, 255), coordinate);
+            }
+        }
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            reset_view();
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             target_yaw_ -= io.MouseDelta.x * 0.01F;
             target_pitch_ = std::clamp(target_pitch_ + io.MouseDelta.y * 0.01F, -1.5F, 1.5F);
@@ -1859,10 +2083,14 @@ void GeometryPreview::draw(const rws::Chunk& geometry_chunk,
             pan_camera(io.MouseDelta.x, io.MouseDelta.y);
         }
         if (io.MouseWheel != 0.0F) {
-            const float minimum_distance = scene_mode_ ? std::max(radius_ * 0.0001F, 0.05F) :
-                                                         std::max(radius_ * 0.02F, 0.001F);
-            distance_ = std::clamp(distance_ * std::exp(-io.MouseWheel * 0.16F), minimum_distance,
-                                   radius_ * 100.0F);
+            const float minimum_distance =
+                scene_mode_ ? std::max(radius_ * 0.0001F, 0.05F) : std::max(radius_ * 0.02F, 0.001F);
+            if (projection_ == 0)
+                distance_ =
+                    std::clamp(distance_ * std::exp(-io.MouseWheel * 0.16F), minimum_distance, radius_ * 100.0F);
+            else
+                orthographic_scale_ = std::clamp(orthographic_scale_ * std::exp(-io.MouseWheel * 0.16F),
+                                                 minimum_distance, radius_ * 100.0F);
         }
     }
     update_keyboard_navigation();
@@ -1871,149 +2099,142 @@ void GeometryPreview::draw(const rws::Chunk& geometry_chunk,
         return;
     }
 
-    canvas_x_ = origin.x; canvas_y_ = origin.y;
-    canvas_width_ = size.x; canvas_height_ = size.y;
+    canvas_x_ = origin.x;
+    canvas_y_ = origin.y;
+    canvas_width_ = size.x;
+    canvas_height_ = size.y;
     draw_list->AddCallback(render_callback, this);
     draw_list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
-    const std::string statistics = std::to_string(vertices_.size()) + " vertices | " +
-        std::to_string(faces_.size()) + " triangles | GPU depth test";
+    const std::string statistics = std::to_string(vertices_.size()) + " vertices | " + std::to_string(faces_.size()) +
+                                   " triangles | GPU depth test";
     draw_list->AddText({origin.x + 10, origin.y + 9}, IM_COL32(225, 229, 238, 255), statistics.c_str());
 }
 
-void GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks,
-                                 const std::span<const std::byte> bytes,
+bool GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks, const std::span<const std::byte> bytes,
                                  const std::span<const rws::SceneInstance> instances,
-                                 const std::filesystem::path& source_path,
-                                 std::optional<std::uint64_t>& selected_chunk,
-                                 const rws::Document* collision_document,
-                                 const bool main_is_collision,
+                                 const std::filesystem::path& source_path, std::optional<std::uint64_t>& selected_chunk,
+                                 const rws::Document* collision_document, const bool main_is_collision,
                                  const std::string_view collision_status) {
-    if (!scene_mode_) load_scene(chunks, bytes, instances, source_path, collision_document,
-                                 main_is_collision);
+    if (!scene_mode_)
+        load_scene(chunks, bytes, instances, source_path, collision_document, main_is_collision);
 
-    ImGui::Text("Scene: %zu clumps | %zu atomic instances | %zu terrain sectors (%zu triangles) | %zu skipped",
-                scene_clump_count_, scene_instance_count_, scene_world_sector_count_,
-                scene_world_triangle_count_, scene_skipped_count_);
-    ImGui::Text("CSF placements: %zu rendered | %zu unresolved",
-                scene_custom_instance_count_, scene_unresolved_instance_count_);
     const bool has_collision = collision_sector_count_ != 0;
-    const bool has_visual = std::any_of(draw_batches_.begin(), draw_batches_.end(),
-        [](const DrawBatch& batch) { return batch.layer != PreviewLayer::collision_world; });
-    ImGui::BeginDisabled(!has_visual);
-    ImGui::Checkbox("Show visual scene", &show_visual_);
-    ImGui::EndDisabled(); ImGui::SameLine();
-    ImGui::BeginDisabled(!has_collision);
-    ImGui::Checkbox("Show level collision", &show_collision_);
-    ImGui::EndDisabled();
-    if (has_collision) {
-        ImGui::Text("Collision: %zu/%d sectors | %zu triangles | %zu materials | %s",
-            collision_sector_count_, collision_declared_sector_count_, collision_triangle_count_,
-            collision_material_count_, rws::world_recovery_status_name(collision_recovery_status_));
-        ImGui::TextDisabled("Companion: %s", collision_source_path_.filename().string().c_str());
-        constexpr const char* collision_styles[] = {"Solid", "Solid + wire", "Wireframe", "X-ray"};
-        constexpr const char* collision_colors[] = {"Surface", "Material index", "Single color"};
-        ImGui::SetNextItemWidth(145.0F);
-        ImGui::Combo("Collision style", &collision_style_, collision_styles,
-                     static_cast<int>(std::size(collision_styles)));
-        ImGui::SameLine(); ImGui::SetNextItemWidth(145.0F);
-        ImGui::Combo("Color by", &collision_color_mode_, collision_colors,
-                     static_cast<int>(std::size(collision_colors)));
-        ImGui::SameLine(); ImGui::SetNextItemWidth(130.0F);
-        ImGui::SliderFloat("Opacity", &collision_opacity_, 0.05F, 1.0F, "%.2f");
-        if (!collision_diagnostics_.empty()) {
-            ImGui::TextColored(ImVec4(1.0F, 0.65F, 0.2F, 1.0F), "%s",
-                               collision_diagnostics_.front().c_str());
-            if (ImGui::IsItemHovered()) {
-                ImGui::BeginTooltip();
-                for (const auto& diagnostic : collision_diagnostics_)
-                    ImGui::TextUnformatted(diagnostic.c_str());
-                ImGui::EndTooltip();
-            }
-        }
-        if (ImGui::TreeNode("Collision surfaces")) {
-            for (std::size_t i = 0; i < collision_surface_labels_.size(); ++i)
-                ImGui::Text("%zu: %s", i, collision_surface_labels_[i].c_str());
-            ImGui::TreePop();
-        }
-    } else if (!collision_status.empty()) {
-        ImGui::TextDisabled("Collision: %.*s", static_cast<int>(collision_status.size()),
-                            collision_status.data());
-    }
+    const bool has_visual = std::any_of(draw_batches_.begin(), draw_batches_.end(), [](const DrawBatch& batch) {
+        return batch.layer != PreviewLayer::collision_world;
+    });
+    bool open_tools = false;
     constexpr std::array scene_styles{0, 1, 2, 5, 6, 7};
-    constexpr const char* scene_style_names[] = {
-        "Textured", "Material index", "Material color", "Lightmap texture",
-        "Base + lightmap", "Wireframe"};
+    constexpr const char* scene_style_names[] = {"Textured",         "Material index",  "Material color",
+                                                 "Lightmap texture", "Base + lightmap", "Wireframe"};
+    constexpr const char* projections[] = {"Perspective", "Top (X/Z)", "Front (X/Y)", "Side (Z/Y)"};
     auto selected_style = std::find(scene_styles.begin(), scene_styles.end(), view_style_);
-    int scene_style = selected_style == scene_styles.end() ? 1 :
-        static_cast<int>(std::distance(scene_styles.begin(), selected_style));
-    ImGui::SetNextItemWidth(165.0F);
-    if (ImGui::Combo("View style", &scene_style, scene_style_names,
-                     static_cast<int>(std::size(scene_style_names))))
+    int scene_style = selected_style == scene_styles.end()
+                          ? 1
+                          : static_cast<int>(std::distance(scene_styles.begin(), selected_style));
+
+    const float toolbar_height = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0F;
+    ImGui::BeginChild("scene_toolbar", {0.0F, toolbar_height}, ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const bool compact_toolbar = ImGui::GetContentRegionAvail().x < 690.0F;
+    if (!compact_toolbar) {
+        ImGui::BeginDisabled(!has_visual);
+        ImGui::Checkbox("Visual", &show_visual_);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!has_collision);
+        ImGui::Checkbox("Collision", &show_collision_);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+    }
+    ImGui::SetNextItemWidth(155.0F);
+    if (ImGui::Combo("##scene_style", &scene_style, scene_style_names, static_cast<int>(std::size(scene_style_names))))
         view_style_ = scene_styles[static_cast<std::size_t>(scene_style)];
     ImGui::SameLine();
-    if (view_style_ != 7) { ImGui::Checkbox("Wire overlay", &wireframe_); ImGui::SameLine(); }
-    ImGui::Checkbox("Cull backfaces", &cull_backfaces_); ImGui::SameLine();
-    if (ImGui::Button("Frame all")) frame_bounds(all_center_, all_radius_); ImGui::SameLine();
-    ImGui::BeginDisabled(!has_visual);
-    if (ImGui::Button("Frame visual")) frame_bounds(visual_center_, visual_radius_); ImGui::SameLine();
-    ImGui::EndDisabled();
-    ImGui::BeginDisabled(!has_collision);
-    if (ImGui::Button("Frame collision")) frame_bounds(collision_center_, collision_radius_);
-    ImGui::EndDisabled(); ImGui::SameLine();
-    if (ImGui::Button("Reload edited bytes"))
-        load_scene(chunks, bytes, instances, source_path, collision_document, main_is_collision);
-    ImGui::SetNextItemWidth(150.0F);
-    ImGui::SliderFloat("Move speed", &navigation_speed_, 0.05F, 4.0F, "%.2fx",
-                       ImGuiSliderFlags_Logarithmic);
+    ImGui::SetNextItemWidth(130.0F);
+    ImGui::Combo("##scene_projection", &projection_, projections, static_cast<int>(std::size(projections)));
     ImGui::SameLine();
-    ImGui::TextDisabled("camera distance %.1f", distance_);
-    const float details_height = ImGui::GetTextLineHeightWithSpacing() * 3.0F;
-    if (ImGui::BeginChild("scene_style_details", {0.0F, details_height}, ImGuiChildFlags_None,
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-        if (view_style_ == 0)
-            ImGui::Text("DDS files: %zu loaded | material slots unresolved: %zu",
-                        loaded_texture_count_, missing_texture_count_);
-        if (view_style_ == 5 || view_style_ == 6) {
-            ImGui::SetNextItemWidth(180.0F);
-            ImGui::SliderFloat("Lightmap intensity", &lightmap_intensity_, 0.25F, 4.0F);
-            const auto visual_end = material_lightmap_textures_.begin() +
-                static_cast<std::ptrdiff_t>(std::min(visual_material_slot_count_,
-                                                     material_lightmap_textures_.size()));
-            const auto resolved = std::count_if(material_lightmap_textures_.begin(), visual_end,
-                [](const unsigned int texture) { return texture != 0; });
-            ImGui::Text("Standard-clump MatFX lightmaps: %zu/%zu material slots",
-                        static_cast<std::size_t>(resolved), visual_material_slot_count_);
+    if (ImGui::Button("Frame"))
+        ImGui::OpenPopup("frame_scene");
+    if (ImGui::BeginPopup("frame_scene")) {
+        if (ImGui::MenuItem("All"))
+            frame_bounds(all_center_, all_radius_);
+        if (ImGui::MenuItem("Visual", nullptr, false, has_visual))
+            frame_bounds(visual_center_, visual_radius_);
+        if (ImGui::MenuItem("Collision", nullptr, false, has_collision))
+            frame_bounds(collision_center_, collision_radius_);
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Tools"))
+        open_tools = true;
+    ImGui::SameLine();
+    if (compact_toolbar) {
+        if (ImGui::Button("Display"))
+            ImGui::OpenPopup("scene_display");
+        if (ImGui::BeginPopup("scene_display")) {
+            ImGui::BeginDisabled(!has_visual);
+            ImGui::Checkbox("Visual", &show_visual_);
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(!has_collision);
+            ImGui::Checkbox("Collision", &show_collision_);
+            ImGui::Checkbox("Measure", &measurement_mode_);
+            ImGui::EndDisabled();
+            ImGui::EndPopup();
         }
-        if (!texture_status_.empty()) ImGui::TextDisabled("%s", texture_status_.c_str());
+    } else {
+        ImGui::BeginDisabled(!has_collision);
+        ImGui::Checkbox("Measure", &measurement_mode_);
+        ImGui::EndDisabled();
     }
     ImGui::EndChild();
-    ImGui::TextDisabled("Click: select Clump/World | Left drag: look | Right: orbit | WASD/QE: move | Wheel: zoom");
 
     const auto available = ImGui::GetContentRegionAvail();
     const ImVec2 size{std::max(available.x, 64.0F), std::max(available.y, 160.0F)};
     const auto origin = ImGui::GetCursorScreenPos();
-    canvas_x_ = origin.x; canvas_y_ = origin.y;
-    canvas_width_ = size.x; canvas_height_ = size.y;
+    canvas_x_ = origin.x;
+    canvas_y_ = origin.y;
+    canvas_width_ = size.x;
+    canvas_height_ = size.y;
     ImGui::InvisibleButton("scene_canvas", size,
-        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle | ImGuiButtonFlags_MouseButtonRight);
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle |
+                               ImGuiButtonFlags_MouseButtonRight);
     auto* draw_list = ImGui::GetWindowDrawList();
     draw_list->AddRectFilled(origin, {origin.x + size.x, origin.y + size.y}, IM_COL32(22, 25, 31, 255));
     draw_list->AddRect(origin, {origin.x + size.x, origin.y + size.y}, IM_COL32(70, 76, 88, 255));
+    const auto select_collision = [&](const rws::CollisionHit& hit) {
+        selected_collision_ = hit;
+        if (!measurement_mode_)
+            return;
+        if (!measurement_a_ || measurement_b_) {
+            measurement_a_ = hit.position;
+            measurement_b_.reset();
+        } else {
+            measurement_b_ = hit.position;
+        }
+    };
     if (ImGui::IsItemHovered()) {
         const auto& io = ImGui::GetIO();
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             const auto drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (drag.x * drag.x + drag.y * drag.y < 16.0F) {
-                if (const auto picked = pick_scene(io.MousePos.x, io.MousePos.y)) selected_chunk = *picked;
+                const auto collision_hit = pick_collision(io.MousePos.x, io.MousePos.y);
+                if (collision_hit && (prefer_collision_ || measurement_mode_ || io.KeyAlt)) {
+                    select_collision(*collision_hit);
+                } else if (const auto picked = pick_scene(io.MousePos.x, io.MousePos.y)) {
+                    selected_chunk = *picked;
+                } else if (collision_hit) {
+                    select_collision(*collision_hit);
+                }
             }
         }
-        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) reset_view();
-        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            reset_view();
+        if (projection_ == 0 && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             target_yaw_ -= io.MouseDelta.x * 0.01F;
             target_pitch_ = std::clamp(target_pitch_ + io.MouseDelta.y * 0.01F, -1.5F, 1.5F);
             preserve_camera_position_ = true;
         }
-        if (ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
+        if (projection_ == 0 && ImGui::IsMouseDragging(ImGuiMouseButton_Right)) {
             target_yaw_ += io.MouseDelta.x * 0.01F;
             target_pitch_ = std::clamp(target_pitch_ + io.MouseDelta.y * 0.01F, -1.5F, 1.5F);
             preserve_camera_position_ = false;
@@ -2022,22 +2243,338 @@ void GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks,
             pan_camera(io.MouseDelta.x, io.MouseDelta.y);
         }
         if (io.MouseWheel != 0.0F) {
-            const float minimum_distance = scene_mode_ ? std::max(radius_ * 0.0001F, 0.05F) :
-                                                         std::max(radius_ * 0.02F, 0.001F);
-            distance_ = std::clamp(distance_ * std::exp(-io.MouseWheel * 0.16F), minimum_distance,
-                                   radius_ * 100.0F);
+            const float minimum_distance =
+                scene_mode_ ? std::max(radius_ * 0.0001F, 0.05F) : std::max(radius_ * 0.02F, 0.001F);
+            if (projection_ == 0)
+                distance_ =
+                    std::clamp(distance_ * std::exp(-io.MouseWheel * 0.16F), minimum_distance, radius_ * 100.0F);
+            else
+                orthographic_scale_ = std::clamp(orthographic_scale_ * std::exp(-io.MouseWheel * 0.16F),
+                                                 minimum_distance, radius_ * 100.0F);
         }
     }
     update_keyboard_navigation();
     if (!error_.empty()) {
         draw_list->AddText({origin.x + 12, origin.y + 12}, IM_COL32(255, 120, 90, 255), error_.c_str());
-        return;
+        return open_tools;
     }
     draw_list->AddCallback(render_callback, this);
     draw_list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
-    const std::string statistics = std::to_string(vertices_.size()) + " transformed vertices | " +
-        std::to_string(faces_.size()) + " triangles | standard RWS scene";
-    draw_list->AddText({origin.x + 10, origin.y + 9}, IM_COL32(225, 229, 238, 255), statistics.c_str());
+    draw_list->PushClipRect(origin, {origin.x + size.x, origin.y + size.y}, true);
+    auto line3d = [&](const rws::Vec3 a, const rws::Vec3 b, const ImU32 color, float thickness = 1.0F) {
+        const auto pa = project_point(a), pb = project_point(b);
+        if (pa && pb)
+            draw_list->AddLine(*pa, *pb, color, thickness);
+    };
+    // Bounded adaptive grid in source RWS units. Y is the confirmed map
+    // vertical axis.
+    const float target_spacing = std::max(distance_ / 10.0F, 0.001F);
+    const float decade = std::pow(10.0F, std::floor(std::log10(target_spacing)));
+    const float ratio = target_spacing / decade;
+    const float spacing = decade * (ratio > 5 ? 10 : (ratio > 2 ? 5 : (ratio > 1 ? 2 : 1)));
+    const float extent = spacing * 10;
+    const ImU32 minor = IM_COL32(95, 103, 118, 55), major = IM_COL32(125, 134, 150, 95);
+    for (int i = -10; i <= 10; ++i) {
+        const float v = i * spacing;
+        const auto color = i % 5 == 0 ? major : minor;
+        if (projection_ == 2) {
+            line3d({center_.x - extent, center_.y + v, center_.z}, {center_.x + extent, center_.y + v, center_.z},
+                   color);
+            line3d({center_.x + v, center_.y - extent, center_.z}, {center_.x + v, center_.y + extent, center_.z},
+                   color);
+        } else if (projection_ == 3) {
+            line3d({center_.x, center_.y + v, center_.z - extent}, {center_.x, center_.y + v, center_.z + extent},
+                   color);
+            line3d({center_.x, center_.y - extent, center_.z + v}, {center_.x, center_.y + extent, center_.z + v},
+                   color);
+        } else {
+            line3d({center_.x - extent, center_.y, center_.z + v}, {center_.x + extent, center_.y, center_.z + v},
+                   color);
+            line3d({center_.x + v, center_.y, center_.z - extent}, {center_.x + v, center_.y, center_.z + extent},
+                   color);
+        }
+    }
+    const auto draw_box = [&](const rws::Vec3 lo, const rws::Vec3 hi, const ImU32 color) {
+        const std::array<rws::Vec3, 8> p{{{lo.x, lo.y, lo.z},
+                                          {hi.x, lo.y, lo.z},
+                                          {lo.x, hi.y, lo.z},
+                                          {hi.x, hi.y, lo.z},
+                                          {lo.x, lo.y, hi.z},
+                                          {hi.x, lo.y, hi.z},
+                                          {lo.x, hi.y, hi.z},
+                                          {hi.x, hi.y, hi.z}}};
+        constexpr std::array<std::array<int, 2>, 12> edges{
+            {{0, 1}, {0, 2}, {0, 4}, {1, 3}, {1, 5}, {2, 3}, {2, 6}, {3, 7}, {4, 5}, {4, 6}, {5, 7}, {6, 7}}};
+        for (const auto& edge : edges)
+            line3d(p[edge[0]], p[edge[1]], color, 1.5F);
+    };
+    const auto draw_measurement_point = [&](const rws::Vec3 point, const char* label, const ImU32 color) {
+        if (const auto screen = project_point(point)) {
+            draw_list->AddCircleFilled(*screen, 5.0F, color);
+            draw_list->AddText({screen->x + 7.0F, screen->y - 8.0F}, color, label);
+        }
+    };
+    if (measurement_a_)
+        draw_measurement_point(*measurement_a_, "A", IM_COL32(65, 210, 255, 255));
+    if (measurement_b_)
+        draw_measurement_point(*measurement_b_, "B", IM_COL32(255, 190, 55, 255));
+    if (measurement_a_ && measurement_b_) {
+        const auto a = project_point(*measurement_a_);
+        const auto b = project_point(*measurement_b_);
+        if (a && b) {
+            draw_list->AddLine(*a, *b, IM_COL32(255, 230, 100, 235), 2.0F);
+            const auto measurement = rws::measure_points(*measurement_a_, *measurement_b_);
+            char label[64]{};
+            std::snprintf(label, sizeof(label), "%.6g", measurement.distance);
+            draw_list->AddText({(a->x + b->x) * 0.5F + 5.0F, (a->y + b->y) * 0.5F + 5.0F}, IM_COL32(255, 240, 150, 255),
+                               label);
+        }
+    }
+    if (selected_collision_ && selected_collision_->world_index < collision_worlds_.size()) {
+        const auto& hit = *selected_collision_;
+        const auto& world = collision_worlds_[hit.world_index];
+        if (hit.sector_index < world.sectors.size() && show_leaf_bounds_) {
+            const auto& sector = world.sectors[hit.sector_index];
+            draw_box(sector.bounding_box_inf, sector.bounding_box_sup, IM_COL32(245, 215, 70, 210));
+        }
+        if (show_bsp_path_) {
+            auto node = std::find_if(world.topology_nodes.begin(), world.topology_nodes.end(), [&](const auto& item) {
+                return item.kind == rws::RecoveredWorldNode::Kind::sector && item.value_index == hit.sector_index;
+            });
+            while (node != world.topology_nodes.end()) {
+                if (node->kind == rws::RecoveredWorldNode::Kind::plane) {
+                    const auto& plane = world.planes[node->value_index];
+                    const auto lo = node->bounding_box_inf, hi = node->bounding_box_sup;
+                    const ImU32 color =
+                        plane.axis == 0 ? IM_COL32(240, 75, 75, 210)
+                                        : (plane.axis == 4 ? IM_COL32(80, 225, 95, 210) : IM_COL32(75, 135, 245, 210));
+                    if (plane.axis == 0) {
+                        line3d({plane.split, lo.y, lo.z}, {plane.split, hi.y, lo.z}, color, 2);
+                        line3d({plane.split, hi.y, lo.z}, {plane.split, hi.y, hi.z}, color, 2);
+                        line3d({plane.split, hi.y, hi.z}, {plane.split, lo.y, hi.z}, color, 2);
+                        line3d({plane.split, lo.y, hi.z}, {plane.split, lo.y, lo.z}, color, 2);
+                    } else if (plane.axis == 4) {
+                        line3d({lo.x, plane.split, lo.z}, {hi.x, plane.split, lo.z}, color, 2);
+                        line3d({hi.x, plane.split, lo.z}, {hi.x, plane.split, hi.z}, color, 2);
+                        line3d({hi.x, plane.split, hi.z}, {lo.x, plane.split, hi.z}, color, 2);
+                        line3d({lo.x, plane.split, hi.z}, {lo.x, plane.split, lo.z}, color, 2);
+                    } else {
+                        line3d({lo.x, lo.y, plane.split}, {hi.x, lo.y, plane.split}, color, 2);
+                        line3d({hi.x, lo.y, plane.split}, {hi.x, hi.y, plane.split}, color, 2);
+                        line3d({hi.x, hi.y, plane.split}, {lo.x, hi.y, plane.split}, color, 2);
+                        line3d({lo.x, hi.y, plane.split}, {lo.x, lo.y, plane.split}, color, 2);
+                    }
+                }
+                if (!node->parent)
+                    break;
+                node = world.topology_nodes.begin() + static_cast<std::ptrdiff_t>(*node->parent);
+            }
+        }
+        if (const auto point = project_point(hit.position)) {
+            draw_list->AddLine({point->x - 7, point->y}, {point->x + 7, point->y}, IM_COL32(255, 45, 210, 255), 2);
+            draw_list->AddLine({point->x, point->y - 7}, {point->x, point->y + 7}, IM_COL32(255, 45, 210, 255), 2);
+        }
+    }
+    draw_list->PopClipRect();
+    std::ostringstream statistics;
+    statistics << scene_clump_count_ << " clumps | " << scene_instance_count_
+               << " instances | " << vertices_.size() << " vertices | "
+               << faces_.size() << " triangles";
+    std::ostringstream secondary;
+    secondary << scene_custom_instance_count_ << " CSF placements";
+    if (collision_sector_count_ != 0)
+      secondary << " | collision " << collision_sector_count_ << " sectors / "
+                << collision_triangle_count_ << " triangles";
+    secondary << " | camera " << static_cast<int>(distance_);
+    const auto statistics_text = statistics.str();
+    const auto secondary_text = secondary.str();
+    const float overlay_width =
+        std::max(ImGui::CalcTextSize(statistics_text.c_str()).x,
+                 ImGui::CalcTextSize(secondary_text.c_str()).x) +
+        18.0F;
+    draw_list->AddRectFilled(
+        {origin.x + 7.0F, origin.y + 7.0F},
+        {origin.x + 7.0F + overlay_width, origin.y + 49.0F},
+        IM_COL32(10, 12, 16, 185), 4.0F);
+    draw_list->AddText({origin.x + 15.0F, origin.y + 12.0F}, IM_COL32(225, 229, 238, 255), statistics_text.c_str());
+    draw_list->AddText({origin.x + 15.0F, origin.y + 29.0F}, IM_COL32(165, 174, 190, 255), secondary_text.c_str());
+    if (!texture_status_.empty() || !collision_diagnostics_.empty() ||
+        (collision_sector_count_ == 0 && !collision_status.empty())) {
+        const char* warning = !texture_status_.empty()
+                                  ? "Rendering warning - open Tools"
+                                  : (!collision_diagnostics_.empty() ? "Collision warning - open Tools"
+                                                                     : "No collision companion - open Tools");
+        const auto warning_size = ImGui::CalcTextSize(warning);
+        draw_list->AddRectFilled({origin.x + size.x - warning_size.x - 25.0F, origin.y + 8.0F},
+                                 {origin.x + size.x - 8.0F, origin.y + 31.0F}, IM_COL32(92, 59, 15, 220), 4.0F);
+        draw_list->AddText({origin.x + size.x - warning_size.x - 17.0F, origin.y + 12.0F}, IM_COL32(255, 202, 105, 255),
+                           warning);
+    }
+    return open_tools;
+}
+
+void GeometryPreview::draw_scene_tools(const std::string_view collision_status) {
+    const bool has_collision = collision_sector_count_ != 0;
+    const bool has_visual = std::any_of(draw_batches_.begin(), draw_batches_.end(), [](const DrawBatch& batch) {
+        return batch.layer != PreviewLayer::collision_world;
+    });
+
+    ImGui::SeparatorText("Rendering");
+    ImGui::BeginDisabled(!has_visual);
+    ImGui::Checkbox("Show visual scene", &show_visual_);
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!has_collision);
+    ImGui::Checkbox("Show level collision", &show_collision_);
+    ImGui::EndDisabled();
+    if (view_style_ != 7)
+        ImGui::Checkbox("Wire overlay", &wireframe_);
+    ImGui::Checkbox("Cull backfaces", &cull_backfaces_);
+    ImGui::TextDisabled("Move speed");
+    ImGui::SetNextItemWidth(-1.0F);
+    ImGui::SliderFloat("##move_speed", &navigation_speed_, 0.05F, 4.0F, "%.2fx", ImGuiSliderFlags_Logarithmic);
+    ImGui::TextDisabled("Camera distance %.1f", distance_);
+
+    if (view_style_ == 5 || view_style_ == 6) {
+        ImGui::TextDisabled("Lightmap intensity");
+        ImGui::SetNextItemWidth(-1.0F);
+        ImGui::SliderFloat("##lightmap_intensity", &lightmap_intensity_, 0.25F, 4.0F);
+    }
+    ImGui::Text("DDS textures: %zu loaded", loaded_texture_count_);
+    ImGui::Text("Unresolved slots: %zu", missing_texture_count_);
+    if (!texture_status_.empty()) {
+        ImGui::PushTextWrapPos(0.0F);
+        ImGui::TextColored(ImVec4(1.0F, 0.68F, 0.28F, 1.0F), "%s", texture_status_.c_str());
+        ImGui::PopTextWrapPos();
+    }
+
+    ImGui::SeparatorText("Collision");
+    if (has_collision) {
+        ImGui::TextWrapped("%s", collision_source_path_.filename().string().c_str());
+        ImGui::Text("%zu/%d sectors | %zu triangles", collision_sector_count_, collision_declared_sector_count_,
+                    collision_triangle_count_);
+        ImGui::Text("%zu materials | %s", collision_material_count_,
+                    rws::world_recovery_status_name(collision_recovery_status_));
+        constexpr const char* collision_styles[] = {"Solid", "Solid + wire", "Wireframe", "X-ray"};
+        constexpr const char* collision_colors[] = {"Surface", "Material index", "Single color"};
+        ImGui::TextDisabled("Style");
+        ImGui::SetNextItemWidth(-1.0F);
+        ImGui::Combo("##collision_style", &collision_style_, collision_styles,
+                     static_cast<int>(std::size(collision_styles)));
+        ImGui::TextDisabled("Color by");
+        ImGui::SetNextItemWidth(-1.0F);
+        ImGui::Combo("##collision_color", &collision_color_mode_, collision_colors,
+                     static_cast<int>(std::size(collision_colors)));
+        ImGui::TextDisabled("Opacity");
+        ImGui::SetNextItemWidth(-1.0F);
+        ImGui::SliderFloat("##collision_opacity", &collision_opacity_, 0.05F, 1.0F, "%.2f");
+        if (!collision_diagnostics_.empty()) {
+            ImGui::PushTextWrapPos(0.0F);
+            for (const auto& diagnostic : collision_diagnostics_)
+                ImGui::TextColored(ImVec4(1.0F, 0.65F, 0.2F, 1.0F), "%s", diagnostic.c_str());
+            ImGui::PopTextWrapPos();
+        }
+        if (ImGui::TreeNode("Surface labels")) {
+            for (std::size_t world_index = 0; world_index < collision_surface_labels_.size(); ++world_index) {
+                const auto& labels = collision_surface_labels_[world_index];
+                ImGui::PushID(static_cast<int>(world_index));
+                if (collision_surface_labels_.size() == 1 ||
+                    ImGui::TreeNode("world_surfaces", "World %zu", world_index)) {
+                    for (std::size_t slot = 0; slot < labels.size(); ++slot)
+                        ImGui::TextWrapped("%zu: %s", slot, labels[slot].c_str());
+                    if (collision_surface_labels_.size() != 1)
+                        ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+    } else {
+        ImGui::TextDisabled("%.*s", static_cast<int>(collision_status.size()), collision_status.data());
+    }
+
+    ImGui::SeparatorText("Inspection");
+    ImGui::BeginDisabled(!has_collision);
+    ImGui::Checkbox("Prefer collision on click", &prefer_collision_);
+    ImGui::Checkbox("Measure two points", &measurement_mode_);
+    if (ImGui::Button("Clear measurement")) {
+        measurement_a_.reset();
+        measurement_b_.reset();
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!measurement_a_ || !measurement_b_);
+    if (ImGui::Button("Swap endpoints"))
+        std::swap(measurement_a_, measurement_b_);
+    ImGui::EndDisabled();
+    if (measurement_a_ && measurement_b_) {
+        const auto measurement = rws::measure_points(*measurement_a_, *measurement_b_);
+        ImGui::TextWrapped("Distance %.6g RWS units", measurement.distance);
+        ImGui::Text("|dX| %.6g", measurement.absolute_delta.x);
+        ImGui::Text("|dY| %.6g", measurement.absolute_delta.y);
+        ImGui::Text("|dZ| %.6g", measurement.absolute_delta.z);
+    }
+    const char* axes = "XYZ";
+    for (std::size_t i = 0; i < clips_.size(); ++i) {
+        auto& clip = clips_[i];
+        ImGui::PushID(static_cast<int>(i));
+        const std::string label = std::string("Clip ") + axes[i];
+        ImGui::Checkbox(label.c_str(), &clip.enabled);
+        if (clip.enabled) {
+            ImGui::SameLine();
+            ImGui::Checkbox("Keep greater", &clip.keep_greater);
+            ImGui::TextDisabled("Position");
+            ImGui::SetNextItemWidth(-1.0F);
+            ImGui::DragFloat("##clip_position", &clip.position, 0.5F);
+        }
+        ImGui::PopID();
+    }
+    ImGui::Checkbox("Leaf bounds", &show_leaf_bounds_);
+    ImGui::Checkbox("Selected BSP path", &show_bsp_path_);
+    ImGui::EndDisabled();
+
+    if (selected_collision_ && collision_document_ && selected_collision_->world_index < collision_worlds_.size()) {
+        const auto& hit = *selected_collision_;
+        const auto& world = collision_worlds_[hit.world_index];
+        const auto triangle = rws::decode_recovered_world_triangle_resolved(world, hit.sector_index, hit.triangle_index,
+                                                                            collision_document_->bytes());
+        ImGui::SeparatorText("Selected collision");
+        ImGui::Text("World %zu @ 0x%llX", hit.world_index, static_cast<unsigned long long>(world.world_offset));
+        ImGui::Text("Sector %zu @ 0x%llX", hit.sector_index, static_cast<unsigned long long>(hit.sector_offset));
+        ImGui::Text("Triangle %d @ 0x%llX", hit.triangle_index, static_cast<unsigned long long>(hit.triangle_offset));
+        ImGui::Text("Material %d", hit.material_slot);
+        if (hit.material_slot >= 0 && hit.world_index < collision_surface_labels_.size() &&
+            static_cast<std::size_t>(hit.material_slot) < collision_surface_labels_[hit.world_index].size())
+            ImGui::TextWrapped("Surface %s", collision_surface_labels_[hit.world_index][hit.material_slot].c_str());
+        ImGui::Text("Position %.6g, %.6g, %.6g", hit.position.x, hit.position.y, hit.position.z);
+        ImGui::Text("Normal %.6g, %.6g, %.6g", hit.geometric_normal.x, hit.geometric_normal.y, hit.geometric_normal.z);
+        ImGui::Text("Barycentric %.4g, %.4g, %.4g", hit.barycentric[0], hit.barycentric[1], hit.barycentric[2]);
+        if (!rws::collision_point_visible(hit.position, clips_))
+            ImGui::TextColored(ImVec4(1.0F, 0.6F, 0.2F, 1.0F), "Selection is outside the clip region");
+        if (triangle && ImGui::TreeNode("Vertices")) {
+            for (std::size_t i = 0; i < 3; ++i)
+                ImGui::Text("%zu: %.6g, %.6g, %.6g", i, triangle.value->vertices[i].x, triangle.value->vertices[i].y,
+                            triangle.value->vertices[i].z);
+            ImGui::TreePop();
+        }
+        if (ImGui::Button("Frame sector")) {
+            const auto& sector = world.sectors[hit.sector_index];
+            const rws::Vec3 center{(sector.bounding_box_inf.x + sector.bounding_box_sup.x) * 0.5F,
+                                   (sector.bounding_box_inf.y + sector.bounding_box_sup.y) * 0.5F,
+                                   (sector.bounding_box_inf.z + sector.bounding_box_sup.z) * 0.5F};
+            const auto dx = sector.bounding_box_sup.x - sector.bounding_box_inf.x;
+            const auto dy = sector.bounding_box_sup.y - sector.bounding_box_inf.y;
+            const auto dz = sector.bounding_box_sup.z - sector.bounding_box_inf.z;
+            frame_bounds(center, std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 0.001F));
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Copy coordinate")) {
+            char coordinate[128]{};
+            std::snprintf(coordinate, sizeof(coordinate), "%.9g, %.9g, %.9g", hit.position.x, hit.position.y,
+                          hit.position.z);
+            ImGui::SetClipboardText(coordinate);
+        }
+        ImGui::Text("BSP %s | planes %zu/%d | depth %zu", rws::world_topology_status_name(world.topology_status),
+                    world.planes.size(), world.header.plane_sector_count, world.topology_stats.maximum_depth);
+    }
 }
 
 } // namespace rwsman

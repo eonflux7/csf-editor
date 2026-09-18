@@ -21,13 +21,15 @@ public:
     void clear();
     void draw(const rws::Chunk& geometry_chunk, std::span<const std::byte> bytes,
               const std::filesystem::path& source_path);
-    void draw_scene(const std::vector<rws::Chunk>& chunks, std::span<const std::byte> bytes,
-                    std::span<const rws::SceneInstance> instances,
-                    const std::filesystem::path& source_path,
-                    std::optional<std::uint64_t>& selected_chunk,
-                    const rws::Document* collision_document = nullptr,
-                    bool main_is_collision = false,
-                    std::string_view collision_status = {});
+    [[nodiscard]] bool draw_scene(const std::vector<rws::Chunk>& chunks,
+                                  std::span<const std::byte> bytes,
+                                  std::span<const rws::SceneInstance> instances,
+                                  const std::filesystem::path& source_path,
+                                  std::optional<std::uint64_t>& selected_chunk,
+                                  const rws::Document* collision_document = nullptr,
+                                  bool main_is_collision = false,
+                                  std::string_view collision_status = {});
+    void draw_scene_tools(std::string_view collision_status);
 
 private:
     struct Face {
@@ -48,7 +50,9 @@ private:
         std::uint64_t owner_offset{};
         bool force_opaque{};
         PreviewLayer layer{PreviewLayer::visual_clump};
+        std::size_t world_index{}, sector_index{};
     };
+    struct RenderedCollisionTriangle { std::uint32_t first{}; std::size_t world{}, sector{}; std::int32_t triangle{}; };
 
     bool load(const rws::Chunk& geometry_chunk, std::span<const std::byte> bytes,
               const std::filesystem::path& source_path);
@@ -64,6 +68,9 @@ private:
     void update_keyboard_navigation();
     [[nodiscard]] rws::Vec3 camera_offset(float yaw, float pitch) const;
     [[nodiscard]] std::optional<std::uint64_t> pick_scene(float mouse_x, float mouse_y) const;
+    [[nodiscard]] std::optional<rws::CollisionRay> viewport_ray(float mouse_x, float mouse_y) const;
+    [[nodiscard]] std::optional<rws::CollisionHit> pick_collision(float mouse_x, float mouse_y) const;
+    [[nodiscard]] std::optional<ImVec2> project_point(rws::Vec3 point) const;
     static void render_callback(const ImDrawList*, const ImDrawCmd* command);
     void render_gpu();
     bool create_gpu_resources();
@@ -78,13 +85,19 @@ private:
     std::int32_t collision_declared_sector_count_{};
     rws::WorldRecoveryStatus collision_recovery_status_{rws::WorldRecoveryStatus::failed};
     std::vector<std::string> collision_diagnostics_;
-    std::vector<std::string> collision_surface_labels_;
+    std::vector<std::vector<std::string>> collision_surface_labels_;
     std::filesystem::path collision_source_path_;
     std::vector<rws::Vec3> vertices_;
     std::vector<std::vector<Uv>> uv_sets_;
     std::vector<Face> faces_;
     std::vector<GpuVertex> gpu_vertices_;
     std::vector<DrawBatch> draw_batches_;
+    std::vector<RenderedCollisionTriangle> collision_triangle_mapping_;
+    std::vector<rws::RecoveredWorld> collision_worlds_;
+    const rws::Document* collision_document_{};
+    std::optional<rws::CollisionHit> selected_collision_;
+    std::optional<rws::Vec3> measurement_a_, measurement_b_;
+    std::array<rws::CollisionClipPlane, 3> clips_{{{false, 0, true, 0}, {false, 1, true, 0}, {false, 2, true, 0}}};
     std::vector<std::array<std::uint8_t, 4>> material_colors_;
     std::vector<unsigned int> material_textures_;
     std::vector<unsigned int> material_lightmap_textures_;
@@ -107,6 +120,7 @@ private:
     float target_yaw_{-0.65F};
     float target_pitch_{-0.35F};
     float distance_{3.0F};
+    float orthographic_scale_{1.0F};
     float pan_x_{}, pan_y_{};
     rws::Vec3 navigation_offset_{};
     rws::Vec3 target_navigation_offset_{};
@@ -123,6 +137,10 @@ private:
     int collision_style_{};
     int collision_color_mode_{};
     float collision_opacity_{0.35F};
+    int projection_{};
+    bool prefer_collision_{true};
+    bool measurement_mode_{};
+    bool show_leaf_bounds_{}, show_bsp_path_{};
     std::string error_;
 };
 
