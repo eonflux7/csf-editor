@@ -9,6 +9,7 @@
 #include "rws/decoded.hpp"
 #include "rws/obj_export.hpp"
 #include "rws/scene_export.hpp"
+#include "rws/world_recovery.hpp"
 #include "geometry_preview.hpp"
 
 #include <GLFW/glfw3.h>
@@ -21,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <cctype>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -737,16 +739,52 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
     ImGui_ImplOpenGL3_Init("#version 330");
 
     std::unique_ptr<rws::Document> document;
+    std::unique_ptr<rws::Document> collision_document;
+    std::string collision_status = "No document loaded";
+    bool main_is_collision{};
     rwsman::GeometryPreview geometry_preview;
     std::optional<std::uint64_t> selected;
     ChunkDisplayNames display_names;
     std::string status = "Drop an .rws file on this window or pass one on the command line.";
     auto load = [&](const std::filesystem::path& path) {
+        collision_document.reset();
+        collision_status.clear();
+        main_is_collision = false;
+        geometry_preview.clear();
         try {
             document = std::make_unique<rws::Document>(rws::Document::load(path));
+            auto stem = path.stem().string();
+            std::transform(stem.begin(), stem.end(), stem.begin(), [](const unsigned char value) {
+                return static_cast<char>(std::tolower(value));
+            });
+            main_is_collision = stem.size() >= 4 && stem.ends_with("_col");
+            if (main_is_collision) {
+                const auto worlds = rws::recover_worlds(document->chunks(), document->bytes());
+                collision_status = !worlds.empty() && !worlds.front().sectors.empty() ?
+                    "Opened collision World directly" : "The _col file has no recoverable World";
+            } else {
+                auto companion = path;
+                companion.replace_filename(path.stem().string() + "_col" + path.extension().string());
+                std::error_code filesystem_error;
+                if (std::filesystem::is_regular_file(companion, filesystem_error)) {
+                    try {
+                        auto candidate = std::make_unique<rws::Document>(rws::Document::load(companion));
+                        const auto worlds = rws::recover_worlds(candidate->chunks(), candidate->bytes());
+                        if (!worlds.empty() && !worlds.front().sectors.empty()) {
+                            collision_status = "Loaded " + companion.string();
+                            collision_document = std::move(candidate);
+                        } else {
+                            collision_status = "Companion has no recoverable World: " + companion.string();
+                        }
+                    } catch (const std::exception& error) {
+                        collision_status = "Companion failed to load: " + std::string(error.what());
+                    }
+                } else {
+                    collision_status = "Companion not found: " + companion.string();
+                }
+            }
             display_names = resolve_chunk_display_names(
                 document->chunks(), document->bytes(), document->scene_instances());
-            geometry_preview.clear();
             if (const auto* geometry = find_first_chunk(document->chunks(), 0x0F)) selected = geometry->offset;
             else if (!document->chunks().empty()) selected = document->chunks().front().offset;
             else selected.reset();
@@ -792,7 +830,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                     message << "Exported " << stats.atomic_instances << " atomic meshes ("
                             << stats.custom_instances << " CSF placements, "
                             << stats.unresolved_instances << " unresolved) and "
-                            << stats.world_sectors << " World sectors to " << output.string();
+                            << stats.recovered_world_sectors << " recovered World sectors ("
+                            << stats.world_sectors << " exported meshes) to " << output.string();
                     status = message.str();
                 } catch (const std::exception& error) { status = error.what(); }
             }
@@ -859,7 +898,9 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                     }
                     if (ImGui::BeginTabItem("Whole RWS Scene")) {
                         geometry_preview.draw_scene(document->chunks(), document->bytes(),
-                            document->scene_instances(), document->source_path(), selected);
+                            document->scene_instances(), document->source_path(), selected,
+                            main_is_collision ? document.get() : collision_document.get(),
+                            main_is_collision, collision_status);
                         ImGui::EndTabItem();
                     }
                     if (ImGui::BeginTabItem("Inspector / Hex")) {
@@ -902,7 +943,9 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 if (ImGui::BeginTabBar("instance_views")) {
                     if (ImGui::BeginTabItem("Whole RWS Scene")) {
                         geometry_preview.draw_scene(document->chunks(), document->bytes(),
-                            document->scene_instances(), document->source_path(), selected);
+                            document->scene_instances(), document->source_path(), selected,
+                            main_is_collision ? document.get() : collision_document.get(),
+                            main_is_collision, collision_status);
                         ImGui::EndTabItem();
                     }
                     if (ImGui::BeginTabItem("Raw record")) {

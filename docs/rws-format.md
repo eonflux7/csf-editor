@@ -338,6 +338,33 @@ the first four bytes of the following chunk header. This explains several appare
 collision-World nesting/truncation anomalies; the decoder now excludes that
 four-byte over-declared tail instead of interpreting it as metadata.
 
+### Recovered World sectors
+
+Declared-size tree walking remains the authoritative structural view, but it is
+not sufficient for every CSF World: the Pyro size defect and historically damaged
+BSP parent boundaries can hide physically complete leaves. `rws_core` therefore
+provides a separate, read-only recovered-World view. It scans only inside a decoded
+World's physical range and accepts an Atomic Section (`0x09`) only when its library
+stamp and leading Struct agree with the World, its 44-byte header is complete, and
+the exact Struct size is explained by positions, optional packed normals,
+prelight RGBA, zero to eight UV sets, and eight-byte triangles. All arithmetic is
+checked in 64 bits. Accepted ranges cannot overlap, and scanning resumes at the
+validated Struct end so header-like vertex bytes cannot become false sectors.
+
+Recovery records source offsets and array offsets rather than copying mesh data.
+Triangle vertex indices and `material_window_base + local_material` are validated
+against the sector and World Material List. Invalid triangles remain diagnosed and
+are skipped by rendering/export consumers; original bytes and conservative tree
+children are never repaired or fabricated. A World is `complete` when recovered
+sector, triangle, and vertex totals match its header and all triangle/material
+references are valid, `partial` when at least one usable sector remains but those
+invariants fail, and `failed` when no usable sector is found.
+
+On the Ransom FR01 reference pair this invariant is exact: the visual World
+recovers 40 sectors, 109,855 triangles, and 178,532 vertices; the collision World
+recovers 326 sectors, 99,653 triangles, and 84,884 vertices with 14 materials.
+Successful recovery does not suppress the original truncation diagnostics.
+
 ### `ST05_COL.rws`
 
 - Physical size: 6,187,753 bytes.

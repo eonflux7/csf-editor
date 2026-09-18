@@ -1,4 +1,5 @@
 #include "rws/scene_export.hpp"
+#include "rws/world_recovery.hpp"
 
 #include "rws/decoded.hpp"
 
@@ -426,53 +427,34 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
         [](const Chunk& chunk) { return chunk.type == 0x0B; });
     if (world_it == chunks.end()) return;
     const auto& world_chunk = *world_it;
-    const auto world = decode_world(world_chunk, bytes);
-    if (!world) { ++stats.skipped; return; }
+    const auto recovered = recover_world(world_chunk, bytes);
+    if (recovered.sectors.empty()) { ++stats.skipped; return; }
+    stats.recovered_world_sectors += recovered.sectors.size();
+    stats.recovered_world_vertices += static_cast<std::uint64_t>(recovered.recovered_vertices);
+    stats.recovered_world_triangles += static_cast<std::uint64_t>(recovered.recovered_triangles);
     const auto world_materials = decode_materials(find_child(world_chunk, 0x08), bytes, world_chunk.offset,
         "world_" + hex_offset(world_chunk.offset), {155, 158, 150, 255});
     const auto material_base = materials.size();
     materials.insert(materials.end(), world_materials.begin(), world_materials.end());
-    std::uint32_t uv_sets = (world.value->format >> 16U) & 0xFFU;
-    if (uv_sets == 0) uv_sets = (world.value->format & 0x80U) ? 2U :
-        ((world.value->format & 0x04U) ? 1U : 0U);
-    const auto scan_end = std::min<std::uint64_t>(bytes.size(),
-        world_chunk.payload_offset + world_chunk.available_size);
-    for (std::uint64_t candidate = world_chunk.payload_offset; candidate + 36U <= scan_end; ++candidate) {
-        if (read_u32(bytes, candidate) != 0x09 || read_u32(bytes, candidate + 8) != world_chunk.library_id ||
-            read_u32(bytes, candidate + 12) != 0x01 || read_u32(bytes, candidate + 20) != world_chunk.library_id)
-            continue;
-        const auto struct_size = static_cast<std::uint64_t>(read_u32(bytes, candidate + 16));
-        const auto data = candidate + 24U;
-        if (struct_size < 44 || data + struct_size > scan_end) continue;
-        const auto triangle_count = static_cast<std::int32_t>(read_u32(bytes, data + 4));
-        const auto vertex_count = static_cast<std::int32_t>(read_u32(bytes, data + 8));
-        if (triangle_count < 0 || vertex_count < 0) continue;
-        const auto vertices_size = static_cast<std::uint64_t>(vertex_count) * 12U;
-        const auto normals_size = (world.value->format & 0x10U) ? static_cast<std::uint64_t>(vertex_count) * 4U : 0U;
-        const auto prelight_size = (world.value->format & 0x08U) ? static_cast<std::uint64_t>(vertex_count) * 4U : 0U;
-        const auto uv_size = static_cast<std::uint64_t>(uv_sets) * static_cast<std::uint64_t>(vertex_count) * 8U;
-        const auto triangles_size = static_cast<std::uint64_t>(triangle_count) * 8U;
-        if (44U + vertices_size + normals_size + prelight_size + uv_size + triangles_size != struct_size) continue;
-
+    for (const auto& sector : recovered.sectors) {
+        const auto triangle_count = sector.triangle_count;
+        const auto vertex_count = sector.vertex_count;
+        const auto uv_sets = sector.texcoord_sets;
         MeshRecord mesh;
         mesh.kind = "world_sector";
         mesh.owner_offset = world_chunk.offset;
-        mesh.source_offset = candidate;
-        mesh.name = "world_" + hex_offset(world_chunk.offset) + "_sector_" + hex_offset(candidate);
+        mesh.source_offset = sector.chunk_offset;
+        mesh.name = "world_" + hex_offset(world_chunk.offset) + "_sector_" + hex_offset(sector.chunk_offset);
         mesh.positions.reserve(static_cast<std::size_t>(vertex_count));
-        const auto vertices_offset = data + 44U;
-        const auto normals_offset = vertices_offset + vertices_size;
-        const auto uv_offset = vertices_offset + vertices_size + normals_size + prelight_size;
-        const auto triangles_offset = uv_offset + uv_size;
         for (std::int32_t i = 0; i < vertex_count; ++i) {
-            const auto offset = vertices_offset + static_cast<std::uint64_t>(i) * 12U;
+            const auto offset = sector.vertices_offset + static_cast<std::uint64_t>(i) * 12U;
             mesh.positions.push_back(export_point(
                 {read_f32(bytes, offset), read_f32(bytes, offset + 4), read_f32(bytes, offset + 8)}));
         }
-        if (normals_size) {
+        if (sector.normals_offset != 0) {
             mesh.normals.reserve(mesh.positions.size());
             for (std::int32_t i = 0; i < vertex_count; ++i) {
-                const auto offset = normals_offset + static_cast<std::uint64_t>(i) * 4U;
+                const auto offset = sector.normals_offset + static_cast<std::uint64_t>(i) * 4U;
                 const auto component = [&](const std::uint64_t at) {
                     return static_cast<float>(static_cast<std::int8_t>(
                         std::to_integer<std::uint8_t>(bytes[static_cast<std::size_t>(at)])));
@@ -484,7 +466,7 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
         for (std::size_t set = 0; set < std::min<std::uint32_t>(2, uv_sets); ++set) {
             auto& output = set == 0 ? mesh.uv0 : mesh.uv1;
             output.reserve(mesh.positions.size());
-            const auto set_offset = uv_offset + set * static_cast<std::uint64_t>(vertex_count) * 8U;
+            const auto set_offset = sector.texcoord_offsets[set];
             for (std::int32_t i = 0; i < vertex_count; ++i) {
                 const auto offset = set_offset + static_cast<std::uint64_t>(i) * 8U;
                 output.push_back({read_f32(bytes, offset), read_f32(bytes, offset + 4)});
@@ -498,11 +480,10 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
         using TrianglePositionKey = std::array<PositionBits, 3>;
         std::vector<WorldTriangle> triangles;
         std::map<TrianglePositionKey, std::size_t> triangle_by_position;
-        const auto material_window = static_cast<std::int32_t>(read_u32(bytes, data));
         for (std::int32_t i = 0; i < triangle_count; ++i) {
-            const auto offset = triangles_offset + static_cast<std::uint64_t>(i) * 8U;
-            const std::array<std::uint16_t, 3> indices{
-                read_u16(bytes, offset), read_u16(bytes, offset + 2), read_u16(bytes, offset + 4)};
+            const auto decoded_triangle = decode_recovered_world_triangle(sector, i, bytes);
+            if (!decoded_triangle) continue;
+            const auto indices = decoded_triangle.value->vertices;
             if (indices[0] >= mesh.positions.size() || indices[1] >= mesh.positions.size() ||
                 indices[2] >= mesh.positions.size()) continue;
             const auto& a = mesh.positions[indices[0]];
@@ -514,9 +495,11 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
                              ab.z * ac.x - ab.x * ac.z,
                              ab.x * ac.y - ab.y * ac.x};
             if (cross.x * cross.x + cross.y * cross.y + cross.z * cross.z <= 1.0e-20F) continue;
-            const auto material = std::clamp<std::int64_t>(
-                static_cast<std::int64_t>(material_window) + read_u16(bytes, offset + 6), 0,
-                static_cast<std::int64_t>(world_materials.size() - 1));
+            const auto resolved_material = static_cast<std::int64_t>(sector.material_window_base) +
+                                           decoded_triangle.value->material;
+            if (resolved_material < 0 ||
+                resolved_material >= static_cast<std::int64_t>(world_materials.size())) continue;
+            const auto material = static_cast<std::size_t>(resolved_material);
             TrianglePositionKey key{};
             for (std::size_t vertex = 0; vertex < 3; ++vertex) {
                 const auto& position = mesh.positions[indices[vertex]];
@@ -550,7 +533,6 @@ void append_world(const std::vector<Chunk>& chunks, const std::span<const std::b
             ++stats.world_sectors;
             meshes.push_back(std::move(mesh));
         }
-        candidate = data + struct_size - 1U;
     }
 }
 

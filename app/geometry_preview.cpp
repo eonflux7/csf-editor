@@ -1,4 +1,5 @@
 #include "geometry_preview.hpp"
+#include "rws/world_recovery.hpp"
 
 #include <imgui.h>
 #include <GLFW/glfw3.h>
@@ -6,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -224,6 +226,28 @@ ImU32 material_color(const std::uint16_t material, const float shade) {
     return IM_COL32(static_cast<int>(255.0F * color[0] * shade),
                     static_cast<int>(255.0F * color[1] * shade),
                     static_cast<int>(255.0F * color[2] * shade), 255);
+}
+
+std::array<std::uint8_t, 4> collision_surface_color(std::string name,
+                                                    const std::uint16_t material) {
+    std::transform(name.begin(), name.end(), name.begin(), [](const unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    const auto contains = [&](const std::string_view value) { return name.find(value) != std::string::npos; };
+    if (contains("metal")) return {75, 135, 210, 255};
+    if (contains("madera") || contains("wood")) return {205, 137, 72, 255};
+    if (contains("veget") || contains("grass")) return {78, 155, 80, 255};
+    if (contains("barro") || contains("tierra") || contains("mud") || contains("earth"))
+        return {145, 100, 62, 255};
+    if (contains("cristal") || contains("glass")) return {75, 205, 220, 255};
+    if (contains("escal") || contains("stair")) return {235, 205, 65, 255};
+    if (contains("piedra") || contains("cement") || contains("concrete") ||
+        contains("baldosa") || contains("stone") || contains("tile"))
+        return {145, 150, 155, 255};
+    const auto packed = material_color(material, 1.0F);
+    return {static_cast<std::uint8_t>((packed >> IM_COL32_R_SHIFT) & 0xFFU),
+            static_cast<std::uint8_t>((packed >> IM_COL32_G_SHIFT) & 0xFFU),
+            static_cast<std::uint8_t>((packed >> IM_COL32_B_SHIFT) & 0xFFU), 255};
 }
 
 std::uint16_t read_u16(const std::vector<std::byte>& bytes, const std::size_t offset) {
@@ -447,6 +471,12 @@ void GeometryPreview::clear() {
     scene_clump_count_ = scene_instance_count_ = scene_world_sector_count_ = scene_skipped_count_ = 0;
     scene_world_triangle_count_ = 0;
     scene_custom_instance_count_ = scene_unresolved_instance_count_ = 0;
+    collision_sector_count_ = collision_triangle_count_ = collision_material_count_ = 0;
+    collision_declared_sector_count_ = 0;
+    collision_recovery_status_ = rws::WorldRecoveryStatus::failed;
+    collision_diagnostics_.clear();
+    collision_surface_labels_.clear();
+    collision_source_path_.clear();
     vertices_.clear();
     uv_sets_.clear();
     faces_.clear();
@@ -459,6 +489,7 @@ void GeometryPreview::clear() {
     material_lightmap_texture_names_.clear();
     owned_texture_ids_.clear();
     checker_texture_ = 0;
+    visual_material_slot_count_ = 0;
     loaded_texture_count_ = missing_texture_count_ = 0;
     texture_status_.clear();
     selected_uv_set_ = 0;
@@ -492,6 +523,12 @@ void GeometryPreview::reset_view() {
     navigation_offset_ = {};
     target_navigation_offset_ = {};
     preserve_camera_position_ = false;
+}
+
+void GeometryPreview::frame_bounds(const rws::Vec3 center, const float radius) {
+    center_ = center;
+    radius_ = std::max(radius, 0.001F);
+    reset_view();
 }
 
 void GeometryPreview::pan_camera(const float delta_x, const float delta_y) {
@@ -546,6 +583,7 @@ std::optional<std::uint64_t> GeometryPreview::pick_scene(const float mouse_x,
     float closest = std::numeric_limits<float>::max();
     std::optional<std::uint64_t> result;
     for (const auto& batch : draw_batches_) {
+        if (batch.layer == PreviewLayer::collision_world || !show_visual_) continue;
         const auto end = static_cast<std::size_t>(batch.first) + batch.count;
         for (std::size_t i = batch.first; i + 2 < end; i += 3) {
             const auto& a = gpu_vertices_[i];
@@ -781,6 +819,8 @@ bool GeometryPreview::load(const rws::Chunk& geometry_chunk,
         radius_ = std::max(radius_, std::sqrt(x * x + y * y + z * z));
     }
     radius_ = std::max(radius_, 0.001F);
+    all_center_ = center_;
+    all_radius_ = radius_;
     faces_.reserve(static_cast<std::size_t>(geometry.value->triangle_count));
     for (std::int32_t i = 0; i < geometry.value->triangle_count; ++i) {
         const auto triangle = rws::decode_triangle(*geometry.value, i, bytes);
@@ -836,7 +876,9 @@ bool GeometryPreview::load(const rws::Chunk& geometry_chunk,
 bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                                  const std::span<const std::byte> bytes,
                                  const std::span<const rws::SceneInstance> instances,
-                                 const std::filesystem::path& source_path) {
+                                 const std::filesystem::path& source_path,
+                                 const rws::Document* collision_document,
+                                 const bool main_is_collision) {
     clear();
     scene_mode_ = true;
     view_style_ = 1;
@@ -1132,11 +1174,11 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
     // CSF stores the terrain as a RenderWare World after its custom instance
     // region. Document recovery exposes the World itself, while its
     // historically short sector/plugin payloads make declared-size BSP walking
-    // unreliable. Locate leaves by their fully validated Struct layouts.
+    // unreliable. Use the shared core recovery result rather than the parsed tree.
     const auto world_chunk = std::find_if(chunks.begin(), chunks.end(), [](const rws::Chunk& chunk) {
         return chunk.type == 0x0B;
     });
-    if (world_chunk != chunks.end()) {
+    if (!main_is_collision && world_chunk != chunks.end()) {
         const auto world = rws::decode_world(*world_chunk, bytes);
         if (world) {
             const auto* material_list_chunk = rws::find_child(*world_chunk, 0x08);
@@ -1191,42 +1233,15 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                 }
             }
 
-            std::uint32_t uv_sets = (world.value->format >> 16U) & 0xFFU;
-            if (uv_sets == 0) uv_sets = (world.value->format & 0x80U) ? 2U :
-                ((world.value->format & 0x04U) ? 1U : 0U);
-            const auto scan_end = world_chunk->payload_offset + world_chunk->available_size;
-            for (std::uint64_t candidate = world_chunk->payload_offset;
-                 candidate + 36U <= scan_end; ++candidate) {
-                if (read_span_u32(bytes, candidate) != 0x09 ||
-                    read_span_u32(bytes, candidate + 8) != world_chunk->library_id ||
-                    read_span_u32(bytes, candidate + 12) != 0x01 ||
-                    read_span_u32(bytes, candidate + 20) != world_chunk->library_id)
-                    continue;
-                const auto struct_size = static_cast<std::uint64_t>(read_span_u32(bytes, candidate + 16));
-                const auto data = candidate + 24U;
-                if (struct_size < 44 || data + struct_size > scan_end) continue;
-                const auto triangle_count = static_cast<std::int32_t>(read_span_u32(bytes, data + 4));
-                const auto vertex_count = static_cast<std::int32_t>(read_span_u32(bytes, data + 8));
-                if (triangle_count < 0 || vertex_count < 0) continue;
-                const auto vertices_size = static_cast<std::uint64_t>(vertex_count) * 12U;
-                const auto normals_size = (world.value->format & 0x10U) ?
-                    static_cast<std::uint64_t>(vertex_count) * 4U : 0U;
-                const auto prelight_size = (world.value->format & 0x08U) ?
-                    static_cast<std::uint64_t>(vertex_count) * 4U : 0U;
-                const auto uv_size = static_cast<std::uint64_t>(uv_sets) *
-                    static_cast<std::uint64_t>(vertex_count) * 8U;
-                const auto triangles_size = static_cast<std::uint64_t>(triangle_count) * 8U;
-                if (44U + vertices_size + normals_size + prelight_size + uv_size + triangles_size != struct_size)
-                    continue;
-
-                const auto vertices_offset = data + 44U;
-                const auto uv_offset = vertices_offset + vertices_size + normals_size + prelight_size;
-                const auto triangles_offset = uv_offset + uv_size;
-                const auto material_window = static_cast<std::int32_t>(read_span_u32(bytes, data));
+            const auto recovered_world = rws::recover_world(*world_chunk, bytes);
+            for (const auto& recovered_sector : recovered_world.sectors) {
+                const auto triangle_count = recovered_sector.triangle_count;
+                const auto vertex_count = recovered_sector.vertex_count;
+                const auto uv_sets = recovered_sector.texcoord_sets;
                 std::vector<rws::Vec3> sector_vertices;
                 sector_vertices.reserve(static_cast<std::size_t>(vertex_count));
                 for (std::int32_t i = 0; i < vertex_count; ++i) {
-                    const auto offset = vertices_offset + static_cast<std::uint64_t>(i) * 12U;
+                    const auto offset = recovered_sector.vertices_offset + static_cast<std::uint64_t>(i) * 12U;
                     const rws::Vec3 vertex{read_f32(bytes, offset), read_f32(bytes, offset + 4),
                                            read_f32(bytes, offset + 8)};
                     sector_vertices.push_back(vertex);
@@ -1239,12 +1254,9 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                 std::vector<SectorTriangle> sector_triangles;
                 sector_triangles.reserve(static_cast<std::size_t>(triangle_count));
                 for (std::int32_t i = 0; i < triangle_count; ++i) {
-                    const auto offset = triangles_offset + static_cast<std::uint64_t>(i) * 8U;
-                    const std::array words{read_span_u16(bytes, offset), read_span_u16(bytes, offset + 2),
-                                           read_span_u16(bytes, offset + 4), read_span_u16(bytes, offset + 6)};
-                    // World Sectors retain the in-memory RpTriangle order. This
-                    // differs from the streamed order used by Geometry chunks.
-                    sector_triangles.push_back({{words[0], words[1], words[2]}, words[3]});
+                    const auto triangle = rws::decode_recovered_world_triangle(recovered_sector, i, bytes);
+                    if (triangle) sector_triangles.push_back({triangle.value->vertices,
+                                                              triangle.value->material});
                 }
                 std::stable_sort(sector_triangles.begin(), sector_triangles.end(),
                     [](const auto& left, const auto& right) { return left.material < right.material; });
@@ -1253,7 +1265,7 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                         triangle.vertices[1] >= sector_vertices.size() ||
                         triangle.vertices[2] >= sector_vertices.size()) continue;
                     const auto local_material = std::clamp<std::int64_t>(
-                        static_cast<std::int64_t>(material_window) + triangle.material,
+                        static_cast<std::int64_t>(recovered_sector.material_window_base) + triangle.material,
                         0, static_cast<std::int64_t>(material_count - 1));
                     const auto global_material = material_base + static_cast<std::size_t>(local_material);
                     if (draw_batches_.empty() || draw_batches_.back().material != global_material ||
@@ -1264,7 +1276,7 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                             texture_name.compare(0, 4, "FFLR") == 0;
                         draw_batches_.push_back({static_cast<std::uint16_t>(global_material),
                             static_cast<std::uint32_t>(gpu_vertices_.size()), 0,
-                            world_chunk->offset, floor_material});
+                            world_chunk->offset, floor_material, PreviewLayer::visual_world});
                     }
                     const auto& a = sector_vertices[triangle.vertices[0]];
                     const auto& b = sector_vertices[triangle.vertices[1]];
@@ -1276,9 +1288,9 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                     if (length > 0.0F) { nx /= length; ny /= length; nz /= length; }
                     for (const auto index : triangle.vertices) {
                         const auto& vertex = sector_vertices[index];
-                        const auto base = uv_sets > 0 ? uv_offset + static_cast<std::uint64_t>(index) * 8U : 0U;
-                        const auto lightmap = uv_sets > 1 ? uv_offset +
-                            static_cast<std::uint64_t>(vertex_count) * 8U +
+                        const auto base = uv_sets > 0 ? recovered_sector.texcoord_offsets[0] +
+                            static_cast<std::uint64_t>(index) * 8U : 0U;
+                        const auto lightmap = uv_sets > 1 ? recovered_sector.texcoord_offsets[1] +
                             static_cast<std::uint64_t>(index) * 8U : 0U;
                         const Uv base_uv = base ? Uv{read_f32(bytes, base), read_f32(bytes, base + 4)} : Uv{};
                         const Uv lightmap_uv = lightmap ?
@@ -1292,9 +1304,147 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                     ++scene_world_triangle_count_;
                 }
                 ++scene_world_sector_count_;
-                candidate = data + struct_size - 1U;
             }
         }
+    }
+
+    if (!vertices_.empty()) {
+        visual_center_ = {(minimum.x + maximum.x) * 0.5F, (minimum.y + maximum.y) * 0.5F,
+                          (minimum.z + maximum.z) * 0.5F};
+        const auto dx = maximum.x - minimum.x, dy = maximum.y - minimum.y,
+                   dz = maximum.z - minimum.z;
+        visual_radius_ = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 0.001F);
+    }
+
+    auto append_collision = [&](const rws::Document& collision) {
+        const auto collision_worlds = rws::recover_worlds(collision.chunks(), collision.bytes());
+        if (collision_worlds.empty()) {
+            collision_diagnostics_.emplace_back("Collision document has no World");
+            return;
+        }
+        const auto& recovered = collision_worlds.front();
+        collision_recovery_status_ = recovered.status;
+        collision_declared_sector_count_ = recovered.header.world_sector_count;
+        collision_sector_count_ = recovered.sectors.size();
+        collision_triangle_count_ = static_cast<std::size_t>(recovered.recovered_triangles);
+        collision_material_count_ = static_cast<std::size_t>(std::max(0, recovered.material_count));
+        collision_diagnostics_ = recovered.diagnostics;
+        collision_source_path_ = collision.source_path();
+        collision_center_ = {(recovered.header.bounding_box_inf.x + recovered.header.bounding_box_sup.x) * 0.5F,
+                             (recovered.header.bounding_box_inf.y + recovered.header.bounding_box_sup.y) * 0.5F,
+                             (recovered.header.bounding_box_inf.z + recovered.header.bounding_box_sup.z) * 0.5F};
+        const auto collision_dx = recovered.header.bounding_box_sup.x - recovered.header.bounding_box_inf.x;
+        const auto collision_dy = recovered.header.bounding_box_sup.y - recovered.header.bounding_box_inf.y;
+        const auto collision_dz = recovered.header.bounding_box_sup.z - recovered.header.bounding_box_inf.z;
+        collision_radius_ = std::max(0.5F * std::sqrt(collision_dx * collision_dx +
+            collision_dy * collision_dy + collision_dz * collision_dz), 0.001F);
+        const auto collision_world = std::find_if(collision.chunks().begin(), collision.chunks().end(),
+            [&](const rws::Chunk& chunk) { return chunk.type == 0x0B && chunk.offset == recovered.world_offset; });
+        if (collision_world == collision.chunks().end() || recovered.sectors.empty()) return;
+
+        const auto material_base = material_colors_.size();
+        const auto material_count = std::max<std::size_t>(1U, collision_material_count_);
+        material_colors_.resize(material_base + material_count);
+        material_textures_.resize(material_base + material_count);
+        material_lightmap_textures_.resize(material_base + material_count);
+        material_texture_names_.resize(material_base + material_count);
+        material_lightmap_texture_names_.resize(material_base + material_count);
+        collision_surface_labels_.assign(material_count, "Unknown");
+        for (std::size_t slot = 0; slot < material_count; ++slot)
+            material_colors_[material_base + slot] = collision_surface_color({}, static_cast<std::uint16_t>(slot));
+
+        if (const auto* list_chunk = rws::find_child(*collision_world, 0x08)) {
+            const auto list = rws::decode_material_list(*list_chunk, collision.bytes());
+            std::vector<const rws::Chunk*> materials;
+            for (const auto& child : list_chunk->children)
+                if (child.type == 0x07) materials.push_back(&child);
+            std::size_t next_material{};
+            for (std::size_t slot = 0; list && slot < material_count; ++slot) {
+                const auto remap = list.value->remap[slot];
+                if (remap >= 0 && static_cast<std::size_t>(remap) < slot) {
+                    material_colors_[material_base + slot] = material_colors_[material_base + remap];
+                    collision_surface_labels_[slot] = collision_surface_labels_[remap];
+                    continue;
+                }
+                if (next_material >= materials.size()) continue;
+                const auto* extension = rws::find_child(*materials[next_material++], 0x03);
+                const auto* pyro = extension ? rws::find_child(*extension, 0xFFFFFF00U) : nullptr;
+                const auto metadata = pyro ? rws::decode_pyro_extension(*pyro, 0x07, collision.bytes()) :
+                    rws::DecodeResult<rws::PyroExtensionInfo>{};
+                if (!metadata) continue;
+                const auto name = std::string(metadata.value->object_name());
+                const auto surface = metadata.value->material_surface_type();
+                collision_surface_labels_[slot] = name.empty() ? "Unknown" : name;
+                if (surface) collision_surface_labels_[slot] += " (ID " + std::to_string(*surface) + ')';
+                material_colors_[material_base + slot] =
+                    collision_surface_color(name, static_cast<std::uint16_t>(slot));
+            }
+        }
+
+        for (const auto& sector : recovered.sectors) {
+            std::vector<rws::Vec3> sector_vertices;
+            sector_vertices.reserve(static_cast<std::size_t>(sector.vertex_count));
+            for (std::int32_t i = 0; i < sector.vertex_count; ++i) {
+                const auto offset = sector.vertices_offset + static_cast<std::uint64_t>(i) * 12U;
+                const rws::Vec3 vertex{read_f32(collision.bytes(), offset),
+                    read_f32(collision.bytes(), offset + 4U), read_f32(collision.bytes(), offset + 8U)};
+                sector_vertices.push_back(vertex);
+                vertices_.push_back(vertex);
+                minimum.x = std::min(minimum.x, vertex.x); minimum.y = std::min(minimum.y, vertex.y);
+                minimum.z = std::min(minimum.z, vertex.z); maximum.x = std::max(maximum.x, vertex.x);
+                maximum.y = std::max(maximum.y, vertex.y); maximum.z = std::max(maximum.z, vertex.z);
+            }
+            struct CollisionTriangle { std::array<std::uint16_t, 3> vertices; std::uint16_t material; };
+            std::vector<CollisionTriangle> triangles;
+            for (std::int32_t i = 0; i < sector.triangle_count; ++i) {
+                const auto decoded_triangle = rws::decode_recovered_world_triangle(sector, i, collision.bytes());
+                if (!decoded_triangle) continue;
+                const auto resolved = static_cast<std::int64_t>(sector.material_window_base) +
+                                      decoded_triangle.value->material;
+                if (decoded_triangle.value->vertices[0] >= sector_vertices.size() ||
+                    decoded_triangle.value->vertices[1] >= sector_vertices.size() ||
+                    decoded_triangle.value->vertices[2] >= sector_vertices.size() ||
+                    resolved < 0 || resolved >= static_cast<std::int64_t>(material_count)) continue;
+                triangles.push_back({decoded_triangle.value->vertices, static_cast<std::uint16_t>(resolved)});
+            }
+            std::stable_sort(triangles.begin(), triangles.end(), [](const auto& left, const auto& right) {
+                return left.material < right.material;
+            });
+            for (const auto& triangle : triangles) {
+                const auto global_material = material_base + triangle.material;
+                if (draw_batches_.empty() || draw_batches_.back().material != global_material ||
+                    draw_batches_.back().owner_offset != sector.chunk_offset ||
+                    draw_batches_.back().layer != PreviewLayer::collision_world) {
+                    draw_batches_.push_back({static_cast<std::uint16_t>(global_material),
+                        static_cast<std::uint32_t>(gpu_vertices_.size()), 0, sector.chunk_offset,
+                        false, PreviewLayer::collision_world});
+                }
+                const auto& a = sector_vertices[triangle.vertices[0]];
+                const auto& b = sector_vertices[triangle.vertices[1]];
+                const auto& c = sector_vertices[triangle.vertices[2]];
+                float nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y);
+                float ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z);
+                float nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+                const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
+                if (length > 0.0F) { nx /= length; ny /= length; nz /= length; }
+                for (const auto index : triangle.vertices) {
+                    const auto& vertex = sector_vertices[index];
+                    gpu_vertices_.push_back({vertex.x, vertex.y, vertex.z, 0, 0, 0, 0, 0, 0,
+                                             nx, ny, nz, index});
+                }
+                faces_.push_back({});
+                draw_batches_.back().count += 3;
+            }
+        }
+    };
+
+    visual_material_slot_count_ = material_colors_.size();
+    if (collision_document) append_collision(*collision_document);
+    if (main_is_collision) {
+        show_visual_ = false;
+        show_collision_ = true;
+    } else {
+        show_visual_ = true;
     }
 
     if (gpu_vertices_.empty()) {
@@ -1309,6 +1459,8 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
         radius_ = std::max(radius_, std::sqrt(x * x + y * y + z * z));
     }
     radius_ = std::max(radius_, 0.001F);
+    all_center_ = center_;
+    all_radius_ = radius_;
     if (!create_gpu_resources()) return false;
     reset_view();
     return true;
@@ -1516,28 +1668,53 @@ void GeometryPreview::render_gpu() {
     gl.uniform_1i(use_debug_uv_location, view_style_ == 3 || view_style_ == 4);
     gl.uniform_1i(gl.get_uniform_location(shader_program_, "uApplyLighting"), view_style_ < 3);
 
-    auto set_color = [&](const std::uint16_t material) {
-        if (view_style_ == 1) {
-            const auto packed = material_color(material, 1.0F);
+    auto set_color = [&](const DrawBatch& batch) {
+        const auto material = batch.material;
+        if ((batch.layer == PreviewLayer::collision_world && collision_color_mode_ == 1) ||
+            (batch.layer != PreviewLayer::collision_world && view_style_ == 1)) {
+            const auto palette_material = batch.layer == PreviewLayer::collision_world &&
+                    static_cast<std::size_t>(material) >= visual_material_slot_count_ ?
+                static_cast<std::uint16_t>(static_cast<std::size_t>(material) -
+                                           visual_material_slot_count_) : material;
+            const auto packed = material_color(palette_material, 1.0F);
             gl.uniform_4f(base_color_location,
                 static_cast<float>((packed >> IM_COL32_R_SHIFT) & 0xFFU) / 255.0F,
                 static_cast<float>((packed >> IM_COL32_G_SHIFT) & 0xFFU) / 255.0F,
-                static_cast<float>((packed >> IM_COL32_B_SHIFT) & 0xFFU) / 255.0F, 1.0F);
+                static_cast<float>((packed >> IM_COL32_B_SHIFT) & 0xFFU) / 255.0F,
+                batch.layer == PreviewLayer::collision_world ? collision_opacity_ : 1.0F);
+            return;
+        }
+        if (batch.layer == PreviewLayer::collision_world && collision_color_mode_ == 2) {
+            gl.uniform_4f(base_color_location, 0.95F, 0.25F, 0.72F, collision_opacity_);
             return;
         }
         const auto index = static_cast<std::size_t>(material);
         const auto rgba = index < material_colors_.size() ? material_colors_[index] :
             std::array<std::uint8_t, 4>{190, 190, 190, 255};
         gl.uniform_4f(base_color_location, rgba[0] / 255.0F, rgba[1] / 255.0F,
-                      rgba[2] / 255.0F, rgba[3] / 255.0F);
+                      rgba[2] / 255.0F, batch.layer == PreviewLayer::collision_world ?
+                          collision_opacity_ : rgba[3] / 255.0F);
     };
 
-    if (view_style_ != 7) {
+    if (view_style_ != 7 || show_collision_) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         for (const auto& batch : draw_batches_) {
+            const bool collision = batch.layer == PreviewLayer::collision_world;
+            if ((!collision && !show_visual_) || (collision && (!show_collision_ || collision_style_ == 2)))
+                continue;
+            if (!collision && view_style_ == 7) continue;
+            if (collision) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                if (collision_style_ == 3) glDisable(GL_DEPTH_TEST);
+                else glEnable(GL_DEPTH_TEST);
+            } else {
+                glDisable(GL_BLEND); glDepthMask(GL_TRUE); glEnable(GL_DEPTH_TEST);
+            }
             const auto material = static_cast<std::size_t>(batch.material);
             GLuint texture{}, lightmap{};
-            if ((view_style_ == 0 || view_style_ == 6) && (scene_mode_ || !uv_sets_.empty()) &&
+            if (!collision && (view_style_ == 0 || view_style_ == 6) && (scene_mode_ || !uv_sets_.empty()) &&
                 material < material_textures_.size())
                 texture = material_textures_[material];
             else if ((view_style_ == 3 || view_style_ == 4) && selected_uv_set_ < uv_sets_.size())
@@ -1545,11 +1722,11 @@ void GeometryPreview::render_gpu() {
             if ((view_style_ == 5 || view_style_ == 6) && (scene_mode_ || uv_sets_.size() > 1) &&
                 material < material_lightmap_textures_.size())
                 lightmap = material_lightmap_textures_[material];
-            set_color(batch.material);
+            set_color(batch);
             gl.uniform_1i(use_texture_location, texture != 0);
             gl.uniform_1i(use_lightmap_location, lightmap != 0);
             gl.uniform_1i(lightmap_only_location, view_style_ == 5);
-            gl.uniform_1i(force_opaque_location, batch.force_opaque);
+            gl.uniform_1i(force_opaque_location, !collision && batch.force_opaque);
             gl.active_texture(gl_texture0);
             glBindTexture(GL_TEXTURE_2D, texture);
             gl.active_texture(gl_texture1);
@@ -1557,7 +1734,11 @@ void GeometryPreview::render_gpu() {
             glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first), static_cast<GLsizei>(batch.count));
         }
     }
-    if (view_style_ == 7 || wireframe_) {
+    if (view_style_ == 7 || wireframe_ || (show_collision_ &&
+        (collision_style_ == 1 || collision_style_ == 2))) {
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
         gl.uniform_1i(use_texture_location, 0);
         gl.uniform_1i(use_lightmap_location, 0);
         gl.uniform_1i(force_opaque_location, 1);
@@ -1568,11 +1749,26 @@ void GeometryPreview::render_gpu() {
         glEnable(GL_POLYGON_OFFSET_LINE);
         glPolygonOffset(-1.0F, -1.0F);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        for (const auto& batch : draw_batches_)
+        for (const auto& batch : draw_batches_) {
+            const bool collision = batch.layer == PreviewLayer::collision_world;
+            const bool draw_visual_wire = !collision && show_visual_ && (view_style_ == 7 || wireframe_);
+            const bool draw_collision_wire = collision && show_collision_ &&
+                (collision_style_ == 1 || collision_style_ == 2);
+            if (!draw_visual_wire && !draw_collision_wire) continue;
+            if (collision) gl.uniform_4f(base_color_location, 0.1F, 0.95F, 0.95F, 1.0F);
+            else gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F,
+                               view_style_ == 7 ? 0.95F : 0.13F, 1.0F);
             glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first), static_cast<GLsizei>(batch.count));
+        }
         glDisable(GL_POLYGON_OFFSET_LINE);
     }
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
     gl.active_texture(gl_texture0);
     gl.bind_vertex_array(0);
     gl.use_program(0);
@@ -1688,14 +1884,61 @@ void GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks,
                                  const std::span<const std::byte> bytes,
                                  const std::span<const rws::SceneInstance> instances,
                                  const std::filesystem::path& source_path,
-                                 std::optional<std::uint64_t>& selected_chunk) {
-    if (!scene_mode_) load_scene(chunks, bytes, instances, source_path);
+                                 std::optional<std::uint64_t>& selected_chunk,
+                                 const rws::Document* collision_document,
+                                 const bool main_is_collision,
+                                 const std::string_view collision_status) {
+    if (!scene_mode_) load_scene(chunks, bytes, instances, source_path, collision_document,
+                                 main_is_collision);
 
     ImGui::Text("Scene: %zu clumps | %zu atomic instances | %zu terrain sectors (%zu triangles) | %zu skipped",
                 scene_clump_count_, scene_instance_count_, scene_world_sector_count_,
                 scene_world_triangle_count_, scene_skipped_count_);
     ImGui::Text("CSF placements: %zu rendered | %zu unresolved",
                 scene_custom_instance_count_, scene_unresolved_instance_count_);
+    const bool has_collision = collision_sector_count_ != 0;
+    const bool has_visual = std::any_of(draw_batches_.begin(), draw_batches_.end(),
+        [](const DrawBatch& batch) { return batch.layer != PreviewLayer::collision_world; });
+    ImGui::BeginDisabled(!has_visual);
+    ImGui::Checkbox("Show visual scene", &show_visual_);
+    ImGui::EndDisabled(); ImGui::SameLine();
+    ImGui::BeginDisabled(!has_collision);
+    ImGui::Checkbox("Show level collision", &show_collision_);
+    ImGui::EndDisabled();
+    if (has_collision) {
+        ImGui::Text("Collision: %zu/%d sectors | %zu triangles | %zu materials | %s",
+            collision_sector_count_, collision_declared_sector_count_, collision_triangle_count_,
+            collision_material_count_, rws::world_recovery_status_name(collision_recovery_status_));
+        ImGui::TextDisabled("Companion: %s", collision_source_path_.filename().string().c_str());
+        constexpr const char* collision_styles[] = {"Solid", "Solid + wire", "Wireframe", "X-ray"};
+        constexpr const char* collision_colors[] = {"Surface", "Material index", "Single color"};
+        ImGui::SetNextItemWidth(145.0F);
+        ImGui::Combo("Collision style", &collision_style_, collision_styles,
+                     static_cast<int>(std::size(collision_styles)));
+        ImGui::SameLine(); ImGui::SetNextItemWidth(145.0F);
+        ImGui::Combo("Color by", &collision_color_mode_, collision_colors,
+                     static_cast<int>(std::size(collision_colors)));
+        ImGui::SameLine(); ImGui::SetNextItemWidth(130.0F);
+        ImGui::SliderFloat("Opacity", &collision_opacity_, 0.05F, 1.0F, "%.2f");
+        if (!collision_diagnostics_.empty()) {
+            ImGui::TextColored(ImVec4(1.0F, 0.65F, 0.2F, 1.0F), "%s",
+                               collision_diagnostics_.front().c_str());
+            if (ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                for (const auto& diagnostic : collision_diagnostics_)
+                    ImGui::TextUnformatted(diagnostic.c_str());
+                ImGui::EndTooltip();
+            }
+        }
+        if (ImGui::TreeNode("Collision surfaces")) {
+            for (std::size_t i = 0; i < collision_surface_labels_.size(); ++i)
+                ImGui::Text("%zu: %s", i, collision_surface_labels_[i].c_str());
+            ImGui::TreePop();
+        }
+    } else if (!collision_status.empty()) {
+        ImGui::TextDisabled("Collision: %.*s", static_cast<int>(collision_status.size()),
+                            collision_status.data());
+    }
     constexpr std::array scene_styles{0, 1, 2, 5, 6, 7};
     constexpr const char* scene_style_names[] = {
         "Textured", "Material index", "Material color", "Lightmap texture",
@@ -1710,8 +1953,15 @@ void GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks,
     ImGui::SameLine();
     if (view_style_ != 7) { ImGui::Checkbox("Wire overlay", &wireframe_); ImGui::SameLine(); }
     ImGui::Checkbox("Cull backfaces", &cull_backfaces_); ImGui::SameLine();
-    if (ImGui::Button("Frame whole scene")) reset_view(); ImGui::SameLine();
-    if (ImGui::Button("Reload edited bytes")) load_scene(chunks, bytes, instances, source_path);
+    if (ImGui::Button("Frame all")) frame_bounds(all_center_, all_radius_); ImGui::SameLine();
+    ImGui::BeginDisabled(!has_visual);
+    if (ImGui::Button("Frame visual")) frame_bounds(visual_center_, visual_radius_); ImGui::SameLine();
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!has_collision);
+    if (ImGui::Button("Frame collision")) frame_bounds(collision_center_, collision_radius_);
+    ImGui::EndDisabled(); ImGui::SameLine();
+    if (ImGui::Button("Reload edited bytes"))
+        load_scene(chunks, bytes, instances, source_path, collision_document, main_is_collision);
     ImGui::SetNextItemWidth(150.0F);
     ImGui::SliderFloat("Move speed", &navigation_speed_, 0.05F, 4.0F, "%.2fx",
                        ImGuiSliderFlags_Logarithmic);
@@ -1726,10 +1976,13 @@ void GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks,
         if (view_style_ == 5 || view_style_ == 6) {
             ImGui::SetNextItemWidth(180.0F);
             ImGui::SliderFloat("Lightmap intensity", &lightmap_intensity_, 0.25F, 4.0F);
-            const auto resolved = std::count_if(material_lightmap_textures_.begin(),
-                material_lightmap_textures_.end(), [](const unsigned int texture) { return texture != 0; });
+            const auto visual_end = material_lightmap_textures_.begin() +
+                static_cast<std::ptrdiff_t>(std::min(visual_material_slot_count_,
+                                                     material_lightmap_textures_.size()));
+            const auto resolved = std::count_if(material_lightmap_textures_.begin(), visual_end,
+                [](const unsigned int texture) { return texture != 0; });
             ImGui::Text("Standard-clump MatFX lightmaps: %zu/%zu material slots",
-                        static_cast<std::size_t>(resolved), material_lightmap_textures_.size());
+                        static_cast<std::size_t>(resolved), visual_material_slot_count_);
         }
         if (!texture_status_.empty()) ImGui::TextDisabled("%s", texture_status_.c_str());
     }

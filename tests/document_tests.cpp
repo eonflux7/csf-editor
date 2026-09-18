@@ -1,7 +1,9 @@
 #include "rws/document.hpp"
 #include "rws/decoded.hpp"
+#include "rws/world_recovery.hpp"
 
 #include <bit>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +27,71 @@ void append_header(std::vector<std::byte>& bytes, const std::uint32_t type,
 
 void append_f32(std::vector<std::byte>& bytes, const float value) {
     append_u32(bytes, std::bit_cast<std::uint32_t>(value));
+}
+
+void append_u16(std::vector<std::byte>& bytes, const std::uint16_t value) {
+    bytes.push_back(static_cast<std::byte>(value & 0xFFU));
+    bytes.push_back(static_cast<std::byte>(value >> 8U));
+}
+
+void append_world_sector(std::vector<std::byte>& output, const std::uint32_t format,
+                         const std::int32_t material_base, const std::int32_t vertices,
+                         const std::vector<std::array<std::uint16_t, 4>>& triangles) {
+    std::vector<std::byte> data;
+    append_u32(data, static_cast<std::uint32_t>(material_base));
+    append_u32(data, static_cast<std::uint32_t>(triangles.size()));
+    append_u32(data, static_cast<std::uint32_t>(vertices));
+    for (const float value : {-1.0F, -2.0F, -3.0F, 4.0F, 5.0F, 6.0F}) append_f32(data, value);
+    append_u32(data, 0); append_u32(data, 0);
+    if (vertices > 0) {
+        for (std::int32_t i = 0; i < vertices; ++i) {
+            append_f32(data, static_cast<float>(i)); append_f32(data, 0); append_f32(data, 0);
+        }
+        if (format & 0x10U)
+            for (std::int32_t i = 0; i < vertices; ++i) append_u32(data, 0x007F0000U);
+        if (format & 0x08U)
+            for (std::int32_t i = 0; i < vertices; ++i) append_u32(data, 0xFFFFFFFFU);
+        auto uv_sets = (format >> 16U) & 0xFFU;
+        if (uv_sets == 0) uv_sets = (format & 0x80U) ? 2U : ((format & 0x04U) ? 1U : 0U);
+        for (std::uint32_t set = 0; set < uv_sets; ++set)
+            for (std::int32_t i = 0; i < vertices; ++i) {
+                append_f32(data, static_cast<float>(i)); append_f32(data, static_cast<float>(set));
+            }
+    }
+    for (const auto& triangle : triangles)
+        for (const auto word : triangle) append_u16(data, word);
+    append_header(output, 0x09, static_cast<std::uint32_t>(12U + data.size()));
+    append_header(output, 0x01, static_cast<std::uint32_t>(data.size()));
+    output.insert(output.end(), data.begin(), data.end());
+}
+
+std::vector<std::byte> make_world(const std::uint32_t format,
+                                  const std::int32_t declared_sectors,
+                                  const std::int32_t declared_triangles,
+                                  const std::int32_t declared_vertices,
+                                  const std::int32_t materials,
+                                  const std::vector<std::vector<std::byte>>& sectors) {
+    std::vector<std::byte> payload;
+    append_header(payload, 0x01, 64);
+    append_u32(payload, 1);
+    append_f32(payload, 0); append_f32(payload, 0); append_f32(payload, 0);
+    append_u32(payload, static_cast<std::uint32_t>(declared_triangles));
+    append_u32(payload, static_cast<std::uint32_t>(declared_vertices));
+    append_u32(payload, 0);
+    append_u32(payload, static_cast<std::uint32_t>(declared_sectors));
+    append_u32(payload, 0); append_u32(payload, format);
+    for (const float value : {4.0F, 5.0F, 6.0F, -1.0F, -2.0F, -3.0F}) append_f32(payload, value);
+    std::vector<std::byte> material_struct;
+    append_u32(material_struct, static_cast<std::uint32_t>(materials));
+    for (std::int32_t i = 0; i < materials; ++i) append_u32(material_struct, 0xFFFFFFFFU);
+    append_header(payload, 0x08, static_cast<std::uint32_t>(12U + material_struct.size()));
+    append_header(payload, 0x01, static_cast<std::uint32_t>(material_struct.size()));
+    payload.insert(payload.end(), material_struct.begin(), material_struct.end());
+    for (const auto& sector : sectors) payload.insert(payload.end(), sector.begin(), sector.end());
+    std::vector<std::byte> bytes;
+    append_header(bytes, 0x0B, static_cast<std::uint32_t>(payload.size()));
+    bytes.insert(bytes.end(), payload.begin(), payload.end());
+    return bytes;
 }
 
 } // namespace
@@ -99,7 +166,7 @@ int main() {
         assert(rws::has_scene_instance_flag(instance.flags, rws::SceneInstanceFlag::enabled));
         assert(rws::has_scene_instance_flag(instance.flags, rws::SceneInstanceFlag::animated));
         assert(rws::scene_instance_flag_names(instance.flags) ==
-               "enabled, animated, scene-registered");
+               "enabled, mipmapped, animated, scene-registered");
         assert(instance.position.x == 10.0F && instance.position.y == 20.0F && instance.position.z == 30.0F);
         assert(document.chunks().size() == 2 && document.chunks()[1].offset == world_offset);
     }
@@ -112,7 +179,7 @@ int main() {
         append_u32(bytes, 1);    // triangles
         append_u32(bytes, 3);    // vertices
         append_u32(bytes, 1);    // morph targets
-        for (int i = 0; i < 4; ++i) append_u32(bytes, 0); // one triangle
+        for (int i = 0; i < 2; ++i) append_u32(bytes, 0); // one eight-byte triangle
         append_f32(bytes, 0); append_f32(bytes, 0); append_f32(bytes, 0); append_f32(bytes, 1);
         append_u32(bytes, 1); append_u32(bytes, 1);
         for (int i = 0; i < 18; ++i) append_f32(bytes, 0); // positions + normals
@@ -206,8 +273,8 @@ int main() {
         assert(contents.value->entries[1].chunk_type == 0x0B && contents.value->entries[1].offset == 84);
     }
     {
-        constexpr std::uint32_t texture_payload_size = 52;
-        constexpr std::uint32_t effects_payload_size = 88;
+        constexpr std::uint32_t texture_payload_size = 64;
+        constexpr std::uint32_t effects_payload_size = 100;
         std::vector<std::byte> bytes;
         append_header(bytes, 0x120, effects_payload_size);
         append_u32(bytes, 4); // dual-pass effect
@@ -366,8 +433,8 @@ int main() {
         append_u32(payload, 8);
         for (int i = 0; i < 12; ++i) append_f32(payload, i % 5 == 0 ? 1.0F : 0.0F);
         for (float value : {2.0F, 0.3F, 0.1F}) { append_u32(payload, 5); append_f32(payload, value); }
-        append_u32(payload, 1); append_u32(payload, 0);
-        append_u32(payload, 1); append_u32(payload, 0);
+        append_u32(payload, 1); append_u16(payload, 0);
+        append_u32(payload, 1); append_u16(payload, 0);
         append_u32(payload, 5); append_f32(payload, 12.0F);
         append_u32(payload, 6); append_f32(payload, 1.0F); append_f32(payload, 2.0F);
         append_f32(payload, 3.0F);
@@ -378,8 +445,8 @@ int main() {
         append_u32(payload, 8);
         for (int i = 0; i < 12; ++i) append_f32(payload, i % 5 == 0 ? 1.0F : 0.0F);
         for (float value : {0.0F, 0.4F, 0.2F}) { append_u32(payload, 5); append_f32(payload, value); }
-        append_u32(payload, 1); append_u32(payload, 0);
-        append_u32(payload, 1); append_u32(payload, 0);
+        append_u32(payload, 1); append_u16(payload, 0);
+        append_u32(payload, 1); append_u16(payload, 0);
         append_u32(payload, 5); append_f32(payload, 12.0F);
         append_u32(payload, 9); append_u32(payload, 6);
         append_f32(payload, 4.0F); append_f32(payload, 5.0F); append_f32(payload, 6.0F);
@@ -402,6 +469,78 @@ int main() {
         assert(body.value->volume.trilist_center_of_mass->y == 2.0F);
         assert(body.value->volume.trilist_principal_inertia->z == 6.0F);
         assert((*body.value->volume.trilist_inertia_orientation)[3] == 1.0F);
+    }
+    {
+        std::vector<std::byte> first, second;
+        append_world_sector(first, 0, 0, 3, {{{0, 1, 2, 0}}});
+        append_world_sector(second, 0, 1, 3, {{{2, 1, 0, 0}}});
+        auto bytes = make_world(0, 2, 2, 6, 2, {first, second});
+        const auto original = bytes;
+        const auto document = rws::Document::from_bytes(std::move(bytes));
+        const auto worlds = rws::recover_worlds(document.chunks(), document.bytes());
+        assert(worlds.size() == 1);
+        const auto& world = worlds.front();
+        assert(world.status == rws::WorldRecoveryStatus::complete);
+        assert(world.sectors.size() == 2 && world.recovered_triangles == 2 &&
+               world.recovered_vertices == 6 && world.material_count == 2);
+        assert(world.sectors[1].material_window_base == 1);
+        assert(std::equal(original.begin(), original.end(), document.bytes().begin()));
+    }
+    {
+        constexpr std::uint32_t format = 0x00020018U; // normals, prelight, two UV sets
+        std::vector<std::byte> sector;
+        append_world_sector(sector, format, 0, 3, {{{0, 1, 2, 0}}});
+        const auto document = rws::Document::from_bytes(make_world(format, 1, 1, 3, 1, {sector}));
+        const auto world = rws::recover_world(document.chunks()[0], document.bytes());
+        assert(world.status == rws::WorldRecoveryStatus::complete && world.sectors.size() == 1);
+        const auto& recovered = world.sectors.front();
+        assert(recovered.normals_offset != 0 && recovered.prelight_offset != 0);
+        assert(recovered.texcoord_offsets.size() == 2);
+        assert(recovered.prelight_offset - recovered.normals_offset == 12);
+        assert(recovered.texcoord_offsets[1] - recovered.texcoord_offsets[0] == 24);
+        assert(recovered.triangles_offset - recovered.texcoord_offsets[1] == 24);
+    }
+    {
+        std::vector<std::byte> sector;
+        append_world_sector(sector, 0, 2, 3, {{{0, 1, 9, 0}}});
+        const auto document = rws::Document::from_bytes(make_world(0, 2, 2, 6, 1, {sector}));
+        const auto world = rws::recover_world(document.chunks()[0], document.bytes());
+        assert(world.status == rws::WorldRecoveryStatus::partial);
+        assert(world.sectors.size() == 1 && world.invalid_triangles == 1);
+        assert(world.invalid_material_references == 0); // invalid vertices take precedence
+        assert(!world.diagnostics.empty());
+    }
+    {
+        std::vector<std::byte> malformed;
+        append_world_sector(malformed, 0, 0, -1, {});
+        const auto document = rws::Document::from_bytes(make_world(0, 1, 0, 0, 1, {malformed}));
+        const auto world = rws::recover_world(document.chunks()[0], document.bytes());
+        assert(world.status == rws::WorldRecoveryStatus::failed);
+        assert(world.sectors.empty() && world.invalid_candidates == 1);
+    }
+    {
+        std::vector<std::byte> sector;
+        append_world_sector(sector, 0, 1, 3, {{{0, 1, 2, 0}}});
+        const auto document = rws::Document::from_bytes(make_world(0, 1, 1, 3, 1, {sector}));
+        const auto world = rws::recover_world(document.chunks()[0], document.bytes());
+        assert(world.status == rws::WorldRecoveryStatus::partial);
+        assert(world.invalid_material_references == 1 && world.invalid_triangles == 0);
+    }
+    {
+        std::vector<std::byte> sector;
+        append_world_sector(sector, 0, 0, 3, {{{0, 1, 2, 0}}});
+        // A complete header signature inside vertex bytes must not be scanned after
+        // the enclosing sector's exact Struct range has been accepted.
+        const auto write_u32 = [&](const std::size_t offset, const std::uint32_t value) {
+            for (unsigned shift = 0; shift < 32; shift += 8)
+                sector[offset + shift / 8U] = static_cast<std::byte>((value >> shift) & 0xFFU);
+        };
+        write_u32(68, 0x09); write_u32(76, 0x1C020037);
+        write_u32(80, 0x01); write_u32(88, 0x1C020037);
+        const auto document = rws::Document::from_bytes(make_world(0, 1, 1, 3, 1, {sector}));
+        const auto world = rws::recover_world(document.chunks()[0], document.bytes());
+        assert(world.status == rws::WorldRecoveryStatus::complete);
+        assert(world.sectors.size() == 1 && world.invalid_candidates == 0);
     }
     return 0;
 }

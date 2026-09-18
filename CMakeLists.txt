@@ -9,6 +9,7 @@ add_library(rws_core
     src/document.cpp
     src/chunk_names.cpp
     src/decoded.cpp
+    src/world_recovery.cpp
     src/obj_export.cpp
     src/scene_export.cpp
 )

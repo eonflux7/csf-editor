@@ -1,5 +1,6 @@
 #include "rws/document.hpp"
 #include "rws/decoded.hpp"
+#include "rws/world_recovery.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -62,8 +63,9 @@ int main(const int argc, char** argv) {
     std::map<RootKey, Stats> roots;
     std::map<std::uint32_t, Stats> chunks;
     std::uint64_t total_bytes{}, warning_files{}, failed_files{}, instance_files{}, total_instances{};
+    std::uint64_t complete_worlds{}, partial_worlds{}, failed_worlds{};
     std::map<std::uint32_t, std::uint64_t> instance_prototypes;
-    std::cout << "file\tbytes\troot\tversion/build\tinstances\tdiagnostics\n";
+    std::cout << "file\tbytes\troot\tversion/build\tinstances\tdiagnostics\tworld-sectors\tworld-triangles\tworld-vertices\tworld-recovery\n";
     for (const auto& path : files) {
         try {
             const auto document = rws::Document::load(path);
@@ -74,6 +76,7 @@ int main(const int argc, char** argv) {
             for (const auto& instance : document.scene_instances())
                 ++instance_prototypes[instance.prototype_id];
             collect(document.chunks(), chunks);
+            const auto worlds = rws::recover_worlds(document.chunks(), document.bytes());
             std::cout << std::filesystem::relative(path, root, error).string() << '\t'
                       << document.bytes().size() << '\t';
             if (!document.chunks().empty()) {
@@ -87,8 +90,35 @@ int main(const int argc, char** argv) {
             } else {
                 std::cout << "none\tunknown";
             }
+            std::uint64_t recovered_sectors{}, declared_sectors{}, recovered_triangles{},
+                          declared_triangles{}, recovered_vertices{}, declared_vertices{};
+            auto file_status = rws::WorldRecoveryStatus::complete;
+            for (const auto& world : worlds) {
+                recovered_sectors += world.sectors.size();
+                declared_sectors += std::max(0, world.header.world_sector_count);
+                recovered_triangles += world.recovered_triangles;
+                declared_triangles += std::max(0, world.header.triangle_count);
+                recovered_vertices += world.recovered_vertices;
+                declared_vertices += std::max(0, world.header.vertex_count);
+                if (world.status == rws::WorldRecoveryStatus::failed)
+                    file_status = rws::WorldRecoveryStatus::failed;
+                else if (world.status == rws::WorldRecoveryStatus::partial &&
+                         file_status != rws::WorldRecoveryStatus::failed)
+                    file_status = rws::WorldRecoveryStatus::partial;
+                if (world.status == rws::WorldRecoveryStatus::complete) ++complete_worlds;
+                else if (world.status == rws::WorldRecoveryStatus::partial) ++partial_worlds;
+                else ++failed_worlds;
+            }
             std::cout << '\t' << document.scene_instances().size()
-                      << '\t' << document.diagnostics().size() << '\n';
+                      << '\t' << document.diagnostics().size() << '\t';
+            if (worlds.empty()) {
+                std::cout << "-\t-\t-\tnone\n";
+            } else {
+                std::cout << recovered_sectors << '/' << declared_sectors << '\t'
+                          << recovered_triangles << '/' << declared_triangles << '\t'
+                          << recovered_vertices << '/' << declared_vertices << '\t'
+                          << rws::world_recovery_status_name(file_status) << '\n';
+            }
         } catch (const std::exception& exception) {
             ++failed_files;
             std::cerr << path.string() << ": " << exception.what() << '\n';
@@ -99,6 +129,8 @@ int main(const int argc, char** argv) {
               << warning_files << " files with diagnostics, " << failed_files << " failed loads\n";
     std::cout << "CSF scene instances: " << total_instances << " records in " << instance_files
               << " files\n";
+    std::cout << "World recovery: " << complete_worlds << " complete, " << partial_worlds
+              << " partial, " << failed_worlds << " failed\n";
     if (!instance_prototypes.empty()) {
         std::cout << "Instance prototypes:\n";
         for (const auto& [prototype, count] : instance_prototypes)

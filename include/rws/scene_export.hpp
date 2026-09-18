@@ -16,6 +16,9 @@ struct SceneExportStats {
     std::uint64_t custom_instances{};
     std::uint64_t unresolved_instances{};
     std::uint64_t world_sectors{};
+    std::uint64_t recovered_world_sectors{};
+    std::uint64_t recovered_world_vertices{};
+    std::uint64_t recovered_world_triangles{};
     std::uint64_t materials{};
     std::uint64_t vertices{};
     std::uint64_t triangles{};

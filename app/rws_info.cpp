@@ -2,6 +2,7 @@
 #include "rws/decoded.hpp"
 #include "rws/obj_export.hpp"
 #include "rws/scene_export.hpp"
+#include "rws/world_recovery.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -39,6 +40,56 @@ void collect_stats(const std::vector<rws::Chunk>& chunks, std::map<std::uint32_t
         item.bytes += chunk.available_size;
         item.truncated += chunk.truncated ? 1U : 0U;
         collect_stats(chunk.children, stats);
+    }
+}
+
+void collect_offsets(const std::vector<rws::Chunk>& chunks, const std::uint32_t type,
+                     std::set<std::uint64_t>& offsets) {
+    for (const auto& chunk : chunks) {
+        if (chunk.type == type) offsets.insert(chunk.offset);
+        collect_offsets(chunk.children, type, offsets);
+    }
+}
+
+void print_world_report(const std::vector<rws::RecoveredWorld>& worlds, const bool sectors) {
+    if (worlds.empty()) {
+        std::cout << "World recovery: no World chunks\n";
+        return;
+    }
+    for (const auto& world : worlds) {
+        std::cout << "World at 0x" << std::hex << world.world_offset
+                  << " library=0x" << world.library_id << std::dec << '\n'
+                  << "  Plane sectors declared: " << world.header.plane_sector_count << '\n'
+                  << "  World sectors recovered/declared: " << world.sectors.size() << '/'
+                  << world.header.world_sector_count << '\n'
+                  << "  Triangles recovered/declared: " << world.recovered_triangles << '/'
+                  << world.header.triangle_count << '\n'
+                  << "  Vertices recovered/declared: " << world.recovered_vertices << '/'
+                  << world.header.vertex_count << '\n'
+                  << "  Materials: " << world.material_count << '\n'
+                  << "  Invalid candidates: " << world.invalid_candidates
+                  << " | invalid triangles: " << world.invalid_triangles
+                  << " | invalid materials: " << world.invalid_material_references
+                  << " | overlaps: " << world.duplicate_or_overlapping_ranges
+                  << " | truncated candidates: " << world.truncated_candidates << '\n'
+                  << "  Recovery: " << rws::world_recovery_status_name(world.status) << '\n';
+        for (const auto& diagnostic : world.diagnostics)
+            std::cout << "  Diagnostic: " << diagnostic << '\n';
+        if (sectors) {
+            std::size_t index{};
+            for (const auto& sector : world.sectors) {
+                std::cout << "  Sector " << index++ << " chunk=0x" << std::hex
+                          << sector.chunk_offset << " struct=0x" << sector.struct_offset
+                          << " end=0x" << sector.range_end << std::dec
+                          << " triangles=" << sector.triangle_count
+                          << " vertices=" << sector.vertex_count
+                          << " material-base=" << sector.material_window_base
+                          << " bounds=(" << sector.bounding_box_inf.x << ','
+                          << sector.bounding_box_inf.y << ',' << sector.bounding_box_inf.z
+                          << ")..(" << sector.bounding_box_sup.x << ','
+                          << sector.bounding_box_sup.y << ',' << sector.bounding_box_sup.z << ")\n";
+            }
+        }
     }
 }
 
@@ -201,7 +252,7 @@ void print_instances(const rws::Document& document) {
 
 int main(const int argc, char** argv) {
     if (argc < 2 || argc > 5) {
-        std::cerr << "Usage: rws-info <file.rws> [--summary|--instances|--validate-types|--export-obj <directory>|--export-scene-gltf <file.gltf>|--export-clump-gltf <offset> <file.gltf>]\n";
+        std::cerr << "Usage: rws-info <file.rws> [--summary|--world-report[=sectors]|--instances|--validate-types|--export-obj <directory>|--export-scene-gltf <file.gltf>|--export-clump-gltf <offset> <file.gltf>]\n";
         return 2;
     }
     try {
@@ -215,6 +266,7 @@ int main(const int argc, char** argv) {
                       << " (stamp 0x" << std::hex << document.chunks().front().library_id << std::dec << ")\n";
         }
         const auto mode = argc >= 3 ? std::string_view(argv[2]) : std::string_view{};
+        const auto recovered_worlds = rws::recover_worlds(document.chunks(), document.bytes());
         if (mode == "--summary") {
             std::map<std::uint32_t, TypeStats> stats;
             collect_stats(document.chunks(), stats);
@@ -227,11 +279,35 @@ int main(const int argc, char** argv) {
             }
             if (!document.scene_instances().empty())
                 std::cout << "CSF scene instances: " << document.scene_instances().size() << '\n';
+            for (const auto& world : recovered_worlds) {
+                std::cout << "Recovered World at 0x" << std::hex << world.world_offset << std::dec
+                          << ": sectors " << world.sectors.size() << '/'
+                          << world.header.world_sector_count << ", triangles "
+                          << world.recovered_triangles << '/' << world.header.triangle_count
+                          << ", vertices " << world.recovered_vertices << '/'
+                          << world.header.vertex_count << ", "
+                          << rws::world_recovery_status_name(world.status) << '\n';
+            }
+        } else if (mode == "--world-report" || mode == "--world-report=sectors") {
+            print_world_report(recovered_worlds, mode == "--world-report=sectors");
         } else if (mode == "--instances") {
             print_instances(document);
         } else if (mode == "--validate-types") {
             ValidationStats stats;
             validate_types(document.chunks(), document.bytes(), stats);
+            std::set<std::uint64_t> nested_sectors;
+            collect_offsets(document.chunks(), 0x09, nested_sectors);
+            for (const auto& world : recovered_worlds) {
+                for (const auto& sector : world.sectors)
+                    if (!nested_sectors.contains(sector.chunk_offset)) ++stats.decoded;
+                auto recovery_failures = world.invalid_candidates + world.invalid_triangles +
+                    world.invalid_material_references + world.duplicate_or_overlapping_ranges;
+                // A partial result can consist solely of aggregate count mismatches,
+                // and a failed result can have no recognizable sector candidate at all.
+                if (world.status != rws::WorldRecoveryStatus::complete && recovery_failures == 0)
+                    recovery_failures = 1;
+                stats.failed += recovery_failures;
+            }
             std::cout << "Typed structures decoded: " << stats.decoded << ", failed: " << stats.failed << '\n';
             std::cout << "Geometry triangle layouts: stream=" << stats.triangles_stream
                       << ", memory=" << stats.triangles_memory << ", ambiguous=" << stats.triangles_ambiguous << '\n';
@@ -249,7 +325,10 @@ int main(const int argc, char** argv) {
             std::cout << "Exported assembled scene: " << stats.atomic_instances << " atomic meshes, "
                       << stats.custom_instances << " resolved CSF instances, "
                       << stats.unresolved_instances << " unresolved CSF instances, "
-                      << stats.world_sectors << " World sectors, " << stats.vertices << " vertices, "
+                      << stats.recovered_world_sectors << " recovered World sectors ("
+                      << stats.recovered_world_triangles << " triangles, "
+                      << stats.recovered_world_vertices << " vertices), "
+                      << stats.world_sectors << " exported World meshes, " << stats.vertices << " vertices, "
                       << stats.triangles << " triangles, " << stats.materials << " materials ("
                       << stats.skipped << " skipped)\n";
         } else if (mode == "--export-clump-gltf" && argc == 5) {

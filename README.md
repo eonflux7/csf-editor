@@ -24,7 +24,12 @@ that partially understood assets can still be inspected safely.
   editing, drag-and-drop loading, and save-to-copy behavior.
 - Depth-tested OpenGL previews for individual geometry and assembled scenes,
   including DDS base textures, secondary-UV lightmaps, material diagnostics, and
-  wireframe modes.
+  wireframe modes. Map previews automatically discover a same-directory
+  `_col.rws` sibling and can show its recovered level collision as a translucent,
+  surface-colored, wireframe, or X-ray overlay.
+- Shared, range-checked World-sector recovery used by the GUI, glTF exporter,
+  `rws-info`, and `rws-corpus`, while the conservative parsed chunk tree remains
+  unchanged.
 - Wavefront OBJ export for individual geometry.
 - glTF 2.0 export for Clumps and assembled scenes, with two UV channels,
   materials, world sectors, CSF placements, and a texture/source manifest.
@@ -118,6 +123,8 @@ Additional modes are:
 | Command | Result |
 | --- | --- |
 | `--summary` | Print counts, payload sizes, and truncation counts by chunk type |
+| `--world-report` | Compare declared and recovered World sectors, triangles, vertices, materials, and diagnostics |
+| `--world-report=sectors` | Include offsets, counts, material bases, and bounds for every recovered sector |
 | `--instances` | List decoded CSF placements and their correlated Clump prototypes |
 | `--validate-types` | Decode every supported typed structure and return a nonzero exit code on failures |
 | `--export-obj <directory>` | Export every decoded Geometry as a separate OBJ file |
@@ -131,6 +138,7 @@ $asset = "C:\path\to\map.rws"
 $output = "C:\path\to\exports"
 
 .\build\Release\rws-info.exe $asset --summary
+.\build\Release\rws-info.exe $asset --world-report
 .\build\Release\rws-info.exe $asset --instances
 .\build\Release\rws-info.exe $asset --validate-types
 .\build\Release\rws-info.exe $asset --export-obj "$output\obj"
@@ -141,7 +149,8 @@ $output = "C:\path\to\exports"
 ### Scan an extracted corpus
 
 `rws-corpus` recursively scans `.rws` files and prints a tab-separated per-file
-report followed by root-format, chunk-type, diagnostic, and scene-instance totals:
+report including declared/recovered World totals and recovery status, followed by
+root-format, chunk-type, diagnostic, scene-instance, and aggregate World-recovery totals:
 
 ```powershell
 .\build\Release\rws-corpus.exe "C:\path\to\extracted-game"
@@ -162,6 +171,21 @@ loader accepts legacy DXT1, DXT3, DXT5, 16-bit mask-based RGB/RGBA, and 32-bit
 mask-based RGB/RGBA images. Base
 textures use UV1 (`TEXCOORD_0`) and MatFX lightmaps use UV2 (`TEXCOORD_1`). DDS
 textures are resolved from a `Textures` directory beside the loaded asset.
+
+When `NAME.rws` is opened, the GUI checks only for `NAME_col.rws` in the same
+directory. A valid companion remains a separate read-only document; a missing,
+invalid, or partially recovered companion never prevents the visual file from
+loading. Opening an `_col.rws` file directly provides collision-only viewing.
+The collision controls independently toggle visual and collision layers, select
+solid, solid-with-wire, wireframe, or X-ray rendering, choose surface,
+material-index, or single-color display, and adjust overlay opacity. Surface mode
+uses Pyro Material names/IDs when present and a deterministic palette otherwise.
+The translucent pass is intentionally unsorted in this first slice; it is stable
+and depth-tested but may show ordinary alpha-ordering artifacts in dense overlaps.
+
+Here, a level collision World is the static geometry stored in the sibling file.
+It is distinct from the Collision Plugin (`0x11D`) attached to some geometry and
+from RenderWare Physics body/ragdoll definitions (`0x907`/`0x909`).
 
 ### Camera controls
 
