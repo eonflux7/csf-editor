@@ -157,7 +157,9 @@ child of one, opens an individual `3D Preview`; the `Whole RWS Scene` tab combin
 standard Clumps, correlated CSF placements, and recovered World sectors.
 
 The preview offers textured, material-index, material-color, UV-checker,
-lightmap-UV, lightmap-only, combined base/lightmap, and wireframe views. Base
+lightmap-UV, lightmap-only, combined base/lightmap, and wireframe views. Its DDS
+loader accepts legacy DXT1, DXT3, DXT5, 16-bit mask-based RGB/RGBA, and 32-bit
+mask-based RGB/RGBA images. Base
 textures use UV1 (`TEXCOORD_0`) and MatFX lightmaps use UV2 (`TEXCOORD_1`). DDS
 textures are resolved from a `Textures` directory beside the loaded asset.
 

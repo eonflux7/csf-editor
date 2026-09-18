@@ -89,6 +89,33 @@ struct BinMeshInfo {
     std::vector<BinMeshEntry> meshes;
 };
 
+struct CollisionSectorInfo {
+    std::uint8_t type{}, flags{};
+    std::uint16_t index{};
+    float value{};
+};
+
+struct CollisionSplitInfo {
+    CollisionSectorInfo left, right;
+};
+
+struct CollisionTreeInfo {
+    std::uint32_t version{}, flags{};
+    Vec3 bounding_box_inf, bounding_box_sup;
+    std::uint32_t triangle_count{}, split_count{};
+    std::vector<CollisionSplitInfo> splits;
+    std::vector<std::uint16_t> triangle_map;
+};
+
+struct TableOfContentsEntryInfo {
+    std::uint32_t chunk_type{}, object_id{}, offset{};
+    std::array<std::uint8_t, 16> guid{};
+};
+
+struct TableOfContentsInfo {
+    std::vector<TableOfContentsEntryInfo> entries;
+};
+
 struct RightToRenderInfo { std::uint32_t plugin_id{}, extra_data{}; };
 struct AnisotropyInfo { float coefficient{}; };
 
@@ -114,13 +141,20 @@ struct UserDataInfo { std::vector<UserDataArrayInfo> arrays; };
 struct PhysicsVolumeInfo {
     std::uint16_t version{};
     std::uint32_t kind{};
-    std::vector<float> shape_scalars;
-    std::optional<Vec3> shape_vector;
+    std::optional<float> capsule_half_height;
+    std::optional<Vec3> box_half_extents;
+    std::optional<float> cylinder_radius;
+    std::optional<float> cylinder_half_height;
+    std::optional<float> trilist_mass;
+    std::optional<Vec3> trilist_center_of_mass;
+    std::optional<Vec3> trilist_principal_inertia;
+    std::optional<std::array<float, 4>> trilist_inertia_orientation;
     std::vector<PhysicsVolumeInfo> children;
     std::array<float, 12> matrix{};
-    float size_or_fatness{};
-    std::array<float, 2> material_coefficients{};
-    std::uint16_t group{}, flags{};
+    float fatness{};
+    float friction{};
+    float restitution{};
+    std::uint16_t flags{}, collision_group{};
 };
 
 struct PhysicsBodyDefInfo {
@@ -129,11 +163,24 @@ struct PhysicsBodyDefInfo {
     Vec3 principal_inertia;
     std::array<float, 4> inertia_orientation{};
     float scalar_inertia{};
-    std::array<float, 2> unknown_scalars{};
-    Vec3 unknown_vector;
+    float linear_damping{};
+    float angular_damping{};
+    Vec3 finite_rotation_axis;
     std::uint32_t flags{};
     Vec3 center_of_mass;
 };
+
+enum class PhysicsBodyFlag : std::uint32_t {
+    finite_rotation_axis = 0x01,
+    oriented_inertia = 0x02,
+};
+
+[[nodiscard]] constexpr bool has_physics_body_flag(const std::uint32_t flags,
+                                                   const PhysicsBodyFlag flag) noexcept {
+    return (flags & static_cast<std::uint32_t>(flag)) != 0;
+}
+
+[[nodiscard]] std::string physics_body_flag_names(std::uint32_t flags);
 
 struct PhysicsRagdollDefInfo {
     std::uint16_t type_0{}, type_1{}, body_count{}, joint_count{};
@@ -246,6 +293,10 @@ struct DecodeResult {
     const Chunk&, std::uint32_t owner_type, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<HAnimInfo> decode_hanim(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<BinMeshInfo> decode_bin_mesh(const Chunk&, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<CollisionTreeInfo> decode_collision_tree(const Chunk&,
+                                                                    std::span<const std::byte>);
+[[nodiscard]] DecodeResult<TableOfContentsInfo> decode_table_of_contents(const Chunk&,
+                                                                         std::span<const std::byte>);
 [[nodiscard]] DecodeResult<RightToRenderInfo> decode_right_to_render(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<AnisotropyInfo> decode_anisotropy(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<SkinInfo> decode_skin(const Chunk&, std::int32_t vertex_count,

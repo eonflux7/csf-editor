@@ -11,8 +11,10 @@ import bpy
 
 
 arguments = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-if len(arguments) != 3:
-    raise SystemExit("Expected: <scene.gltf> <scene.manifest.json> <Textures directory>")
+async_bake = len(arguments) == 4 and arguments[3] == "--async-bake"
+if len(arguments) not in ({4} if async_bake else {3}):
+    raise SystemExit(
+        "Expected: <scene.gltf> <scene.manifest.json> <Textures directory> [--async-bake]")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rws_lightmaps
@@ -72,6 +74,16 @@ assert bpy.ops.rws_lightmaps.prepare_bake() == {"FINISHED"}
 prepared = [slot.material for slot in bake_object.material_slots
             if slot.material and slot.material.get("rws_bake_prepared")]
 assert prepared
+passive = [material for material in bpy.data.materials
+           if material.get("rws_bake_passive")]
+assert passive
+for material in passive:
+    nodes = material.node_tree.nodes
+    passive_shader = nodes.get("RWS_BAKE_PASSIVE")
+    alpha_mix = nodes.get("RWS_ALPHA_MIX")
+    assert passive_shader and alpha_mix
+    assert alpha_mix.inputs[2].links[0].from_node == passive_shader
+    assert passive_shader.inputs["Base Color"].links[0].from_node == nodes["RWS_BASE"]
 assert bake_object.data.uv_layers.active_index == 1
 assert bake_object.data.uv_layers[1].active_render
 for material in prepared:
@@ -97,23 +109,47 @@ assert scene.cycles.samples == 32
 assert scene.cycles.diffuse_bounces == 2
 for material in prepared:
     material.node_tree.nodes["RWS_BAKE_TARGET"].image.scale(32, 32)
-assert bpy.ops.rws_lightmaps.bake_selected() == {"FINISHED"}
-for material in prepared:
-    target = material.node_tree.nodes["RWS_BAKE_TARGET"].image
-    low, high = rws_lightmaps._bake_image_sample_range(target)
-    assert high - low > 1.0e-5, (target.name, low, high)
-    assert target.get("rws_bake_completed_by") == "rws-lightmaps-batch-v1"
-assert bpy.ops.rws_lightmaps.restore_preview() == {"FINISHED"}
-assert bake_object.data.uv_layers.active_index == previous_uv
-for material in prepared:
-    nodes = material.node_tree.nodes
-    assert nodes["RWS_ALPHA_MIX"].inputs[2].links[0].from_node == nodes["RWS_EMISSION"]
-print(
-    "RWS_ADDON_SMOKE_OK",
-    f"materials={scene.rws_lightmap_material_count}",
-    f"base={scene.rws_lightmap_base_count}",
-    f"lightmaps={scene.rws_lightmap_lightmap_count}",
-    f"alpha={scene.rws_lightmap_alpha_count}",
-    f"missing_materials={scene.rws_lightmap_missing_material_count}",
-    f"missing_uv2={scene.rws_lightmap_missing_uv_count}",
-)
+
+
+def verify_bake_and_restore():
+    for material in prepared:
+        target = material.node_tree.nodes["RWS_BAKE_TARGET"].image
+        low, high = rws_lightmaps._bake_image_sample_range(target)
+        assert high - low > 1.0e-5, (target.name, low, high)
+        assert target.get("rws_bake_completed_by") == "rws-lightmaps-batch-v1"
+    assert bpy.ops.rws_lightmaps.restore_preview() == {"FINISHED"}
+    assert bake_object.data.uv_layers.active_index == previous_uv
+    for material in prepared:
+        nodes = material.node_tree.nodes
+        assert nodes["RWS_ALPHA_MIX"].inputs[2].links[0].from_node == nodes["RWS_EMISSION"]
+    for material in passive:
+        nodes = material.node_tree.nodes
+        assert not material.get("rws_bake_passive")
+        assert nodes["RWS_ALPHA_MIX"].inputs[2].links[0].from_node == nodes["RWS_EMISSION"]
+    print(
+        "RWS_ADDON_ASYNC_BAKE_OK" if async_bake else "RWS_ADDON_SMOKE_OK",
+        f"materials={scene.rws_lightmap_material_count}",
+        f"base={scene.rws_lightmap_base_count}",
+        f"lightmaps={scene.rws_lightmap_lightmap_count}",
+        f"alpha={scene.rws_lightmap_alpha_count}",
+        f"missing_materials={scene.rws_lightmap_missing_material_count}",
+        f"missing_uv2={scene.rws_lightmap_missing_uv_count}",
+        flush=True,
+    )
+
+
+if async_bake:
+    assert bpy.ops.rws_lightmaps.bake_selected("INVOKE_DEFAULT") == {"RUNNING_MODAL"}
+    assert scene.rws_bake_running
+
+    def wait_for_async_bake():
+        if scene.rws_bake_running:
+            return 0.1
+        verify_bake_and_restore()
+        bpy.ops.wm.quit_blender()
+        return None
+
+    bpy.app.timers.register(wait_for_async_bake, first_interval=0.1)
+else:
+    assert bpy.ops.rws_lightmaps.bake_selected() == {"FINISHED"}
+    verify_bake_and_restore()

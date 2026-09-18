@@ -75,6 +75,8 @@ void validate_types(const std::vector<rws::Chunk>& chunks, const std::span<const
         case 0x10: { auto value = rws::decode_clump(chunk, bytes); error = value.error; break; }
         case 0x14: { auto value = rws::decode_atomic(chunk, bytes); error = value.error; break; }
         case 0x1F: { auto value = rws::decode_right_to_render(chunk, bytes); error = value.error; break; }
+        case 0x24: { auto value = rws::decode_table_of_contents(chunk, bytes); error = value.error; break; }
+        case 0x11D: { auto value = rws::decode_collision_tree(chunk, bytes); error = value.error; break; }
         case 0x11E: { auto value = rws::decode_hanim(chunk, bytes); error = value.error; break; }
         case 0x116: {
             if (!geometry_vertices) error = "Skin is not inside a decoded Geometry";
@@ -133,12 +135,16 @@ void print_instances(const rws::Document& document) {
         std::uint64_t count{};
         std::uint32_t minimum_id{std::numeric_limits<std::uint32_t>::max()}, maximum_id{};
     };
-    using Key = std::tuple<std::uint32_t, std::string, std::uint32_t, std::uint32_t>;
+    using Key = std::tuple<std::uint32_t, std::string, float, float, float,
+                           std::uint32_t, std::uint32_t>;
     std::map<Key, GroupStats> groups;
     std::set<std::uint32_t> prototype_ids;
     for (const auto& instance : document.scene_instances()) {
         auto& group = groups[{instance.prototype_id, instance.prototype_name,
-                              instance.flags, instance.declared_size}];
+                              instance.maximum_visibility_distance,
+                              instance.minimum_visibility_distance,
+                              instance.visibility_fade_range, instance.flags,
+                              instance.declared_size}];
         ++group.count;
         group.minimum_id = std::min(group.minimum_id, instance.instance_id);
         group.maximum_id = std::max(group.maximum_id, instance.instance_id);
@@ -146,10 +152,14 @@ void print_instances(const rws::Document& document) {
     }
     std::cout << "CSF scene instances: " << document.scene_instances().size() << '\n';
     for (const auto& [key, group] : groups) {
-        const auto& [prototype, name, flags, declared_size] = key;
+        const auto& [prototype, name, maximum_distance, minimum_distance, fade_range,
+                     flags, declared_size] = key;
         std::cout << "  prototype=" << prototype << " count=" << group.count
                   << " ids=" << group.minimum_id << ".." << group.maximum_id
-                  << " flags=0x" << std::hex << flags << std::dec
+                  << " visibility=(max " << maximum_distance << ", min "
+                  << minimum_distance << ", fade " << fade_range << ')'
+                  << " flags=0x" << std::hex << flags << std::dec << " ["
+                  << rws::scene_instance_flag_names(flags) << ']'
                   << " declared=" << declared_size;
         if (!name.empty()) std::cout << " name=\"" << name << '"';
         std::cout << '\n';

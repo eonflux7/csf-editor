@@ -34,6 +34,36 @@ std::string at_offset(const std::string_view text, const std::uint64_t offset) {
 
 } // namespace
 
+std::string scene_instance_flag_names(const std::uint32_t flags) {
+    struct NamedFlag {
+        SceneInstanceFlag flag;
+        const char* name;
+    };
+    constexpr std::array named_flags{
+        NamedFlag{SceneInstanceFlag::enabled, "enabled"},
+        NamedFlag{SceneInstanceFlag::water, "water"},
+        NamedFlag{SceneInstanceFlag::mipmapped, "mipmapped"},
+        NamedFlag{SceneInstanceFlag::breakable_glass, "breakable-glass"},
+        NamedFlag{SceneInstanceFlag::back_plane, "back-plane"},
+        NamedFlag{SceneInstanceFlag::animated, "animated"},
+        NamedFlag{SceneInstanceFlag::scene_registered, "scene-registered"},
+    };
+    constexpr auto known_mask = 0x7C3U;
+    std::ostringstream names;
+    bool first = true;
+    for (const auto& item : named_flags) {
+        if (!has_scene_instance_flag(flags, item.flag)) continue;
+        if (!first) names << ", ";
+        names << item.name;
+        first = false;
+    }
+    if (const auto unknown = flags & ~known_mask; unknown != 0) {
+        if (!first) names << ", ";
+        names << "unknown 0x" << std::hex << unknown;
+    }
+    return names.str();
+}
+
 Document Document::load(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) {
@@ -177,8 +207,9 @@ std::uint64_t Document::parse_scene_instances(const std::uint64_t begin) {
         instance.declared_size = read_u32(bytes_, cursor + 4);
         instance.prototype_id = read_u32(bytes_, cursor + 12);
         instance.instance_id = read_u32(bytes_, cursor + 16);
-        instance.atomic_parameters = {read_f32(bytes_, cursor + 20), read_f32(bytes_, cursor + 24),
-                                      read_f32(bytes_, cursor + 28)};
+        instance.maximum_visibility_distance = read_f32(bytes_, cursor + 20);
+        instance.minimum_visibility_distance = read_f32(bytes_, cursor + 24);
+        instance.visibility_fade_range = read_f32(bytes_, cursor + 28);
         instance.flags = read_u32(bytes_, cursor + 32);
         for (std::size_t i = 0; i < instance.rotation.size(); ++i)
             instance.rotation[i] = read_f32(bytes_, cursor + 60U + i * 4U);
@@ -195,8 +226,9 @@ std::uint64_t Document::parse_scene_instances(const std::uint64_t begin) {
             [](const float value) { return std::isfinite(value); }) &&
             std::isfinite(instance.position.x) && std::isfinite(instance.position.y) &&
             std::isfinite(instance.position.z) &&
-            std::all_of(instance.atomic_parameters.begin(), instance.atomic_parameters.end(),
-                        [](const float value) { return std::isfinite(value); });
+            std::isfinite(instance.maximum_visibility_distance) &&
+            std::isfinite(instance.minimum_visibility_distance) &&
+            std::isfinite(instance.visibility_fade_range);
         if (!finite) break;
         scene_instances_.push_back(std::move(instance));
         cursor += scene_instances_.back().physical_size;

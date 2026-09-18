@@ -29,6 +29,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 namespace {
 
@@ -209,7 +210,70 @@ ImVec4 clump_size_color(const rws::Chunk& chunk, const float minimum, const floa
     return t < 0.5F ? blend(grey, green, t * 2.0F) : blend(green, orange, (t - 0.5F) * 2.0F);
 }
 
+using ChunkDisplayNames = std::unordered_map<std::uint64_t, std::string>;
+
+std::optional<rws::PyroExtensionInfo> decode_pyro_metadata(
+    const rws::Chunk& owner, const std::span<const std::byte> bytes) {
+    const auto* extension = rws::find_child(owner, 0x03);
+    const auto* metadata = extension ? rws::find_child(*extension, 0xFFFFFF00U) : nullptr;
+    if (!metadata) return std::nullopt;
+    const auto decoded = rws::decode_pyro_extension(*metadata, owner.type, bytes);
+    return decoded ? decoded.value : std::nullopt;
+}
+
+ChunkDisplayNames resolve_chunk_display_names(
+    const std::vector<rws::Chunk>& chunks, const std::span<const std::byte> bytes,
+    const std::span<const rws::SceneInstance> instances) {
+    ChunkDisplayNames names;
+    std::unordered_map<std::uint32_t, std::string> prototype_names;
+    for (const auto& instance : instances) {
+        if (!instance.prototype_name.empty())
+            prototype_names.try_emplace(instance.prototype_id, instance.prototype_name);
+    }
+
+    auto visit = [&](auto&& self, const std::vector<rws::Chunk>& siblings) -> void {
+        for (const auto& chunk : siblings) {
+            if (chunk.type == 0x06) {
+                const auto texture = rws::decode_texture(chunk, bytes);
+                if (texture && !texture.value->name.empty()) names.emplace(chunk.offset, texture.value->name);
+            } else if (chunk.type == 0x07 || chunk.type == 0x14) {
+                const auto metadata = decode_pyro_metadata(chunk, bytes);
+                if (metadata && !metadata->object_name().empty())
+                    names.emplace(chunk.offset, metadata->object_name());
+            } else if (chunk.type == 0x10) {
+                for (const auto& child : chunk.children) {
+                    if (child.type != 0x14) continue;
+                    const auto metadata = decode_pyro_metadata(child, bytes);
+                    if (!metadata) continue;
+                    if (!metadata->object_name().empty()) {
+                        names.emplace(chunk.offset, metadata->object_name());
+                        break;
+                    }
+                    const auto object_index = metadata->atomic_object_index();
+                    if (!object_index) continue;
+                    const auto found = prototype_names.find(1000U + *object_index);
+                    if (found != prototype_names.end()) {
+                        names.emplace(chunk.offset, found->second);
+                        break;
+                    }
+                }
+            } else if (chunk.type == 0x0E) {
+                const auto* metadata_chunk = find_first_chunk(chunk.children, 0xFFFFFF00U);
+                if (metadata_chunk) {
+                    const auto metadata = rws::decode_pyro_extension(*metadata_chunk, 0x0E, bytes);
+                    if (metadata && !metadata.value->object_name().empty())
+                        names.emplace(chunk.offset, metadata.value->object_name());
+                }
+            }
+            self(self, chunk.children);
+        }
+    };
+    visit(visit, chunks);
+    return names;
+}
+
 void draw_tree(const std::vector<rws::Chunk>& chunks, std::optional<std::uint64_t>& selected,
+               const ChunkDisplayNames& display_names,
                const float minimum_clump_size, const float maximum_clump_size,
                const bool reveal_selected) {
     for (const auto& chunk : chunks) {
@@ -222,15 +286,22 @@ void draw_tree(const std::vector<rws::Chunk>& chunks, std::optional<std::uint64_
             ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 170, 64, 255));
         else if (chunk.type == 0x10)
             ImGui::PushStyleColor(ImGuiCol_Text, clump_size_color(chunk, minimum_clump_size, maximum_clump_size));
-        const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<std::uintptr_t>(chunk.offset + 1)),
-            flags, "   %s  @ 0x%llX  (%u)", rws::chunk_name(chunk.type).data(),
-            static_cast<unsigned long long>(chunk.offset), chunk.declared_size);
+        const auto display_name = display_names.find(chunk.offset);
+        const bool open = display_name == display_names.end() ?
+            ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<std::uintptr_t>(chunk.offset + 1)),
+                flags, "   %s  @ 0x%llX  (%u)", rws::chunk_name(chunk.type).data(),
+                static_cast<unsigned long long>(chunk.offset), chunk.declared_size) :
+            ImGui::TreeNodeEx(reinterpret_cast<void*>(static_cast<std::uintptr_t>(chunk.offset + 1)),
+                flags, "   %s  \"%s\"  @ 0x%llX  (%u)", rws::chunk_name(chunk.type).data(),
+                display_name->second.c_str(), static_cast<unsigned long long>(chunk.offset),
+                chunk.declared_size);
         draw_chunk_icon(chunk.type);
         if (colored) ImGui::PopStyleColor();
         if (reveal_selected && selected && *selected == chunk.offset) ImGui::SetScrollHereY(0.5F);
         if (ImGui::IsItemClicked()) selected = chunk.offset;
         if (has_children && open) {
-            draw_tree(chunk.children, selected, minimum_clump_size, maximum_clump_size, reveal_selected);
+            draw_tree(chunk.children, selected, display_names, minimum_clump_size, maximum_clump_size,
+                      reveal_selected);
             ImGui::TreePop();
         }
     }
@@ -289,6 +360,48 @@ void draw_hex(rws::Document& document, const std::uint64_t begin, const std::uin
 
 void draw_vec3(const char* label, const rws::Vec3& value) {
     ImGui::Text("%s: %.4f, %.4f, %.4f", label, value.x, value.y, value.z);
+}
+
+const char* physics_volume_kind_name(const std::uint32_t kind) {
+    switch (kind) {
+    case 0x0E: return "Sphere";
+    case 0x0F: return "Capsule";
+    case 0x10: return "Box";
+    case 0x11: return "Cylinder";
+    case 0x13: return "Trilist";
+    default: return "Unknown";
+    }
+}
+
+void draw_physics_volume(const rws::PhysicsVolumeInfo& volume, const char* label) {
+    if (!ImGui::TreeNode(&volume, "%s: %s (0x%X)", label,
+                         physics_volume_kind_name(volume.kind), volume.kind)) return;
+    ImGui::Text("Version: %u | collision group: %u | flags: 0x%X",
+        volume.version, volume.collision_group, volume.flags);
+    ImGui::Text("Fatness: %.6g | friction: %.6g | restitution: %.6g",
+        volume.fatness, volume.friction, volume.restitution);
+    if (volume.capsule_half_height) {
+        ImGui::Text("Radius: %.6g | half-height: %.6g",
+            volume.fatness, *volume.capsule_half_height);
+    } else if (volume.box_half_extents) {
+        draw_vec3("Half-extents", *volume.box_half_extents);
+    } else if (volume.cylinder_radius && volume.cylinder_half_height) {
+        ImGui::Text("Radius: %.6g | half-height: %.6g",
+            *volume.cylinder_radius, *volume.cylinder_half_height);
+    }
+    if (volume.trilist_mass) {
+        ImGui::Text("Cached mass: %.6g", *volume.trilist_mass);
+        draw_vec3("Center of mass", *volume.trilist_center_of_mass);
+        draw_vec3("Principal inertia", *volume.trilist_principal_inertia);
+        const auto& orientation = *volume.trilist_inertia_orientation;
+        ImGui::Text("Inertia orientation: %.5g, %.5g, %.5g, %.5g",
+            orientation[0], orientation[1], orientation[2], orientation[3]);
+    }
+    for (std::size_t index = 0; index < volume.children.size(); ++index) {
+        const auto child_label = "Child " + std::to_string(index);
+        draw_physics_volume(volume.children[index], child_label.c_str());
+    }
+    ImGui::TreePop();
 }
 
 void draw_typed_details(const rws::Chunk& chunk, rws::Document& document, std::string& status,
@@ -424,12 +537,39 @@ void draw_typed_details(const rws::Chunk& chunk, rws::Document& document, std::s
             rws::chunk_name(decoded.value->plugin_id).data(), decoded.value->extra_data);
         break;
     }
+    case 0x24: {
+        const auto decoded = rws::decode_table_of_contents(chunk, bytes);
+        if (!decoded) { ImGui::TextDisabled("%s", decoded.error.c_str()); break; }
+        ImGui::Text("Entries: %zu", decoded.value->entries.size());
+        for (const auto& entry : decoded.value->entries) {
+            ImGui::BulletText("%s (0x%X) at 0x%08X | object ID 0x%08X",
+                rws::chunk_name(entry.chunk_type).data(), entry.chunk_type, entry.offset, entry.object_id);
+        }
+        break;
+    }
     case 0x11E: {
         const auto decoded = rws::decode_hanim(chunk, bytes);
         if (!decoded) { ImGui::TextDisabled("%s", decoded.error.c_str()); break; }
         ImGui::Text("HAnim version: 0x%08X | hierarchy ID: %d | nodes: %zu",
             decoded.value->version, decoded.value->hierarchy_id, decoded.value->nodes.size());
         ImGui::Text("Flags: 0x%08X | keyframe size: %u", decoded.value->flags, decoded.value->keyframe_size);
+        break;
+    }
+    case 0x11D: {
+        const auto decoded = rws::decode_collision_tree(chunk, bytes);
+        if (!decoded) { ImGui::TextDisabled("%s", decoded.error.c_str()); break; }
+        const auto& value = *decoded.value;
+        ImGui::Text("Collision tree version: 0x%08X | flags: 0x%08X", value.version, value.flags);
+        ImGui::Text("Triangles: %u | splits: %u | triangle map: %zu", value.triangle_count,
+            value.split_count, value.triangle_map.size());
+        draw_vec3("Bounds min", value.bounding_box_inf);
+        draw_vec3("Bounds max", value.bounding_box_sup);
+        if (!value.splits.empty()) {
+            const auto& root = value.splits.front();
+            ImGui::TextDisabled("Root sectors: left %u/%u/%u @ %.5g | right %u/%u/%u @ %.5g",
+                root.left.type, root.left.flags, root.left.index, root.left.value,
+                root.right.type, root.right.flags, root.right.index, root.right.value);
+        }
         break;
     }
     case 0x116: {
@@ -504,18 +644,18 @@ void draw_typed_details(const rws::Chunk& chunk, rws::Document& document, std::s
         const auto& value = *decoded.value;
         ImGui::Text("RwpBodyDef | root volume kind: 0x%X | version: %u", value.volume.kind,
             value.volume.version);
-        ImGui::Text("Child volumes: %zu | group: %u | flags: 0x%X", value.volume.children.size(),
-            value.volume.group, value.volume.flags);
+        draw_physics_volume(value.volume, "Root volume");
         ImGui::Text("Mass: %.6g | scalar inertia: %.6g | body flags: 0x%08X",
             value.mass, value.scalar_inertia, value.flags);
+        ImGui::Text("Flag meanings: %s", rws::physics_body_flag_names(value.flags).c_str());
         draw_vec3("Center of mass", value.center_of_mass);
         draw_vec3("Principal inertia", value.principal_inertia);
         ImGui::Text("Inertia orientation: %.5g, %.5g, %.5g, %.5g",
             value.inertia_orientation[0], value.inertia_orientation[1],
             value.inertia_orientation[2], value.inertia_orientation[3]);
-        ImGui::TextDisabled("Unresolved body fields: scalars %.6g / %.6g; vector %.6g, %.6g, %.6g",
-            value.unknown_scalars[0], value.unknown_scalars[1], value.unknown_vector.x,
-            value.unknown_vector.y, value.unknown_vector.z);
+        ImGui::Text("Linear damping: %.6g | angular damping: %.6g",
+            value.linear_damping, value.angular_damping);
+        draw_vec3("Finite-rotation axis", value.finite_rotation_axis);
         break;
     }
     case 0x909: {
@@ -599,10 +739,13 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
     std::unique_ptr<rws::Document> document;
     rwsman::GeometryPreview geometry_preview;
     std::optional<std::uint64_t> selected;
+    ChunkDisplayNames display_names;
     std::string status = "Drop an .rws file on this window or pass one on the command line.";
     auto load = [&](const std::filesystem::path& path) {
         try {
             document = std::make_unique<rws::Document>(rws::Document::load(path));
+            display_names = resolve_chunk_display_names(
+                document->chunks(), document->bytes(), document->scene_instances());
             geometry_preview.clear();
             if (const auto* geometry = find_first_chunk(document->chunks(), 0x0F)) selected = geometry->offset;
             else if (!document->chunks().empty()) selected = document->chunks().front().offset;
@@ -684,7 +827,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 document->bytes().size(), document->chunks().size(), document->scene_instances().size(),
                 document->diagnostics().size(),
                 document->dirty() ? " | modified" : "");
-            draw_tree(document->chunks(), selected, minimum_clump_size, maximum_clump_size, reveal_selected);
+            draw_tree(document->chunks(), selected, display_names, minimum_clump_size,
+                      maximum_clump_size, reveal_selected);
             draw_instance_tree(document->scene_instances(), selected, reveal_selected);
             ImGui::EndChild();
             previous_selection = selected;
@@ -740,9 +884,12 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 ImGui::Text("Flags: 0x%08X   Declared: %u   Physical: %llu", instance->flags,
                             instance->declared_size,
                             static_cast<unsigned long long>(instance->physical_size));
-                ImGui::Text("Atomic parameters: %.6g, %.6g, %.6g",
-                            instance->atomic_parameters[0], instance->atomic_parameters[1],
-                            instance->atomic_parameters[2]);
+                ImGui::Text("Flag meanings: %s",
+                            rws::scene_instance_flag_names(instance->flags).c_str());
+                ImGui::Text("Visibility distance: max %.6g, min %.6g, fade %.6g",
+                            instance->maximum_visibility_distance,
+                            instance->minimum_visibility_distance,
+                            instance->visibility_fade_range);
                 ImGui::Text("Position: %.6g, %.6g, %.6g", instance->position.x,
                             instance->position.y, instance->position.z);
                 ImGui::Text("Matrix flags: 0x%08X", instance->matrix_flags);

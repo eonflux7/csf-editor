@@ -89,8 +89,18 @@ The panel can prepare selected meshes for a diffuse light-only Cycles bake:
 
 Repeated placed meshes can share the same original UV atlas, so baking multiple
 placements at once may write overlapping pixels. Begin with World Sectors or one
-object group and inspect the result. Only selected/prepared materials respond to
-lights; unprepared RWS preview materials remain self-lit Emission surfaces.
+object group and inspect the result. During Prepare, selected materials receive
+bake targets while every other visible RWS material is temporarily changed from
+its self-lit preview shader to a base-textured passive diffuse surface. Trees and
+other clumps therefore cast shadows and reflect ordinary illumination without
+acting as area lights or receiving overlapping lightmap writes. **Restore Preview
+Shaders** reconnects the preview Emission shaders for both groups.
+
+**Bake Selected Lighting** launches Cycles as Blender's native background bake
+job, keeping the window responsive while the bake runs. The panel reports elapsed
+time, Blender's status bar continues to show native bake progress, and `Esc`
+requests cancellation. Completed targets are marked exportable only after Blender
+reports that the entire bake job completed successfully.
 
 ## Game-ready DDS export
 
@@ -100,16 +110,24 @@ After a successful bake:
    unpacked source directory itself.
 2. Leave **CSF RGB Scale** at `0.5` unless intentionally changing the game's 2x
    lightmap modulation balance.
-3. Enable **Overwrite Existing Exports** only when replacing an earlier staged run.
-4. Press **Export Game-Ready DDS**.
+3. Choose **DDS Format**:
+   - **Original BC1/BC2** preserves each source lightmap's compressed format.
+   - **32-bit Raw (A8R8G8B8)** writes lossless 8-bit RGB in a legacy DDS with
+     opaque alpha. This is the highest-quality option, but consumes four bytes
+     per texel (about 85.3 MiB for a 4096-square texture with mipmaps).
+4. Enable **Overwrite Existing Exports** only when replacing an earlier staged run.
+5. Press **Export Game-Ready DDS**.
 
 Export accepts only targets completed by a verified add-on bake. It also rejects
 unverified targets. Targets that appear uniformly gray or black produce a warning
 but are still exported because valid sparse UV islands can evade lightweight
 sampling.
 
-DDS compression runs incrementally so Blender remains responsive. The panel shows
-the current file, compression phase, exact percentage, and elapsed time. Press
+DDS encoding runs incrementally so Blender remains responsive. Both built-in
+writers stream bounded image-row chunks and build mipmaps in temporary disk-backed
+buffers, avoiding full-atlas float and mip copies in memory. NVIDIA input TGA
+staging is streamed the same way. The panel shows the current file, encoding
+phase, exact percentage, and elapsed time. Press
 **Cancel DDS Export** or `Esc` to stop after the current small block row. The
 unfinished `.tmp` file is removed, while already completed staged DDS files remain
 valid and can be overwritten on the next run. A separate counter shows completed
@@ -143,6 +161,9 @@ For example, an FR01 export root receives:
 ```
 
 It also writes `<export root>/rws_bake_export.json` as a receipt containing every
-output path and format. The built-in legacy BC1/BC2 encoder requires no external
-tools. Copy the produced archive directory into the corresponding unpack before
-running the existing archive packer.
+output path and format. The raw writer emits the same legacy `A8R8G8B8` masks
+accepted by rws-man and includes the complete scaled mip chain. It does not
+require NVIDIA Texture Tools; the encoder setting applies only to Original
+BC1/BC2. The built-in legacy BC1/BC2 encoder also requires no external tools.
+Copy the produced archive directory into the corresponding unpack before running
+the existing archive packer.

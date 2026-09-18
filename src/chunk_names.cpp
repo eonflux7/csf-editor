@@ -47,6 +47,7 @@ std::string_view chunk_name(const std::uint32_t type) noexcept {
     case 0x0105: return "Morph Plugin";
     case 0x0110: return "Sky Mipmap Value";
     case 0x0116: return "Skin Plugin";
+    case 0x011D: return "Collision Plugin";
     case 0x011E: return "HAnim Plugin";
     case 0x011F: return "User Data Plugin";
     case 0x0120: return "Material Effects Plugin";

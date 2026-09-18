@@ -93,6 +93,13 @@ int main() {
         const auto& instance = document.scene_instances().front();
         assert(instance.prototype_id == 1001 && instance.instance_id == 42);
         assert(instance.prototype_name == "ARBOL_3" && instance.physical_size == 123);
+        assert(instance.maximum_visibility_distance == 5000.0F);
+        assert(instance.minimum_visibility_distance == 0.0F);
+        assert(instance.visibility_fade_range == 0.0F);
+        assert(rws::has_scene_instance_flag(instance.flags, rws::SceneInstanceFlag::enabled));
+        assert(rws::has_scene_instance_flag(instance.flags, rws::SceneInstanceFlag::animated));
+        assert(rws::scene_instance_flag_names(instance.flags) ==
+               "enabled, animated, scene-registered");
         assert(instance.position.x == 10.0F && instance.position.y == 20.0F && instance.position.z == 30.0F);
         assert(document.chunks().size() == 2 && document.chunks()[1].offset == world_offset);
     }
@@ -152,6 +159,51 @@ int main() {
         assert(mesh && mesh.value->meshes.size() == 1);
         assert(mesh.value->total_indices == 3);
         assert(mesh.value->meshes[0].material_index == 2);
+    }
+    {
+        constexpr std::uint32_t struct_size = 58;
+        constexpr std::uint32_t tree_size = 12 + struct_size;
+        std::vector<std::byte> bytes;
+        append_header(bytes, 0x011D, 4 + 12 + tree_size);
+        append_u32(bytes, 0x37002);
+        append_header(bytes, 0x2C, tree_size);
+        append_header(bytes, 0x01, struct_size);
+        append_u32(bytes, 1);
+        append_f32(bytes, -1); append_f32(bytes, -2); append_f32(bytes, -3);
+        append_f32(bytes, 4); append_f32(bytes, 5); append_f32(bytes, 6);
+        append_u32(bytes, 3); append_u32(bytes, 1);
+        bytes.push_back(std::byte{1}); bytes.push_back(std::byte{0xFF});
+        bytes.push_back(std::byte{2}); bytes.push_back(std::byte{0}); append_f32(bytes, 10);
+        bytes.push_back(std::byte{0}); bytes.push_back(std::byte{0xFF});
+        bytes.push_back(std::byte{7}); bytes.push_back(std::byte{0}); append_f32(bytes, 20);
+        bytes.push_back(std::byte{2}); bytes.push_back(std::byte{0});
+        bytes.push_back(std::byte{1}); bytes.push_back(std::byte{0});
+        bytes.push_back(std::byte{0}); bytes.push_back(std::byte{0});
+        const auto document = rws::Document::from_bytes(std::move(bytes));
+        const auto collision = rws::decode_collision_tree(document.chunks()[0], document.bytes());
+        assert(collision && collision.value->version == 0x37002);
+        assert(collision.value->triangle_count == 3 && collision.value->split_count == 1);
+        assert(collision.value->bounding_box_inf.y == -2.0F && collision.value->bounding_box_sup.z == 6.0F);
+        assert(collision.value->splits[0].left.type == 1 && collision.value->splits[0].left.index == 2);
+        assert(collision.value->triangle_map.size() == 3 && collision.value->triangle_map[0] == 2);
+    }
+    {
+        std::vector<std::byte> bytes;
+        append_header(bytes, 0x24, 60);
+        append_u32(bytes, 2);
+        append_u32(bytes, 0x10); append_u32(bytes, 0x11223344); append_u32(bytes, 72);
+        for (std::uint8_t i = 0; i < 16; ++i) bytes.push_back(static_cast<std::byte>(i));
+        append_u32(bytes, 0x0B); append_u32(bytes, 0x55667788); append_u32(bytes, 84);
+        for (std::uint8_t i = 16; i < 32; ++i) bytes.push_back(static_cast<std::byte>(i));
+        append_header(bytes, 0x10, 0);
+        append_header(bytes, 0x0B, 0);
+        const auto document = rws::Document::from_bytes(std::move(bytes));
+        const auto contents = rws::decode_table_of_contents(document.chunks()[0], document.bytes());
+        assert(contents && contents.value->entries.size() == 2);
+        assert(contents.value->entries[0].chunk_type == 0x10);
+        assert(contents.value->entries[0].object_id == 0x11223344);
+        assert(contents.value->entries[0].offset == 72 && contents.value->entries[0].guid[15] == 15);
+        assert(contents.value->entries[1].chunk_type == 0x0B && contents.value->entries[1].offset == 84);
     }
     {
         constexpr std::uint32_t texture_payload_size = 52;
@@ -271,15 +323,15 @@ int main() {
         append_u32(payload, 5); append_f32(payload, 5.75F);
         append_u32(payload, 8); for (int i = 0; i < 12; ++i) append_f32(payload, i % 5 == 0 ? 1.0F : 0.0F);
         for (float value : {0.0F, 0.2F, 0.2F}) { append_u32(payload, 5); append_f32(payload, value); }
-        append_u32(payload, 1); payload.push_back(std::byte{0}); payload.push_back(std::byte{0});
-        append_u32(payload, 1); payload.push_back(std::byte{0}); payload.push_back(std::byte{0});
+        append_u32(payload, 1); payload.push_back(std::byte{0x12}); payload.push_back(std::byte{0});
+        append_u32(payload, 1); payload.push_back(std::byte{0x34}); payload.push_back(std::byte{0});
         append_u32(payload, 5); append_f32(payload, 3.0F);
         append_u32(payload, 9); append_u32(payload, 6);
         append_f32(payload, 1); append_f32(payload, 2); append_f32(payload, 3);
         append_u32(payload, 7); append_f32(payload, 0); append_f32(payload, 0); append_f32(payload, 0); append_f32(payload, 1);
-        for (float value : {1.0F, 0.0F, 0.0F}) { append_u32(payload, 5); append_f32(payload, value); }
+        for (float value : {1.0F, 0.25F, 0.5F}) { append_u32(payload, 5); append_f32(payload, value); }
         append_u32(payload, 6); append_f32(payload, 1); append_f32(payload, 0); append_f32(payload, 0);
-        append_u32(payload, 3); append_u32(payload, 2);
+        append_u32(payload, 3); append_u32(payload, 3);
         append_u32(payload, 6); append_f32(payload, -1); append_f32(payload, 0.25F); append_f32(payload, 0.5F);
         std::vector<std::byte> bytes;
         append_header(bytes, 0x907, static_cast<std::uint32_t>(12 + payload.size()), 0x1C020018);
@@ -288,8 +340,68 @@ int main() {
         const auto document = rws::Document::from_bytes(std::move(bytes));
         const auto body = rws::decode_physics_body_def(document.chunks()[0], document.bytes());
         assert(body && body.value->volume.kind == 0x11 && body.value->mass == 3.0F);
-        assert(body.value->principal_inertia.x == 1.0F && body.value->flags == 2);
+        assert(body.value->volume.cylinder_radius == 3.0F);
+        assert(body.value->volume.cylinder_half_height == 5.75F);
+        assert(body.value->volume.fatness == 0.0F);
+        assert(body.value->volume.friction == 0.2F && body.value->volume.restitution == 0.2F);
+        assert(body.value->volume.flags == 0x12 && body.value->volume.collision_group == 0x34);
+        assert(body.value->principal_inertia.x == 1.0F && body.value->flags == 3);
+        assert(body.value->linear_damping == 0.25F && body.value->angular_damping == 0.5F);
+        assert(body.value->finite_rotation_axis.x == 1.0F);
+        assert(rws::has_physics_body_flag(body.value->flags,
+                                          rws::PhysicsBodyFlag::finite_rotation_axis));
+        assert(rws::physics_body_flag_names(body.value->flags) ==
+               "finite-rotation axis, oriented inertia");
         assert(body.value->center_of_mass.x == -1.0F);
+    }
+    {
+        std::vector<std::byte> payload;
+        append_u32(payload, 0x18); append_u32(payload, 0x00010017);
+        append_u32(payload, 0x0B); append_u32(payload, 3); append_u32(payload, 0x13);
+        append_u32(payload, 0x13); append_u32(payload, 0x00010015);
+        append_u32(payload, 3); append_u32(payload, 1);
+        append_u32(payload, 0x00010017);
+        append_u32(payload, 0x0B); append_u32(payload, 3); append_u32(payload, 0x0E);
+        append_u32(payload, 0x0E);
+        append_u32(payload, 8);
+        for (int i = 0; i < 12; ++i) append_f32(payload, i % 5 == 0 ? 1.0F : 0.0F);
+        for (float value : {2.0F, 0.3F, 0.1F}) { append_u32(payload, 5); append_f32(payload, value); }
+        append_u32(payload, 1); append_u32(payload, 0);
+        append_u32(payload, 1); append_u32(payload, 0);
+        append_u32(payload, 5); append_f32(payload, 12.0F);
+        append_u32(payload, 6); append_f32(payload, 1.0F); append_f32(payload, 2.0F);
+        append_f32(payload, 3.0F);
+        append_u32(payload, 9); append_u32(payload, 6);
+        append_f32(payload, 4.0F); append_f32(payload, 5.0F); append_f32(payload, 6.0F);
+        append_u32(payload, 7); append_f32(payload, 0.0F); append_f32(payload, 0.0F);
+        append_f32(payload, 0.0F); append_f32(payload, 1.0F);
+        append_u32(payload, 8);
+        for (int i = 0; i < 12; ++i) append_f32(payload, i % 5 == 0 ? 1.0F : 0.0F);
+        for (float value : {0.0F, 0.4F, 0.2F}) { append_u32(payload, 5); append_f32(payload, value); }
+        append_u32(payload, 1); append_u32(payload, 0);
+        append_u32(payload, 1); append_u32(payload, 0);
+        append_u32(payload, 5); append_f32(payload, 12.0F);
+        append_u32(payload, 9); append_u32(payload, 6);
+        append_f32(payload, 4.0F); append_f32(payload, 5.0F); append_f32(payload, 6.0F);
+        append_u32(payload, 7); append_f32(payload, 0.0F); append_f32(payload, 0.0F);
+        append_f32(payload, 0.0F); append_f32(payload, 1.0F);
+        for (float value : {1.0F, 0.0F, 0.0F}) { append_u32(payload, 5); append_f32(payload, value); }
+        append_u32(payload, 6); append_f32(payload, 0.0F); append_f32(payload, 0.0F);
+        append_f32(payload, 0.0F);
+        append_u32(payload, 3); append_u32(payload, 0);
+        append_u32(payload, 6); append_f32(payload, 0.0F); append_f32(payload, 0.0F);
+        append_f32(payload, 0.0F);
+        std::vector<std::byte> bytes;
+        append_header(bytes, 0x907, static_cast<std::uint32_t>(12 + payload.size()), 0x1C020018);
+        append_header(bytes, 1, static_cast<std::uint32_t>(payload.size()), 0x1C020018);
+        bytes.insert(bytes.end(), payload.begin(), payload.end());
+        const auto document = rws::Document::from_bytes(std::move(bytes));
+        const auto body = rws::decode_physics_body_def(document.chunks()[0], document.bytes());
+        assert(body && body.value->volume.kind == 0x13 && body.value->volume.children.size() == 1);
+        assert(body.value->volume.trilist_mass == 12.0F);
+        assert(body.value->volume.trilist_center_of_mass->y == 2.0F);
+        assert(body.value->volume.trilist_principal_inertia->z == 6.0F);
+        assert((*body.value->volume.trilist_inertia_orientation)[3] == 1.0F);
     }
     return 0;
 }

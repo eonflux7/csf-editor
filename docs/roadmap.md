@@ -21,6 +21,7 @@
 - [x] Atomic frame/geometry bindings.
 - [x] World header, Plane Section, and Atomic Section layouts.
 - [x] Array-bound/count invariants and synthetic tests.
+- [x] Decode Table of Contents roots and validate their target chunk offsets/types.
 - [ ] Golden-file fixtures small enough to commit.
 
 Deliverable: render standard Clump geometry and the collision BSP while preserving
@@ -35,19 +36,28 @@ all extension payloads byte-for-byte.
 - [x] Decode the standard dual-pass Material Effects payloads used by CSF,
   including their embedded Texture stream, blend modes, and object pipeline flag.
 - [x] Decode HAnim, Anisotropy, Right To Render, and Bin Mesh plugin payloads.
+- [x] Decode the Collision `0x11D` plug-in and its embedded `0x2C` tree, split
+  records, and optional triangle remap.
 - [x] Cluster and decode `0xFFFFFF00` as owner-specific Pyro Atomic, Material,
   Frame, World Sector, and Light metadata.
 - [x] Decode RenderWare Physics `0x907` Body Definitions and `0x909` Ragdoll
   Definitions using the readers recovered from `CommXPC.exe`.
-- Recover final semantic names for the remaining conservative Body/Joint scalar
-  fields and support `0x90B` Generic Definitions if samples are found.
+- [x] Recover the Body Definition damping, finite-rotation-axis, and observed flag
+  semantics from the runtime solver.
+- [x] Recover friction and restitution semantics for the embedded Body Definition
+  volume material fields.
+- [x] Recover volume fatness and collision-group ordering; preserve the unobserved
+  volume flag word without speculative bit names.
+- [x] Recover capsule/cylinder dimensions and the Trilist v1 aggregate mass properties.
+- Recover final semantic names for the conservative Joint fields and support `0x90B`
+  Generic Definitions if samples are found.
 - [x] Decode the CSF scene-instance tail and its embedded Matrix/string records.
 - [x] Correlate prototype IDs with Pyro Atomic object indices using the executable's
   lookup and clone path, then render/export the placements.
-- Recover semantic names for the three optional Atomic parameters and individual
-  placement flag bits.
-- Compare intact collision files to determine whether ST05's 1,944-byte deficit is
-  file-specific or systematic.
+- [x] Recover the three optional Atomic visibility-distance parameters.
+- [x] Recover the observed placement flag bits and preserve unknown bits in raw form.
+- [x] Compare all collision Worlds and confirm their EOF deficits are the cumulative
+  four-byte Pyro World Sector size overstatement rather than ST05-specific damage.
 
 Deliverable: named, evidence-tagged field schemas in this directory and structured
 views in the GUI.

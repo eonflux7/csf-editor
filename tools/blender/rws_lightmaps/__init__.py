@@ -1,7 +1,7 @@
 bl_info = {
     "name": "RWS Lightmaps",
     "author": "eonflux7",
-    "version": (0, 12, 0),
+    "version": (0, 15, 0),
     "blender": (4, 0, 0),
     "location": "3D View > Sidebar > RWS Lightmaps",
     "description": "Configure CSF RWS Tools glTF materials for base and lightmap preview",
@@ -213,6 +213,8 @@ def _configure_material(material, entry, texture_lookup, uv_names,
     material["rws_base_uv"] = base_uv_name
     material["rws_lightmap_uv"] = lightmap_uv_name
     material["rws_uses_base_alpha"] = use_base_alpha
+    material["rws_bake_prepared"] = False
+    material["rws_bake_passive"] = False
     return base_path is not None, lightmap_path is not None, len(uv_names) > 1, use_base_alpha
 
 
@@ -560,14 +562,180 @@ def _dds_export_info(image, source_path):
     return header, fourcc, width, height, mip_count, total_blocks
 
 
+def _raw_bgra8_work_units(width, height, mip_count):
+    """Count pixels written across a complete mip chain for export progress."""
+    total = 0
+    for _level in range(mip_count):
+        total += width * height
+        width = max(1, width // 2)
+        height = max(1, height // 2)
+    return total
+
+
+def _raw_bgra8_header(width, height, mip_count):
+    """Build a legacy A8R8G8B8 DDS header (BGRA bytes, no DX10 extension)."""
+    header = bytearray(128)
+    header[:4] = b"DDS "
+    struct.pack_into("<I", header, 4, 124)       # DDS_HEADER.dwSize
+    flags = 0x00000001 | 0x00000002 | 0x00000004 | 0x00000008 | 0x00001000
+    if mip_count > 1:
+        flags |= 0x00020000                       # DDSD_MIPMAPCOUNT
+    struct.pack_into("<I", header, 8, flags)
+    struct.pack_into("<I", header, 12, height)
+    struct.pack_into("<I", header, 16, width)
+    struct.pack_into("<I", header, 20, width * 4)  # top-level row pitch
+    struct.pack_into("<I", header, 28, mip_count)
+    struct.pack_into("<I", header, 76, 32)       # DDS_PIXELFORMAT.dwSize
+    struct.pack_into("<I", header, 80, 0x41)     # DDPF_RGB | DDPF_ALPHAPIXELS
+    struct.pack_into("<I", header, 88, 32)
+    struct.pack_into("<I", header, 92, 0x00FF0000)
+    struct.pack_into("<I", header, 96, 0x0000FF00)
+    struct.pack_into("<I", header, 100, 0x000000FF)
+    struct.pack_into("<I", header, 104, 0xFF000000)
+    caps = 0x00001000                             # DDSCAPS_TEXTURE
+    if mip_count > 1:
+        caps |= 0x00000008 | 0x00400000           # COMPLEX | MIPMAP
+    struct.pack_into("<I", header, 108, caps)
+    return header
+
+
+def _raw_rows_per_chunk(width, target_pixels=1024 * 1024):
+    """Keep each Blender pixel read bounded while avoiding excessive timer ticks."""
+    return max(1, min(256, target_pixels // max(1, width)))
+
+
+def _read_bake_rgba8_rows(image, width, height, row, row_end, scale, alpha_image=None):
+    """Read a top-down row range without copying the complete Blender float image."""
+    import numpy as np
+
+    # Blender exposes rows bottom-up. The requested top-down rows form one
+    # contiguous bottom-up slice, which is reversed after conversion.
+    blender_row = height - row_end
+    values = np.asarray(
+        image.pixels[blender_row * width * 4:(height - row) * width * 4],
+        dtype=np.float32).reshape((row_end - row, width, 4))[::-1]
+    pixels = np.empty((row_end - row, width, 4), dtype=np.uint8)
+    pixels[:, :, :3] = np.clip(
+        np.rint(values[:, :, :3] * scale * 255.0), 0, 255).astype(np.uint8)
+    if alpha_image and alpha_image.size[0] > 0 and alpha_image.size[1] > 0:
+        alpha_width, alpha_height = tuple(alpha_image.size)
+        y_indices = np.minimum(
+            alpha_height - 1, np.arange(row, row_end) * alpha_height // height)
+        alpha_row = int(y_indices[0])
+        alpha_row_end = int(y_indices[-1]) + 1
+        blender_alpha_row = alpha_height - alpha_row_end
+        alpha_values = np.asarray(
+            alpha_image.pixels[
+                blender_alpha_row * alpha_width * 4:
+                (alpha_height - alpha_row) * alpha_width * 4],
+            dtype=np.float32).reshape(
+                (alpha_row_end - alpha_row, alpha_width, 4))[::-1]
+        x_indices = np.minimum(
+            alpha_width - 1, np.arange(width) * alpha_width // width)
+        pixels[:, :, 3] = np.clip(
+            np.rint(alpha_values[y_indices - alpha_row][:, x_indices, 3] * 255.0),
+            0, 255).astype(np.uint8)
+    else:
+        pixels[:, :, 3] = 255
+    return pixels
+
+
+def _downsample_rgba_rows(pixels, width, height, row, row_end):
+    """Build a bounded row range of the next mip from a top-down RGBA array."""
+    import numpy as np
+
+    next_width = max(1, width // 2)
+    y0 = np.arange(row, row_end) * 2
+    y1 = np.minimum(height - 1, y0 + 1)
+    x0 = np.arange(next_width) * 2
+    x1 = np.minimum(width - 1, x0 + 1)
+    # Convert only the rows used by this chunk. Converting the complete level to
+    # uint16 was the largest transient allocation in the original raw writer.
+    top = pixels[y0].astype(np.uint16)
+    bottom = pixels[y1].astype(np.uint16)
+    result = (top[:, x0] + top[:, x1] + bottom[:, x0] + bottom[:, x1]) // 4
+    return result.astype(np.uint8)
+
+
+def _write_bake_dds_raw32_steps(image, source_path, output_path, scale):
+    """Stream an opaque legacy A8R8G8B8 DDS without full-image RAM copies."""
+    import numpy as np
+
+    _source_header, _source_fourcc, width, height, mip_count, _source_blocks = \
+        _dds_export_info(image, source_path)
+    total_units = _raw_bgra8_work_units(width, height, mip_count)
+
+    # Lightmaps use RGB only. Keep alpha opaque, matching the proven 32-bit test
+    # asset rather than copying legacy DXT3 payload data into a raw surface.
+    header = _raw_bgra8_header(width, height, mip_count)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_suffix(output_path.suffix + ".tmp")
+    mip_paths = [output_path.parent / f".{output_path.name}.mip-{level}.tmp"
+                 for level in range(mip_count)]
+    completed_units = 0
+    current_pixels = None
+    next_pixels = None
+    try:
+        with temporary.open("wb") as stream:
+            stream.write(header)
+            level_width, level_height = width, height
+            for level in range(mip_count):
+                keep_level = level + 1 < mip_count
+                next_pixels = None
+                if keep_level:
+                    next_pixels = np.memmap(
+                        mip_paths[level], dtype=np.uint8, mode="w+",
+                        shape=(level_height, level_width, 4))
+                rows_per_chunk = _raw_rows_per_chunk(level_width)
+                for row in range(0, level_height, rows_per_chunk):
+                    row_end = min(level_height, row + rows_per_chunk)
+                    if level == 0:
+                        chunk = _read_bake_rgba8_rows(
+                            image, level_width, level_height, row, row_end, scale)
+                    else:
+                        chunk = _downsample_rgba_rows(
+                            current_pixels, current_pixels.shape[1],
+                            current_pixels.shape[0], row, row_end)
+                    if next_pixels is not None:
+                        next_pixels[row:row_end] = chunk
+                    # The masks describe A8R8G8B8 packed little-endian, so the
+                    # on-disk byte order is B, G, R, A.
+                    stream.write(chunk[:, :, [2, 1, 0, 3]].tobytes())
+                    completed_units += (row_end - row) * level_width
+                    yield (completed_units, total_units,
+                           f"Streaming raw mip {level + 1}/{mip_count}")
+                if next_pixels is not None:
+                    next_pixels.flush()
+                if current_pixels is not None:
+                    del current_pixels
+                    current_pixels = None
+                    mip_paths[level - 1].unlink()
+                current_pixels = next_pixels
+                next_pixels = None
+                level_width = max(1, level_width // 2)
+                level_height = max(1, level_height // 2)
+        temporary.replace(output_path)
+    finally:
+        if current_pixels is not None:
+            del current_pixels
+        if next_pixels is not None:
+            del next_pixels
+        if temporary.exists():
+            temporary.unlink()
+        for path in mip_paths:
+            if path.exists():
+                path.unlink()
+    return "A8R8G8B8", width, height, mip_count, total_units
+
+
 def _write_bake_dds_steps(image, source_path, output_path, scale):
     """Incrementally encode a DDS and yield (completed blocks, total blocks, phase)."""
+    import numpy as np
+
     source_header, fourcc, width, height, mip_count, total_blocks = \
         _dds_export_info(image, source_path)
 
-    yield 0, total_blocks, "Reading pixels"
     alpha_image = bpy.data.images.get(image.get("rws_source_image", ""))
-    pixels = _image_rgba_array(image, width, height, scale, alpha_image)
     block_bytes = 8 if fourcc == b"DXT1" else 16
     linear_size = ((width + 3) // 4) * ((height + 3) // 4) * block_bytes
     header = bytearray(source_header)
@@ -578,30 +746,67 @@ def _write_bake_dds_steps(image, source_path, output_path, scale):
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".tmp")
+    mip_paths = [output_path.parent / f".{output_path.name}.bc-mip-{level}.tmp"
+                 for level in range(mip_count)]
     completed_blocks = 0
+    current_pixels = None
+    level_pixels = None
     try:
         with temporary.open("wb") as stream:
             stream.write(header)
             level_width, level_height = width, height
             for level in range(mip_count):
+                level_pixels = np.memmap(
+                    mip_paths[level], dtype=np.uint8, mode="w+",
+                    shape=(level_height, level_width, 4))
+                rows_per_chunk = _raw_rows_per_chunk(level_width)
+                for row in range(0, level_height, rows_per_chunk):
+                    row_end = min(level_height, row + rows_per_chunk)
+                    if level == 0:
+                        chunk = _read_bake_rgba8_rows(
+                            image, level_width, level_height, row, row_end,
+                            scale, alpha_image)
+                        phase = "Reading bake pixels"
+                    else:
+                        chunk = _downsample_rgba_rows(
+                            current_pixels, current_pixels.shape[1],
+                            current_pixels.shape[0], row, row_end)
+                        phase = f"Building mip {level + 1}/{mip_count}"
+                    level_pixels[row:row_end] = chunk
+                    yield completed_blocks, total_blocks, phase
+                level_pixels.flush()
+                if current_pixels is not None:
+                    del current_pixels
+                    current_pixels = None
+                    mip_paths[level - 1].unlink()
+                current_pixels = level_pixels
+                level_pixels = None
                 for payload, block_count in _encode_dds_level_chunks(
-                        pixels, level_width, level_height, fourcc):
+                        current_pixels, level_width, level_height, fourcc):
                     stream.write(payload)
                     completed_blocks += block_count
                     yield completed_blocks, total_blocks, f"Compressing mip {level + 1}/{mip_count}"
-                if level + 1 < mip_count:
-                    yield completed_blocks, total_blocks, f"Building mip {level + 2}/{mip_count}"
-                    pixels, level_width, level_height = _downsample_rgba(
-                        pixels, level_width, level_height)
+                level_width = max(1, level_width // 2)
+                level_height = max(1, level_height // 2)
         temporary.replace(output_path)
     finally:
+        if current_pixels is not None:
+            del current_pixels
+        if level_pixels is not None:
+            del level_pixels
         if temporary.exists():
             temporary.unlink()
+        for path in mip_paths:
+            if path.exists():
+                path.unlink()
     return fourcc.decode("ascii"), width, height, mip_count, total_blocks
 
 
-def _dds_export_block_count(image, source_path):
-    return _dds_export_info(image, source_path)[5]
+def _dds_export_work_units(image, source_path, output_format):
+    info = _dds_export_info(image, source_path)
+    if output_format == "RAW32":
+        return _raw_bgra8_work_units(info[2], info[3], info[4])
+    return info[5]
 
 
 def _find_nvtt_export(configured_path="", refresh=False):
@@ -625,19 +830,27 @@ def _find_nvtt_export(configured_path="", refresh=False):
     return result
 
 
-def _write_nvtt_input_tga(image, path, scale, alpha_image):
+def _write_nvtt_input_tga_steps(image, path, scale, alpha_image):
+    """Stream a top-down TGA for NVTT and yield after each bounded row chunk."""
     import numpy as np
 
     width, height = tuple(image.size)
-    output = _image_rgba_array(image, width, height, scale, alpha_image)
-    # TGA descriptor 0x28 declares top-left origin and eight alpha bits.
-    payload = np.take(output, [2, 1, 0, 3], axis=2).tobytes()
     header = struct.pack("<BBBHHBHHHHBB", 0, 0, 2, 0, 0, 0, 0, 0,
                          width, height, 32, 0x28)
+    channel_sums = np.zeros(4, dtype=np.uint64)
     with path.open("wb") as stream:
         stream.write(header)
-        stream.write(payload)
-    return tuple(int(round(float(output[:, :, channel].mean()))) for channel in range(4))
+        rows_per_chunk = _raw_rows_per_chunk(width)
+        for row in range(0, height, rows_per_chunk):
+            row_end = min(height, row + rows_per_chunk)
+            output = _read_bake_rgba8_rows(
+                image, width, height, row, row_end, scale, alpha_image)
+            channel_sums += output.sum(axis=(0, 1), dtype=np.uint64)
+            # TGA descriptor 0x28 declares top-left origin and eight alpha bits.
+            stream.write(output[:, :, [2, 1, 0, 3]].tobytes())
+            yield row_end, height
+    pixel_count = width * height
+    return tuple(int(round(float(value) / pixel_count)) for value in channel_sums)
 
 
 def _write_bake_dds_nvtt_steps(image, source_path, output_path, scale, executable):
@@ -649,11 +862,22 @@ def _write_bake_dds_nvtt_steps(image, source_path, output_path, scale, executabl
     log_path = output_path.parent / f".{output_path.stem}.rws-nvtt.log"
     process = None
     log_stream = None
+    tga_writer = None
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         yield 0, total_blocks, "Preparing NVIDIA input"
         alpha_image = bpy.data.images.get(image.get("rws_source_image", ""))
-        terminal_pixel = _write_nvtt_input_tga(image, input_path, scale, alpha_image)
+        tga_writer = _write_nvtt_input_tga_steps(
+            image, input_path, scale, alpha_image)
+        while True:
+            try:
+                rows_done, row_count = next(tga_writer)
+            except StopIteration as finished:
+                terminal_pixel = finished.value
+                break
+            yield (0, total_blocks,
+                   f"Preparing NVIDIA input rows {rows_done}/{row_count}")
+        tga_writer = None
         if executable.stem.casefold() == "nvcompress":
             alpha_mode = "-alpha" if source_fourcc == b"DXT3" else "-noalpha"
             command = [str(executable), f"-{formats[source_fourcc]}", alpha_mode,
@@ -705,6 +929,8 @@ def _write_bake_dds_nvtt_steps(image, source_path, output_path, scale, executabl
         temporary.replace(output_path)
         yield total_blocks, total_blocks, "NVIDIA compression complete"
     finally:
+        if tga_writer is not None:
+            tga_writer.close()
         if process and process.poll() is None:
             process.terminate()
             try:
@@ -772,6 +998,42 @@ def _prepare_material_for_bake(material, resolution_scale):
     target.select = True
     nodes.active = target
     material["rws_bake_prepared"] = True
+    material["rws_bake_passive"] = False
+    return True
+
+
+def _prepare_passive_material_for_bake(material):
+    """Make an unprepared preview material participate in Cycles without emitting."""
+    if (not material.node_tree or material.get("rws_bake_prepared") or
+            not material.get("rws_lightmaps_configured")):
+        return False
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    alpha_mix = nodes.get("RWS_ALPHA_MIX")
+    base = nodes.get("RWS_BASE")
+    if not alpha_mix or not base:
+        return False
+
+    diffuse = nodes.get("RWS_BAKE_PASSIVE")
+    if not diffuse:
+        diffuse = _new_node(
+            nodes, "ShaderNodeBsdfPrincipled", "RWS_BAKE_PASSIVE", 260, -280)
+    diffuse.inputs["Base Color"].default_value = tuple(material.diffuse_color)
+    diffuse.inputs["Roughness"].default_value = 1.0
+    if diffuse.inputs.get("Metallic"):
+        diffuse.inputs["Metallic"].default_value = 0.0
+    base_color = diffuse.inputs["Base Color"]
+    for link in list(base_color.links):
+        links.remove(link)
+    if base.outputs.get("Color"):
+        links.new(base.outputs["Color"], base_color)
+
+    # Keep RWS_ALPHA_MIX in place so foliage continues using its base alpha.
+    shader_input = alpha_mix.inputs[2]
+    for link in list(shader_input.links):
+        links.remove(link)
+    links.new(diffuse.outputs["BSDF"], shader_input)
+    material["rws_bake_passive"] = True
     return True
 
 
@@ -789,6 +1051,7 @@ def _restore_preview_material(material):
         links.remove(link)
     links.new(emission.outputs["Emission"], shader_input)
     material["rws_bake_prepared"] = False
+    material["rws_bake_passive"] = False
     return True
 
 
@@ -932,7 +1195,7 @@ class RWS_OT_select_world_sectors(bpy.types.Operator):
 class RWS_OT_prepare_bake(bpy.types.Operator):
     bl_idname = "rws_lightmaps.prepare_bake"
     bl_label = "Prepare Selected for Bake"
-    bl_description = "Create shared lightmap targets and temporary base-textured diffuse shaders for selected meshes"
+    bl_description = "Prepare selected lightmap targets and make other RWS materials passive during the bake"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -971,19 +1234,25 @@ class RWS_OT_prepare_bake(bpy.types.Operator):
         resolution_scale = int(context.scene.rws_bake_resolution_scale)
         prepared = sum(_prepare_material_for_bake(material, resolution_scale)
                        for material in bake_materials)
+        visible_scene_objects = [
+            obj for obj in context.scene.objects
+            if obj.type == "MESH" and obj.data and not obj.hide_render]
+        scene_materials = _configured_materials_on_objects(visible_scene_objects)
+        passive = sum(_prepare_passive_material_for_bake(material)
+                      for material in scene_materials)
         try:
             context.scene.render.engine = "CYCLES"
         except TypeError:
             pass
-        _refresh_prepared_scene(context, objects, materials)
+        _refresh_prepared_scene(context, objects, scene_materials)
         _show_scene_lighting(context)
         targets = {
             material.node_tree.nodes["RWS_BAKE_TARGET"].image.name
             for material in materials if material.get("rws_bake_prepared")
         }
         context.scene.rws_lightmap_status = (
-            f"v0.12.0: prepared {prepared} base-textured materials using {len(targets)} "
-            f"targets at {resolution_scale}x; "
+            f"v0.15.0: prepared {prepared} materials using {len(targets)} targets at "
+            f"{resolution_scale}x; made {passive} other materials passive; "
             "Cycles scene lighting active")
         self.report({"INFO"}, context.scene.rws_lightmap_status)
         return {"FINISHED"}
@@ -994,7 +1263,7 @@ class RWS_OT_bake_selected(bpy.types.Operator):
     bl_label = "Bake Selected Lighting"
     bl_description = "Bake direct and indirect diffuse lighting into prepared targets using existing lightmap UVs"
 
-    def execute(self, context):
+    def _prepare(self, context):
         # Adding or editing a light changes Blender's selection. Use the durable
         # set recorded by Prepare instead of silently dropping the world sectors.
         objects = [obj for obj in context.scene.objects
@@ -1002,13 +1271,11 @@ class RWS_OT_bake_selected(bpy.types.Operator):
         materials = _configured_materials_on_objects(objects)
         prepared = [material for material in materials if material.get("rws_bake_prepared")]
         if not objects or not prepared:
-            self.report({"ERROR"}, "Run Select World Sectors, then Prepare Selected for Bake first")
-            return {"CANCELLED"}
+            raise ValueError("Run Select World Sectors, then Prepare Selected for Bake first")
         missing = [material.name for material in materials
                    if material.get("rws_lightmap_texture") and not material.get("rws_bake_prepared")]
         if missing:
-            self.report({"ERROR"}, f"{len(missing)} selected lightmapped materials are not prepared")
-            return {"CANCELLED"}
+            raise ValueError(f"{len(missing)} selected lightmapped materials are not prepared")
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         bpy.ops.object.select_all(action="DESELECT")
@@ -1032,29 +1299,133 @@ class RWS_OT_bake_selected(bpy.types.Operator):
                 image["rws_bake_completed"] = False
                 if "rws_bake_completed_by" in image:
                     del image["rws_bake_completed_by"]
-        started_at = time.monotonic()
-        context.scene.rws_lightmap_status = "Baking selected lighting with Cycles..."
-        try:
-            result = bpy.ops.object.bake(
-                "EXEC_DEFAULT", type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"})
-        except RuntimeError as error:
-            context.scene.rws_lightmap_status = "Bake failed"
-            self.report({"ERROR"}, str(error))
-            return {"CANCELLED"}
-        if result != {"FINISHED"}:
-            context.scene.rws_lightmap_status = "Bake cancelled"
-            return result
+        return objects, target_names
+
+    @staticmethod
+    def _mark_completed(target_names):
         for name in target_names:
             image = bpy.data.images.get(name)
             if image:
                 image["rws_bake_completed"] = True
                 image["rws_bake_completed_by"] = "rws-lightmaps-batch-v1"
-        elapsed = _format_elapsed(time.monotonic() - started_at)
+
+    def _complete(self, context):
+        self._mark_completed(self._target_names)
+        elapsed = _format_elapsed(time.monotonic() - self._started_at)
+        context.scene.rws_bake_running = False
+        context.scene.rws_bake_elapsed = elapsed
         context.scene.rws_lightmap_status = (
-            f"Bake completed in {elapsed}: {len(objects)} objects, "
-            f"{len(target_names)} target images; save before closing")
+            f"Bake completed in {elapsed}: {len(self._objects)} objects, "
+            f"{len(self._target_names)} target images; save before closing")
         self.report({"INFO"}, context.scene.rws_lightmap_status)
+
+    def _remove_handlers(self):
+        handlers = (
+            (bpy.app.handlers.object_bake_complete,
+             getattr(self, "_complete_handler", None)),
+            (bpy.app.handlers.object_bake_cancel,
+             getattr(self, "_cancel_handler", None)),
+        )
+        for collection, handler in handlers:
+            if handler is not None and handler in collection:
+                collection.remove(handler)
+
+    def _stop_modal(self, context):
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            context.window_manager.event_timer_remove(timer)
+            self._timer = None
+        self._remove_handlers()
+
+    def execute(self, context):
+        """Synchronous path retained for scripts and headless Blender tests."""
+        try:
+            self._objects, self._target_names = self._prepare(context)
+            self._started_at = time.monotonic()
+            context.scene.rws_bake_running = True
+            context.scene.rws_bake_elapsed = "00:00:00"
+            context.scene.rws_lightmap_status = "Baking selected lighting with Cycles..."
+            result = bpy.ops.object.bake(
+                "EXEC_DEFAULT", type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"})
+        except (RuntimeError, ValueError) as error:
+            context.scene.rws_bake_running = False
+            context.scene.rws_lightmap_status = "Bake failed"
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        if result != {"FINISHED"}:
+            context.scene.rws_bake_running = False
+            context.scene.rws_lightmap_status = "Bake cancelled"
+            return result
+        self._complete(context)
         return {"FINISHED"}
+
+    def invoke(self, context, _event):
+        if context.scene.rws_bake_running or bpy.app.is_job_running("OBJECT_BAKE"):
+            self.report({"WARNING"}, "A Cycles bake is already running")
+            return {"CANCELLED"}
+        try:
+            self._objects, self._target_names = self._prepare(context)
+            self._started_at = time.monotonic()
+            self._bake_result = None
+            self._cancel_requested = False
+            self._complete_handler = lambda _obj: setattr(self, "_bake_result", "FINISHED")
+            self._cancel_handler = lambda _obj: setattr(self, "_bake_result", "CANCELLED")
+            bpy.app.handlers.object_bake_complete.append(self._complete_handler)
+            bpy.app.handlers.object_bake_cancel.append(self._cancel_handler)
+            context.scene.rws_bake_running = True
+            context.scene.rws_bake_elapsed = "00:00:00"
+            context.scene.rws_lightmap_status = (
+                "Cycles bake running in background; press Esc to cancel")
+            result = bpy.ops.object.bake(
+                "INVOKE_DEFAULT", type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"})
+            if result == {"FINISHED"}:
+                self._remove_handlers()
+                self._complete(context)
+                return {"FINISHED"}
+            if result != {"RUNNING_MODAL"}:
+                self._remove_handlers()
+                context.scene.rws_bake_running = False
+                context.scene.rws_lightmap_status = "Bake cancelled"
+                return result
+            self._timer = context.window_manager.event_timer_add(0.25, window=context.window)
+            context.window_manager.modal_handler_add(self)
+            return {"RUNNING_MODAL"}
+        except (RuntimeError, ValueError) as error:
+            self._remove_handlers()
+            context.scene.rws_bake_running = False
+            context.scene.rws_lightmap_status = "Bake failed"
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+    def modal(self, context, event):
+        # Passing Esc through lets Blender's native OBJECT_BAKE modal operator
+        # request cancellation. Its handler tells us when cancellation finishes.
+        if event.type == "ESC":
+            self._cancel_requested = True
+            context.scene.rws_lightmap_status = "Cancelling Cycles bake..."
+            return {"PASS_THROUGH"}
+        if event.type != "TIMER":
+            return {"PASS_THROUGH"}
+
+        elapsed = _format_elapsed(time.monotonic() - self._started_at)
+        context.scene.rws_bake_elapsed = elapsed
+        if self._bake_result == "FINISHED":
+            self._stop_modal(context)
+            self._complete(context)
+            return {"FINISHED"}
+        if self._bake_result == "CANCELLED":
+            self._stop_modal(context)
+            context.scene.rws_bake_running = False
+            context.scene.rws_lightmap_status = f"Bake cancelled after {elapsed}"
+            self.report({"WARNING"}, context.scene.rws_lightmap_status)
+            return {"CANCELLED"}
+
+        context.scene.rws_lightmap_status = (
+            f"{'Cancelling' if self._cancel_requested else 'Baking'} selected lighting "
+            f"with Cycles... {elapsed}")
+        if context.area:
+            context.area.tag_redraw()
+        return {"RUNNING_MODAL"}
 
 
 class RWS_OT_add_preview_sun(bpy.types.Operator):
@@ -1168,8 +1539,11 @@ class RWS_OT_diagnose_lighting(bpy.types.Operator):
         selected_prepared = sum(obj.select_get() for obj in prepared_objects)
         hidden_shells = sum(bool(obj.get("rws_duplicate_terrain_shell")) and obj.hide_render
                             for obj in context.scene.objects)
-        status = (f"v0.12.0 diag: {context.scene.render.engine}; shaders {valid}/{len(prepared)}; "
-                  f"bake objects {len(prepared_objects)} ({selected_prepared} selected); "
+        passive = sum(bool(material.get("rws_bake_passive"))
+                      for material in bpy.data.materials)
+        status = (f"v0.15.0 diag: {context.scene.render.engine}; shaders {valid}/{len(prepared)}; "
+                   f"bake objects {len(prepared_objects)} ({selected_prepared} selected); "
+                  f"passive materials {passive}; "
                   f"hidden terrain shells {hidden_shells}; lights {len(lights)}; "
                   f"views {','.join(view_modes) or 'none'}")
         context.scene.rws_lightmap_status = status
@@ -1184,13 +1558,16 @@ class RWS_OT_diagnose_lighting(bpy.types.Operator):
 class RWS_OT_restore_preview(bpy.types.Operator):
     bl_idname = "rws_lightmaps.restore_preview"
     bl_label = "Restore Preview Shaders"
-    bl_description = "Reconnect RWS preview emission shaders while retaining generated bake target images"
+    bl_description = "Restore preview emission shaders for prepared and passive RWS materials"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
+        if context.scene.rws_bake_running or bpy.app.is_job_running("OBJECT_BAKE"):
+            self.report({"ERROR"}, "Wait for the active Cycles bake to finish or cancel it first")
+            return {"CANCELLED"}
         restored = sum(
             _restore_preview_material(material) for material in bpy.data.materials
-            if material.get("rws_bake_prepared"))
+            if material.get("rws_bake_prepared") or material.get("rws_bake_passive"))
         restored_uvs = 0
         for obj in bpy.data.objects:
             if obj.type != "MESH" or not obj.data or not obj.get("rws_bake_uv_prepared"):
@@ -1212,7 +1589,7 @@ class RWS_OT_restore_preview(bpy.types.Operator):
 class RWS_OT_export_bakes(bpy.types.Operator):
     bl_idname = "rws_lightmaps.export_bakes"
     bl_label = "Export Game-Ready DDS"
-    bl_description = "Scale completed bakes, encode their original DXT format and recreate the resource hierarchy"
+    bl_description = "Scale completed bakes, write the selected DDS format and recreate the resource hierarchy"
 
     def _plan(self, context):
         scene = context.scene
@@ -1262,7 +1639,8 @@ class RWS_OT_export_bakes(bpy.types.Operator):
                 raise ValueError(
                     f"Output already exists: {output_path}; enable Overwrite Existing Exports to replace it")
             planned.append((image, source_path, output_path,
-                            _dds_export_block_count(image, source_path)))
+                            _dds_export_work_units(
+                                image, source_path, scene.rws_dds_output_format)))
         return (planned, texture_directory, export_root, relative_directory,
                 destination_directory)
 
@@ -1270,10 +1648,13 @@ class RWS_OT_export_bakes(bpy.types.Operator):
         planned, texture_directory, export_root, relative_directory, destination_directory = plan
         records = []
         file_count = len(planned)
-        total_export_blocks = sum(item[3] for item in planned)
-        prior_blocks = 0
-        for index, (image, source_path, output_path, file_blocks) in enumerate(planned):
-            if self._nvtt_path:
+        total_export_units = sum(item[3] for item in planned)
+        prior_units = 0
+        for index, (image, source_path, output_path, file_units) in enumerate(planned):
+            if context.scene.rws_dds_output_format == "RAW32":
+                encoder = _write_bake_dds_raw32_steps(
+                    image, source_path, output_path, context.scene.rws_bake_export_scale)
+            elif self._nvtt_path:
                 encoder = _write_bake_dds_nvtt_steps(
                     image, source_path, output_path,
                     context.scene.rws_bake_export_scale, self._nvtt_path)
@@ -1287,7 +1668,7 @@ class RWS_OT_export_bakes(bpy.types.Operator):
                     except StopIteration as finished:
                         fourcc, width, height, mip_count, _blocks = finished.value
                         break
-                    percent = 100.0 * (prior_blocks + completed) / total_export_blocks
+                    percent = 100.0 * (prior_units + completed) / total_export_units
                     yield percent, index + 1, file_count, source_path.name, phase
             finally:
                 encoder.close()
@@ -1300,7 +1681,7 @@ class RWS_OT_export_bakes(bpy.types.Operator):
                 "mip_count": mip_count,
                 "rgb_scale": context.scene.rws_bake_export_scale,
             })
-            prior_blocks += file_blocks
+            prior_units += file_units
             context.scene.rws_export_completed_files = len(records)
         manifest_path = export_root / "rws_bake_export.json"
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1319,14 +1700,19 @@ class RWS_OT_export_bakes(bpy.types.Operator):
         scene.rws_export_total_files = 0
         scene.rws_export_completed_files = 0
         try:
+            if scene.rws_bake_running or bpy.app.is_job_running("OBJECT_BAKE"):
+                raise ValueError("Wait for the active Cycles bake to finish before exporting DDS files")
             mode = scene.rws_dds_encoder
+            raw32 = scene.rws_dds_output_format == "RAW32"
             self._nvtt_path = _find_nvtt_export(scene.rws_nvtt_executable, refresh=True) \
-                if mode in {"AUTO", "NVIDIA"} else None
-            if mode == "NVIDIA" and not self._nvtt_path:
+                if not raw32 and mode in {"AUTO", "NVIDIA"} else None
+            if not raw32 and mode == "NVIDIA" and not self._nvtt_path:
                 raise ValueError(
                     "NVIDIA nvcompress.exe/nvtt_export.exe was not found; choose its path or use Auto/Python")
             scene.rws_export_encoder_active = (
-                f"NVIDIA CUDA ({self._nvtt_path.name})" if self._nvtt_path else "Built-in Python")
+                "Built-in raw A8R8G8B8" if raw32 else
+                (f"NVIDIA CUDA ({self._nvtt_path.name})" if self._nvtt_path else
+                 "Built-in Python"))
             self._plan_data = self._plan(context)
             self._generator = self._steps(context, self._plan_data)
             self._started_at = time.monotonic()
@@ -1434,7 +1820,7 @@ class RWS_PT_lightmaps(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         scene = context.scene
-        layout.label(text="RWS Lightmaps 0.12.0")
+        layout.label(text="RWS Lightmaps 0.15.0")
 
         column = layout.column(align=True)
         column.label(text="CSF RWS Tools Scene")
@@ -1469,19 +1855,27 @@ class RWS_PT_lightmaps(bpy.types.Panel):
                       f"{scene.cycles.diffuse_bounces} diffuse bounces"))
             bake_box.operator("rws_lightmaps.diagnose_lighting", icon="INFO")
         bake_box.prop(scene, "rws_bake_margin")
-        bake_box.operator("rws_lightmaps.bake_selected", icon="RENDER_STILL")
+        bake_button = bake_box.row()
+        bake_button.enabled = not scene.rws_bake_running
+        bake_button.operator("rws_lightmaps.bake_selected", icon="RENDER_STILL")
+        if scene.rws_bake_running:
+            bake_box.label(text=f"Bake elapsed {scene.rws_bake_elapsed}", icon="TIME")
+            bake_box.label(text="Press Esc to cancel the Cycles bake", icon="INFO")
         bake_box.operator("rws_lightmaps.restore_preview", icon="NODE_MATERIAL")
-        bake_box.label(text="Only prepared materials react to lights")
+        bake_box.label(text="Other RWS materials become passive shadow casters")
         bake_box.label(text="Shared UVs may overlap; test one group first")
 
         layout.separator()
         layout.label(text="Game DDS Export")
         export_box = layout.box()
         export_box.prop(scene, "rws_bake_export_directory", text="Export Root")
+        export_box.prop(scene, "rws_dds_output_format")
         if scene.rws_show_advanced:
             export_box.prop(scene, "rws_bake_export_scale")
-            export_box.prop(scene, "rws_dds_encoder")
-            if scene.rws_dds_encoder in {"AUTO", "NVIDIA"}:
+            if scene.rws_dds_output_format == "ORIGINAL":
+                export_box.prop(scene, "rws_dds_encoder")
+            if (scene.rws_dds_output_format == "ORIGINAL" and
+                    scene.rws_dds_encoder in {"AUTO", "NVIDIA"}):
                 export_box.prop(scene, "rws_nvtt_executable", text="NVTT Executable")
                 detected_nvtt = _find_nvtt_export(scene.rws_nvtt_executable)
                 export_box.label(
@@ -1490,7 +1884,7 @@ class RWS_PT_lightmaps(bpy.types.Panel):
                     icon="CHECKMARK" if detected_nvtt else "INFO")
         export_box.prop(scene, "rws_bake_overwrite")
         export_button = export_box.row()
-        export_button.enabled = not scene.rws_export_running
+        export_button.enabled = not scene.rws_export_running and not scene.rws_bake_running
         export_button.operator("rws_lightmaps.export_bakes", icon="EXPORT")
         if scene.rws_export_running:
             export_box.prop(scene, "rws_export_progress", text="Progress", slider=True)
@@ -1568,6 +1962,8 @@ def register():
     bpy.types.Scene.rws_bake_margin = bpy.props.IntProperty(
         name="Bake Margin", default=4, min=0, max=64,
         description="Pixels extended beyond lightmap UV islands to prevent mipmap seams")
+    bpy.types.Scene.rws_bake_running = BoolProperty(default=False, options={"HIDDEN"})
+    bpy.types.Scene.rws_bake_elapsed = StringProperty(default="00:00:00", options={"HIDDEN"})
     bpy.types.Scene.rws_bake_resolution_scale = EnumProperty(
         name="Bake Resolution",
         items=(
@@ -1586,6 +1982,15 @@ def register():
     bpy.types.Scene.rws_bake_overwrite = BoolProperty(
         name="Overwrite Existing Exports", default=False,
         description="Allow game-ready DDS files from a previous export to be replaced")
+    bpy.types.Scene.rws_dds_output_format = EnumProperty(
+        name="DDS Format",
+        items=(
+            ("ORIGINAL", "Original BC1/BC2",
+             "Preserve each source lightmap's DXT1/BC1 or DXT3/BC2 format"),
+            ("RAW32", "32-bit Raw (A8R8G8B8)",
+             "Lossless 8-bit RGB in a legacy uncompressed DDS; uses four bytes per pixel"),
+        ), default="ORIGINAL",
+        description="Storage format for exported game lightmaps")
     bpy.types.Scene.rws_dds_encoder = EnumProperty(
         name="DDS Encoder",
         items=(
@@ -1619,11 +2024,13 @@ def unregister():
         "rws_lightmap_manifest", "rws_lightmap_texture_directory", "rws_lightmap_view",
         "rws_base_non_color", "rws_lightmap_non_color", "rws_lightmap_intensity",
         "rws_show_advanced",
-        "rws_bake_margin", "rws_bake_resolution_scale",
+        "rws_bake_margin", "rws_bake_running", "rws_bake_elapsed",
+        "rws_bake_resolution_scale",
         "rws_bake_export_directory", "rws_bake_export_scale", "rws_bake_overwrite",
         "rws_export_running", "rws_export_cancel_requested", "rws_export_progress",
         "rws_export_elapsed",
-        "rws_dds_encoder", "rws_nvtt_executable", "rws_export_encoder_active",
+        "rws_dds_output_format", "rws_dds_encoder", "rws_nvtt_executable",
+        "rws_export_encoder_active",
         "rws_export_total_files", "rws_export_completed_files",
         "rws_lightmap_status", "rws_lightmap_material_count",
         "rws_lightmap_base_count", "rws_lightmap_lightmap_count", "rws_lightmap_texture_count",

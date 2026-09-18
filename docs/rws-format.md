@@ -98,13 +98,14 @@ The RenderWare 3.7 header assigns vendors `0x01` to Toolkit, `0x05` to World,
 
 | ID | Name | Full-corpus count | Payload bytes |
 |---:|---|---:|---:|
-| `0x00000116` | Skin Plugin | 2 | 6,802 |
-| `0x0000011E` | HAnim Plugin | 139 | 3,376 |
-| `0x0000011F` | User Data Plugin | 374 | 32,449 |
-| `0x00000120` | Material Effects Plugin | 902 | 72,536 |
-| `0x00000127` | Anisotropy Plugin | 645 | 2,580 |
-| `0x0000050E` | Bin Mesh Plugin | 370 | 1,988,576 |
-| `0xFFFFFF00` | Pyro Studios object metadata | 1,765 | 67,237 |
+| `0x00000116` | Skin Plugin | 8 | 27,008 |
+| `0x0000011D` | Collision Plugin | 8 | 51,074 |
+| `0x0000011E` | HAnim Plugin | 1,320 | 33,400 |
+| `0x0000011F` | User Data Plugin | 5,963 | 498,122 |
+| `0x00000120` | Material Effects Plugin | 20,266 | 1,700,456 |
+| `0x00000127` | Anisotropy Plugin | 14,865 | 59,460 |
+| `0x0000050E` | Bin Mesh Plugin | 5,935 | 14,430,320 |
+| `0xFFFFFF00` | Pyro Studios object metadata | 32,569 | 1,204,437 |
 
 `0xFFFFFF00` is registered by the game on several RenderWare object classes and its
 schema depends on the object owning the `Extension`. It is therefore decoded with
@@ -118,6 +119,16 @@ semantics remain conservative until their runtime consumers are traced.
 See [corpus findings](corpus-findings.md) for the separate RenderWare Physics
 streams discovered under `Models`.
 
+The Collision plug-in appears on eight World Atomic Sections. Its version `0x37002`
+payload embeds a standard Coll Tree (`0x2C`) containing one Struct. The Struct is a
+36-byte header (`flags`, minimum and maximum bounds, triangle count, split count),
+followed by 16 bytes per split. Each split contains two eight-byte sector descriptors
+(`u8 type`, `u8 flags`, `u16 index`, `f32 value`). When flags bit zero is set, a
+`u16` triangle-remap array follows with one entry per triangle. The current reader at
+`0x0056F030`, stream callback at `0x0056EB30`, and writer at `0x0056EEE0` establish
+the byte order and exact size formula. Pre-3.6 legacy trees use a different stream
+layout and remain unsupported because none occur in the supplied corpus.
+
 ## RenderWare Physics typed records
 
 `CommXPC.exe` contains the RenderWare Physics 3.7 readers statically. Ghidra-backed
@@ -129,9 +140,30 @@ records required by every supplied Physics stream. See
 
 Body-definition typed output exposes the semantics proven by executable data flow:
 mass, center of mass, principal inertia, principal-inertia orientation, scalar
-inertia, and body flags. Two floats and one vector remain explicitly marked unknown.
-This corrects the earlier provisional interpretation of the inertia vector and
-quaternion as a body/world transform.
+inertia, linear and angular damping, finite-rotation axis, and body flags. Flag
+`0x01` enables finite-axis orientation integration and flag `0x02` selects the
+oriented principal-inertia representation. Unknown flag bits remain visible. This
+corrects the earlier provisional interpretation of the inertia vector and quaternion
+as a body/world transform.
+
+The embedded volume's two material floats are friction followed by restitution.
+Contact generation combines each coefficient with the matching value from the other
+volume using the lower value. The first controls tangential constraint limits; the
+second scales separating velocity after an impact. The preceding common shape float
+is volume fatness: sphere and capsule implementations use it as radius, while box
+bounds expand each half-extent by it.
+
+Shape-specific fields are now identified as follows: capsule stores its half-height;
+box stores three half-extents; and cylinder stores radius followed by half-height.
+The cylinder bounds code expands both dimensions by fatness. Trilist version 1 caches
+the aggregate mass, center of mass, principal inertia, and inertia-orientation
+quaternion calculated from its child volumes. A negative cached mass tells the runtime
+to recalculate all four values.
+
+Version-1 volumes then store a raw `u16` flag word followed by a `u16` collision-group
+index. The collision broad phase uses the second value to address the configured
+group-pair rejection table. The supplied corpus leaves both fields zero, so individual
+meanings for the first word's bits remain deliberately uninterpreted.
 
 The low 16 bits of a Physics record tag select its type; the high 16 bits contain
 the record version. This is an internal Physics serialization grammar inside the
@@ -142,6 +174,8 @@ ordinary outer RenderWare `Struct`, not another layer of 12-byte RW chunk header
 The current decoder consumes the following Struct payloads exactly:
 
 - Clump: three `i32` object counts.
+- Table of Contents: `u32` entry count followed by 28-byte entries containing the
+  target chunk type, an opaque object ID, absolute file offset, and 16-byte GUID.
 - Frame List: `i32 count`, followed by `count` records of a 3x3 float rotation,
   float position, signed parent index, and flags (56 bytes per frame).
 - Geometry: four 32-bit header fields followed conditionally by prelight colors,
@@ -164,6 +198,8 @@ The current decoder consumes the following Struct payloads exactly:
   signed 32-bit integer, 32-bit real, and length-prefixed string, matching
   `RpUserDataFormat` in the Studio SDK's `rpusrdat.h`.
 - Bin Mesh: mesh/material groups and topology index arrays.
+- Collision: versioned `0x11D` wrapper, embedded `0x2C` tree, bounds, split-sector
+  descriptors, and optional triangle remap.
 - Anisotropy and Right To Render: scalar/pipeline metadata.
 - Material Effects: CSF uses effect and slot type `4` (dual pass). Material
   payloads store source/destination blend modes, a texture-present flag, a complete
@@ -179,6 +215,12 @@ The current decoder consumes the following Struct payloads exactly:
   other 112 Geometries have no UV arrays.
 - RenderWare Physics Body and Ragdoll definitions: recursive tagged records,
   including all volume/body/joint structures present in the extracted corpus.
+
+Four FR02 streams begin with a Table of Contents (`0x24`). Every recorded absolute
+offset lands on a complete top-level chunk whose type matches the entry. The 16-byte
+identifiers have RFC 4122 version-4/variant bit patterns. The intervening 32-bit
+field varies independently of type, offset, size, and library stamp, so it remains
+named only as an opaque object ID pending a runtime consumer.
 
 All 4,782 applicable model structures and all 26 applicable collision structures
 decode without a boundary/count failure. Geometry array sizes consume their Struct
@@ -238,8 +280,10 @@ layout. Offsets are relative to the outer record header:
 | `0x08` | `u32` | RenderWare library ID |
 | `0x0C` | `u32` | prototype ID |
 | `0x10` | `u32` | instance ID |
-| `0x14` | `3 x f32` | optional Atomic parameters; semantics still unresolved |
-| `0x20` | `u32` | placement flags |
+| `0x14` | `f32` | optional maximum visibility distance; non-positive disables the far limit |
+| `0x18` | `f32` | optional minimum visibility distance; non-positive disables the near limit |
+| `0x1C` | `f32` | visibility fade range at either enabled distance limit |
+| `0x20` | `u32` | Pyro Atomic metadata flags; decoded below |
 | `0x24` | chunk | standard Matrix (`0x0D`, 64-byte payload) containing a 52-byte Struct |
 | `0x3C` | `9 x f32` | Matrix right/up/at basis |
 | `0x60` | `3 x f32` | Matrix position |
@@ -260,6 +304,24 @@ exporter; names such as `ARBOL_3` are metadata rather than lookup keys.
 The final transform call uses combination mode zero; its callee directly copies all
 16 matrix words, proving that the placement Matrix replaces (rather than post- or
 pre-concatenates) the cloned Clump root transform.
+
+The three visibility fields are copied by `FUN_006C4090` through setters
+`FUN_006C01D0`, `FUN_006C0220`, and `FUN_006C0270`. Their getters optionally apply
+the engine distance scale and feed `FUN_006CBBF0`, which compares camera-to-instance
+distance against the maximum and minimum limits. Inside the fade range it returns
+`(maximum - distance) / fade` at the far edge or `(distance - minimum) / fade` at
+the near edge. FR01's named shrub placements use a maximum of `5000`; all other
+observed scene-instance distance fields are zero.
+
+The placement flag word is the cloned Atomic's Pyro metadata mask. The original
+export-property parser at `FUN_006C1060` provides direct names for bits `0x002`
+(`bEsAgua`, water), `0x040` (`bMipmaps`), `0x080` (`bEsCristalRompible`, breakable
+glass), `0x100` (`bEsBackPlane`), and `0x200` (`bTieneAnimacion`, animated).
+Runtime control flow identifies `0x001` as the Atomic enabled state and `0x400` as
+the scene-registration state: Clump activation toggles `0x001`, scene insertion sets
+`0x400`, and scene teardown clears it. Unknown bits remain visible in the raw mask.
+The supplied placement records use only `0x001`, `0x040`, `0x200`, and `0x400`, in
+the four combinations `0x401`, `0x441`, `0x601`, and `0x641`.
 
 ### Pyro World Sector per-vertex data and size defect
 

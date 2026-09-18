@@ -15,11 +15,25 @@ cloning, the assembled export contains 2,913 atomic meshes plus 40 World sectors
 Thus the foliage missing from the earlier preview was not extra World geometry—it
 was this game-specific placement table.
 
+The three scene-instance floats are visibility controls rather than unknown Atomic
+parameters. Executable data flow identifies them as maximum visibility distance,
+minimum visibility distance, and fade range. All observed values are zero except
+the 441 named FR01 shrub placements, which use maximum distance `5000`; the other
+two fields remain zero. The instance report now groups records by these values.
+
+Placement masks use only `0x401`, `0x441`, `0x601`, and `0x641`. Ghidra recovers
+these as enabled plus scene-registered, optionally mipmapped (`0x40`) and animated
+(`0x200`). The CLI and GUI show these names while retaining the complete raw mask.
+
 All 42 `.rws` files under a `Maps` directory pass the typed decoder sweep with zero
 failures and zero ambiguous Geometry triangle layouts. The wider scan also exposed
 variable-size Pyro World Sector per-vertex arrays and the executable's systematic
 four-byte size overstatement for that plug-in; the schema and serializer defect are
 documented in `rws-format.md`.
+
+Four FR02 map streams begin with a standard Table of Contents root. Their entries
+consume exactly and point to the following top-level Clump and World chunks with
+matching types; no other supplied RWS file contains this root.
 
 ## Panzers subset inventory
 
@@ -75,10 +89,34 @@ version where applicable, for example `0x00010017`.
 Volume tag `0x0B` selects its shape. Shapes observed and validated in the corpus are
 sphere (`0x0E`), capsule (`0x0F`), box (`0x10`), cylinder (`0x11`), and Trilist
 aggregate (`0x13`). Trilist records recursively contain other volume records. Common
-volume data comprises a 3x4 matrix, a shape-size/fatness float, two still-conservative
-material coefficients, and (in version 1) group and flag u16 values. The first float
-occupies volume offset `+0x4C`; it is the radius in a sphere and capsule, but is not a
-generic radius for every shape.
+volume data comprises a 3x4 matrix, fatness, friction, restitution, and (in version 1)
+a flag word and collision-group index. Fatness occupies volume offset `+0x4C`: sphere
+and capsule implementations use it as radius, while box bounds expand all three
+half-extents by it.
+
+The capsule-specific float is copied to runtime offset `+0x40`. Capsule bounds use
+that value as the center-to-cap distance and add the common `+0x4C` radius, proving
+it is half-height. Cylinder construction copies its first stream float to `+0x44`
+and its second to `+0x40`; bounds use `+0x44` for the two radial axes and `+0x40`
+for the axial extent, proving radius-then-half-height ordering. The inspector now
+retains the Trilist version-1 aggregate mass properties instead of discarding part of
+them. Runtime offset `+0x38` is cached mass and `+0x3C` is center of mass. When mass is
+negative, `FUN_008086A0` recomputes those fields from the child volumes and writes
+principal inertia plus its orientation quaternion at `+0x48` through `+0x60`.
+
+The next stream floats are stored at volume offsets `+0x54` and `+0x50`. Contact
+creation at `0x0081A910` copies them into the two sides of a contact, and
+`0x0081A340` combines like fields with `min`. Constraint generation at `0x00814F50`
+uses the `+0x54` value for tangential friction bounds and the `+0x50` value to scale
+the post-impact normal separating velocity. They are therefore friction followed by
+restitution in stream order.
+
+The final version-1 `u16` values are stored at `+0x58` and `+0x5A`, respectively.
+Collision candidate generation at `0x008113A0` and pair filtering at `0x0081B700`
+use `+0x5A` to index a group-pair rejection bit table, proving that the second value
+is the collision group. The first value is preserved as raw volume flags; all 3,065
+version-1 volume records in the supplied Physics corpus store `(flags, group) = (0, 0)`,
+so no per-bit semantics can be established from these assets.
 
 The body fields are not a world transform. Decompiled mass-property calculation at
 `0x00801550`, backed by the volume calculation at `0x007FEB40`, establishes this
@@ -91,13 +129,20 @@ layout:
 | `+0x14` | transform vec3 | principal inertia values |
 | `+0x20` | transform quaternion | principal-inertia orientation |
 | `+0x30` | following float | scalar/spherical inertia approximation |
-| `+0x34`, `+0x38` | following floats | unresolved; both default to `0.01` |
-| `+0x3C` | following vec3 | unresolved |
-| `+0x48` | u32 | body flags; bit 1 selects full principal-inertia data |
+| `+0x34` | following float | linear damping; defaults to `0.01` |
+| `+0x38` | following float | angular damping; defaults to `0.01` |
+| `+0x3C` | following vec3 | finite-rotation axis |
+| `+0x48` | u32 | body flags; bit 0 enables finite-axis integration and bit 1 selects oriented principal inertia |
 
 These names are derived from data flow rather than guessed from field values: the
 calculation obtains volume, center, and inertia from the shape, multiplies inertia
 by mass, stores the center, and selects scalar versus oriented principal inertia.
+The simulation step at `0x00802D70` subtracts mass-scaled `+0x34` times linear
+velocity from force, and inertia-scaled `+0x38` times angular velocity from torque.
+The transform integrator at `0x00811F10` projects angular motion onto `+0x3C` when
+flag `0x01` is set, applies an exact axis-angle quaternion update at `0x00811780`,
+then integrates the orthogonal remainder. This is the finite-rotation-axis algorithm,
+not an upright torque or gravity vector.
 
 All 33 `0x907` files consume exactly with this grammar. The sole `0x909` file also
 consumes exactly: it contains 11 embedded body definitions, 10 joint records, ten

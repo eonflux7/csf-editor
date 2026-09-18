@@ -21,6 +21,23 @@ struct Diagnostic {
     std::string message;
 };
 
+enum class SceneInstanceFlag : std::uint32_t {
+    enabled = 0x001,
+    water = 0x002,
+    mipmapped = 0x040,
+    breakable_glass = 0x080,
+    back_plane = 0x100,
+    animated = 0x200,
+    scene_registered = 0x400,
+};
+
+[[nodiscard]] constexpr bool has_scene_instance_flag(
+    const std::uint32_t flags, const SceneInstanceFlag flag) noexcept {
+    return (flags & static_cast<std::uint32_t>(flag)) != 0;
+}
+
+[[nodiscard]] std::string scene_instance_flag_names(std::uint32_t flags);
+
 // Commandos: Strike Force inserts these records between the streamed Clump
 // prototypes and the map World. They are not ordinary RenderWare chunks even
 // though each record embeds a standard Matrix/Struct pair.
@@ -29,7 +46,9 @@ struct SceneInstance {
     std::uint32_t declared_size{};
     std::uint32_t prototype_id{};
     std::uint32_t instance_id{};
-    std::array<float, 3> atomic_parameters{};
+    float maximum_visibility_distance{};
+    float minimum_visibility_distance{};
+    float visibility_fade_range{};
     std::uint32_t flags{};
     std::array<float, 9> rotation{};
     Vec3 position;

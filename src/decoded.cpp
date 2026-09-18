@@ -2,6 +2,7 @@
 
 #include <bit>
 #include <limits>
+#include <sstream>
 #include <string_view>
 
 namespace rws {
@@ -153,24 +154,26 @@ bool decode_physics_volume_data(Reader& reader, PhysicsVolumeInfo& result, std::
         if (!physics_tag(reader, 0x0E)) {
             error = "Physics sphere volume is truncated"; return false;
         }
-        result.shape_scalars.push_back(1.0F); // reader constructs the sphere with this fixed radius
     } else if (result.kind == 0x0F) {
-        result.shape_scalars.resize(1);
-        if (!physics_tag(reader, 0x0F) || !physics_float(reader, result.shape_scalars[0])) {
+        float half_height{};
+        if (!physics_tag(reader, 0x0F) || !physics_float(reader, half_height)) {
             error = "Physics capsule volume is truncated"; return false;
         }
+        result.capsule_half_height = half_height;
     } else if (result.kind == 0x10) {
         Vec3 half_extents;
         if (!physics_tag(reader, 0x10) || !physics_vec3(reader, half_extents)) {
             error = "Physics box volume is truncated"; return false;
         }
-        result.shape_vector = half_extents;
+        result.box_half_extents = half_extents;
     } else if (result.kind == 0x11) {
-        result.shape_scalars.resize(2);
-        if (!physics_tag(reader, 0x11) || !physics_float(reader, result.shape_scalars[0]) ||
-            !physics_float(reader, result.shape_scalars[1])) {
+        float radius{}, half_height{};
+        if (!physics_tag(reader, 0x11) || !physics_float(reader, radius) ||
+            !physics_float(reader, half_height)) {
             error = "Physics cylinder volume is truncated"; return false;
         }
+        result.cylinder_radius = radius;
+        result.cylinder_half_height = half_height;
     } else if (result.kind == 0x13) {
         std::uint16_t list_version{};
         std::uint32_t child_count{};
@@ -193,8 +196,10 @@ bool decode_physics_volume_data(Reader& reader, PhysicsVolumeInfo& result, std::
                 !physics_quaternion(reader, transform_orientation)) {
                 error = "Physics triangle-list version-1 fields are truncated"; return false;
             }
-            result.shape_scalars.push_back(list_scalar);
-            result.shape_vector = list_vector;
+            result.trilist_mass = list_scalar;
+            result.trilist_center_of_mass = list_vector;
+            result.trilist_principal_inertia = transform_position;
+            result.trilist_inertia_orientation = transform_orientation;
         }
     } else {
         error = "Unsupported Physics volume kind " + std::to_string(result.kind) +
@@ -204,15 +209,16 @@ bool decode_physics_volume_data(Reader& reader, PhysicsVolumeInfo& result, std::
     if (!physics_matrix(reader, result.matrix)) {
         error = "Physics volume matrix is truncated"; return false;
     }
-    if (!physics_float(reader, result.size_or_fatness)) {
-        error = "Physics volume size/fatness field is truncated"; return false;
+    if (!physics_float(reader, result.fatness)) {
+        error = "Physics volume fatness field is truncated"; return false;
     }
-    for (auto& value : result.material_coefficients) {
-        if (!physics_float(reader, value)) { error = "Physics volume common scalar fields are truncated"; return false; }
+    if (!physics_float(reader, result.friction) ||
+        !physics_float(reader, result.restitution)) {
+        error = "Physics volume material fields are truncated"; return false;
     }
-    if (result.version != 0 && (!physics_tag(reader, 1) || !reader.u16(result.group) ||
-        !physics_tag(reader, 1) || !reader.u16(result.flags))) {
-        error = "Physics volume group/flags fields are truncated"; return false;
+    if (result.version != 0 && (!physics_tag(reader, 1) || !reader.u16(result.flags) ||
+        !physics_tag(reader, 1) || !reader.u16(result.collision_group))) {
+        error = "Physics volume flags/collision-group fields are truncated"; return false;
     }
     return true;
 }
@@ -228,10 +234,11 @@ bool decode_physics_body_data(Reader& reader, PhysicsBodyDefInfo& result, std::s
     if (!physics_float(reader, result.scalar_inertia)) {
         error = "Physics Body Definition scalar inertia is truncated"; return false;
     }
-    for (auto& value : result.unknown_scalars) {
-        if (!physics_float(reader, value)) { error = "Physics Body Definition scalar fields are truncated"; return false; }
+    if (!physics_float(reader, result.linear_damping) ||
+        !physics_float(reader, result.angular_damping)) {
+        error = "Physics Body Definition damping fields are truncated"; return false;
     }
-    if (!physics_vec3(reader, result.unknown_vector) || !physics_tag(reader, 3) ||
+    if (!physics_vec3(reader, result.finite_rotation_axis) || !physics_tag(reader, 3) ||
         !reader.u32(result.flags) || !physics_vec3(reader, result.center_of_mass)) {
         error = "Physics Body Definition final fields are truncated"; return false;
     }
@@ -285,6 +292,24 @@ std::string read_rw_string(const Chunk& chunk, const std::span<const std::byte> 
 }
 
 } // namespace
+
+std::string physics_body_flag_names(const std::uint32_t flags) {
+    std::ostringstream names;
+    auto append = [&names](const std::string_view name) {
+        if (names.tellp() != std::streampos(0)) names << ", ";
+        names << name;
+    };
+    if (has_physics_body_flag(flags, PhysicsBodyFlag::finite_rotation_axis))
+        append("finite-rotation axis");
+    if (has_physics_body_flag(flags, PhysicsBodyFlag::oriented_inertia))
+        append("oriented inertia");
+    if (const auto unknown = flags & ~0x03U; unknown != 0) {
+        if (names.tellp() != std::streampos(0)) names << ", ";
+        names << "unknown 0x" << std::hex << unknown;
+    }
+    if (names.tellp() == std::streampos(0)) names << "none";
+    return names.str();
+}
 
 LibraryVersion decode_library_id(const std::uint32_t stamp) noexcept {
     LibraryVersion result;
@@ -505,6 +530,89 @@ DecodeResult<BinMeshInfo> decode_bin_mesh(const Chunk& chunk, const std::span<co
     }
     if (actual_indices != result.total_indices) return failure<BinMeshInfo>("Bin Mesh total index count disagrees with entries");
     if (reader.consumed() != chunk.available_size) return failure<BinMeshInfo>("Bin Mesh payload has unexpected trailing bytes");
+    return success(std::move(result));
+}
+
+DecodeResult<CollisionTreeInfo> decode_collision_tree(const Chunk& chunk,
+                                                       const std::span<const std::byte> bytes) {
+    Reader reader(bytes, chunk);
+    CollisionTreeInfo result;
+    std::uint32_t tree_type{}, tree_size{}, tree_stamp{};
+    std::uint32_t struct_type{}, struct_size{}, struct_stamp{};
+    if (!reader.u32(result.version))
+        return failure<CollisionTreeInfo>("Collision plug-in version is truncated");
+    if (result.version < 0x36001U)
+        return failure<CollisionTreeInfo>("Legacy pre-3.6 collision trees are unsupported");
+    if (!reader.u32(tree_type) || !reader.u32(tree_size) || !reader.u32(tree_stamp) ||
+        tree_type != 0x2CU || tree_stamp != chunk.library_id)
+        return failure<CollisionTreeInfo>("Collision plug-in has an invalid Coll Tree header");
+    if (tree_size > reader.remaining() || tree_size + 16U != chunk.available_size)
+        return failure<CollisionTreeInfo>("Collision Coll Tree size disagrees with the plug-in payload");
+    if (!reader.u32(struct_type) || !reader.u32(struct_size) || !reader.u32(struct_stamp) ||
+        struct_type != struct_chunk || struct_stamp != tree_stamp || struct_size + 12U != tree_size)
+        return failure<CollisionTreeInfo>("Collision plug-in has an invalid Struct header");
+    if (!reader.u32(result.flags) || !reader.vec3(result.bounding_box_inf) ||
+        !reader.vec3(result.bounding_box_sup) || !reader.u32(result.triangle_count) ||
+        !reader.u32(result.split_count))
+        return failure<CollisionTreeInfo>("Collision tree Struct header is truncated");
+    if (result.triangle_count > 0xFFFFU || result.split_count > 0xFFFFU)
+        return failure<CollisionTreeInfo>("Collision tree counts exceed the runtime 16-bit limits");
+    const auto map_bytes = (result.flags & 1U) != 0 ?
+        static_cast<std::uint64_t>(result.triangle_count) * 2U : 0U;
+    const auto split_bytes = static_cast<std::uint64_t>(result.split_count) * 16U;
+    if (split_bytes + map_bytes != reader.remaining())
+        return failure<CollisionTreeInfo>("Collision tree counts disagree with the Struct size");
+    result.splits.reserve(result.split_count);
+    for (std::uint32_t i = 0; i < result.split_count; ++i) {
+        CollisionSplitInfo split;
+        const auto read_sector = [&reader](CollisionSectorInfo& sector) {
+            return reader.u8(sector.type) && reader.u8(sector.flags) &&
+                reader.u16(sector.index) && reader.f32(sector.value);
+        };
+        if (!read_sector(split.left) || !read_sector(split.right))
+            return failure<CollisionTreeInfo>("Collision split array is truncated");
+        result.splits.push_back(split);
+    }
+    if ((result.flags & 1U) != 0) {
+        result.triangle_map.resize(result.triangle_count);
+        for (auto& triangle : result.triangle_map) {
+            if (!reader.u16(triangle))
+                return failure<CollisionTreeInfo>("Collision triangle map is truncated");
+        }
+    }
+    if (reader.remaining() != 0)
+        return failure<CollisionTreeInfo>("Collision tree has unexpected trailing bytes");
+    return success(std::move(result));
+}
+
+DecodeResult<TableOfContentsInfo> decode_table_of_contents(const Chunk& chunk,
+                                                            const std::span<const std::byte> bytes) {
+    Reader reader(bytes, chunk);
+    std::uint32_t count{};
+    if (!reader.u32(count) || count > reader.remaining() / 28U)
+        return failure<TableOfContentsInfo>("Table of Contents entry count is invalid");
+    TableOfContentsInfo result;
+    result.entries.reserve(count);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        TableOfContentsEntryInfo entry;
+        if (!reader.u32(entry.chunk_type) || !reader.u32(entry.object_id) || !reader.u32(entry.offset))
+            return failure<TableOfContentsInfo>("Table of Contents entry is truncated");
+        for (auto& byte : entry.guid) {
+            if (!reader.u8(byte)) return failure<TableOfContentsInfo>("Table of Contents GUID is truncated");
+        }
+        if (entry.offset > bytes.size() || bytes.size() - entry.offset < 12U)
+            return failure<TableOfContentsInfo>("Table of Contents entry offset is outside the file");
+        const auto offset = static_cast<std::size_t>(entry.offset);
+        const auto target_type = std::to_integer<std::uint32_t>(bytes[offset]) |
+            (std::to_integer<std::uint32_t>(bytes[offset + 1]) << 8U) |
+            (std::to_integer<std::uint32_t>(bytes[offset + 2]) << 16U) |
+            (std::to_integer<std::uint32_t>(bytes[offset + 3]) << 24U);
+        if (target_type != entry.chunk_type)
+            return failure<TableOfContentsInfo>("Table of Contents entry type disagrees with its target chunk");
+        result.entries.push_back(entry);
+    }
+    if (reader.remaining() != 0)
+        return failure<TableOfContentsInfo>("Table of Contents has unexpected trailing bytes");
     return success(std::move(result));
 }
 
