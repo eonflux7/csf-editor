@@ -22,11 +22,30 @@ else()
     target_compile_options(rws_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(csf_core
+    src/csf_document.cpp
+    src/csf_export.cpp
+    src/csf_mission.cpp
+    src/csf_mission_scene.cpp
+    src/csf_overlay.cpp
+)
+add_library(csf::core ALIAS csf_core)
+target_include_directories(csf_core PUBLIC include)
+target_compile_features(csf_core PUBLIC cxx_std_20)
+if(MSVC)
+    target_compile_options(csf_core PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(csf_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(rws-info app/rws_info.cpp)
 target_link_libraries(rws-info PRIVATE rws::core)
 
 add_executable(rws-corpus app/rws_corpus.cpp)
 target_link_libraries(rws-corpus PRIVATE rws::core)
+
+add_executable(csf-info app/csf_info.cpp)
+target_link_libraries(csf-info PRIVATE csf::core)
 
 if(RWSMAN_BUILD_GUI)
     include(FetchContent)
@@ -63,7 +82,7 @@ if(RWSMAN_BUILD_GUI)
     target_compile_features(imgui_backend PUBLIC cxx_std_20)
 
     add_executable(rws-man WIN32 app/main.cpp app/geometry_preview.cpp)
-    target_link_libraries(rws-man PRIVATE rws::core imgui_backend)
+    target_link_libraries(rws-man PRIVATE rws::core csf::core imgui_backend)
     if(WIN32)
         target_link_libraries(rws-man PRIVATE Shell32 Comdlg32)
     endif()
@@ -72,6 +91,6 @@ endif()
 if(RWSMAN_BUILD_TESTS)
     enable_testing()
     add_executable(rws_core_tests tests/document_tests.cpp)
-    target_link_libraries(rws_core_tests PRIVATE rws::core)
+    target_link_libraries(rws_core_tests PRIVATE rws::core csf::core)
     add_test(NAME rws_core_tests COMMAND rws_core_tests)
 endif()

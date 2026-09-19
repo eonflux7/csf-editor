@@ -18,7 +18,27 @@ namespace rwsman {
 
 class GeometryPreview {
 public:
+    enum class MissionOverlayKind : std::uint8_t { actor, navigation_point, navigation_connection, dummy, area, light, count };
+    struct MissionOverlayPoint {
+        MissionOverlayKind kind{MissionOverlayKind::actor};
+        std::uint32_t source_entry{};
+        rws::Vec3 position{};
+        std::string label;
+        ImU32 color{};
+    };
+    struct MissionOverlayLine {
+        MissionOverlayKind kind{MissionOverlayKind::navigation_connection};
+        std::uint32_t source_entry{};
+        rws::Vec3 first{}, second{};
+        ImU32 color{};
+    };
     void clear();
+    void set_mission_overlays(std::vector<MissionOverlayPoint> points,
+                              std::vector<MissionOverlayLine> lines);
+    [[nodiscard]] std::optional<std::uint32_t> selected_mission_entry() const noexcept {
+        return selected_mission_entry_;
+    }
+    void select_mission_entry(const std::uint32_t entry) noexcept { selected_mission_entry_ = entry; }
     void draw(const rws::Chunk& geometry_chunk, std::span<const std::byte> bytes,
               const std::filesystem::path& source_path);
     [[nodiscard]] bool draw_scene(const std::vector<rws::Chunk>& chunks,
@@ -142,6 +162,10 @@ private:
     bool measurement_mode_{};
     bool show_leaf_bounds_{}, show_bsp_path_{};
     std::string error_;
+    std::vector<MissionOverlayPoint> mission_points_;
+    std::vector<MissionOverlayLine> mission_lines_;
+    std::array<bool, static_cast<std::size_t>(MissionOverlayKind::count)> mission_layer_visible_{{true,true,true,true,true,true}};
+    std::optional<std::uint32_t> selected_mission_entry_;
 };
 
 } // namespace rwsman

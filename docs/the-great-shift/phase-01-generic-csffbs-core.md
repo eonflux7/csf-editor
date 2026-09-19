@@ -35,6 +35,25 @@ round-trip discipline required for later editing.
   but production code should follow this project's bounds, diagnostics, and
   ownership conventions.
 
+## Implementation status
+
+Phase 01 is implemented as of 2026-09-19:
+
+- `csf_core` owns the immutable header, flat-table, raw-string, diagnostic, and
+  validated tree models without GUI or RenderWare dependencies.
+- `csf-info` provides summary, validation, tree, string, search, deterministic
+  text/JSON export, and recursive corpus-report modes.
+- File exports refuse the input and every existing destination; `-` selects
+  standard output.
+- The synthetic regression suite covers valid, malformed, partial, encoding,
+  nesting, overflow, trailing-data, determinism, and byte-preservation cases.
+- Release and Debug core/full builds and tests pass. A magic-based read-only scan
+  parses all 1,262 reference documents without structural errors, including the
+  18 CSFFBS `.txt` files.
+
+The raw next-entry/link field remains preserved but semantically unresolved. Text
+and JSON are inspection exports, not authoring or round-trip source formats.
+
 ## In scope
 
 - Content sniffing for the `CSFFBS` magic independent of extension.
@@ -332,4 +351,3 @@ Against the read-only local corpus:
 - Synthetic parser tests cover valid, malformed, partial, encoding, and overflow
   cases.
 - Release and Debug tests pass and existing RWS behavior is unchanged.
-

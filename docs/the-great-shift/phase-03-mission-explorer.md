@@ -23,6 +23,42 @@ Explorer.
 - Existing scene renderer, collision overlay, picking, orthographic views,
   clipping, measurement, and selection infrastructure.
 
+## Implementation status
+
+Phase 03 is implemented as a read-only Mission Explorer as of 2026-09-19:
+
+- `csf::MissionScene` projects the established SCN environment, player metadata,
+  actors, navigation groups/points/connections, dummies and folders, area
+  polygons, and lights without changing the immutable generic document. Every
+  object retains file, entry index, byte range, optional values, unknown fields,
+  and typed diagnostics.
+- Navigation validation reports duplicate group/point IDs, invalid links,
+  connected components, and orphan points. Invalid records remain inspectable.
+- The symbol index separates definitions, typed references, and exact untyped
+  candidates. Actor class IDs resolve against `Objetos.bdd`; GSC/CSC and BDD
+  strings remain candidate-only unless their record category establishes more.
+- `csf-info mission` exposes object, navigation, spatial, exact-symbol, and safe
+  scene JSON reports in addition to the Phase 02 dependency graph commands.
+- Opening or dropping an SCN in `rws-man` transactionally loads the resolved
+  visual/collision pair and opens the Mission workspace. Batched overlay data
+  uses the existing perspective/orthographic camera for actors, navigation,
+  dummies, area outlines, and light-radius rings. Layers can be hidden
+  independently; point/line picking uses a stable screen-space threshold.
+- Mission search covers names, IDs, class IDs, scripts, groups, and point IDs.
+  Selection joins the overlay, its typed identity, raw CSFFBS subtree, and exact
+  class/name definition or candidate sites.
+- Synthetic tests cover optional versus explicit-zero values, duplicate names,
+  unknown fields, duplicate/invalid navigation identities, cross-group links,
+  folders, areas, lights, source stability, symbol categories, and deterministic
+  JSON. A read-only corpus pass projected all 21 reference SCNs without failure.
+
+Two evidence boundaries remain intentional. The observed `.INICIO_*` fields are
+exposed as player metadata, not guessed as world-space start positions. Camera-
+named actors and dummies are not retyped as cameras solely from names; viewport
+camera/FOV fields remain environment records until a dedicated camera record
+schema is established. These limitations preserve the phase rule against
+presenting string correlation or inferred geometry as proven data.
+
 ## In scope
 
 - Typed read-only views for the stable SCN top-level sections.
@@ -306,4 +342,3 @@ expectations based on copyrighted fixtures.
 - Synthetic typed-view, reference, and viewport tests pass.
 - Existing RWS Scene, Geometry, Inspector, collision, and export workflows remain
   available and pass their regression tests.
-

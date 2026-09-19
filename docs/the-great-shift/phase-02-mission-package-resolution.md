@@ -16,6 +16,30 @@ Physics, animation, validation, and authoring work.
 - Existing `rws_core` document loading and root classification.
 - Read-only filesystem access to an extracted game-resource tree.
 
+## Implementation status
+
+Phase 02 is implemented as of 2026-09-19:
+
+- `csf_core` provides the read-only resource index, deterministic Windows-like
+  resolver, mission graph, reverse-use index, adapters, diagnostics, lazy payload
+  ownership, content signatures for duplicate SCNs, and stable JSON export.
+- Mission discovery covers sibling GSC/CSC/VIS, `Maps/Secs` SEC, the six BDD
+  databases, map-local M3D/PHD/AND/TXL, and optional PRP/DST/WAD members.
+- VIS, M3D, AND, and TXL use bounded record readers. PHD deliberately exposes
+  only bounded extension-validated candidates and retains its complete byte
+  stream until the full record schema is established.
+- `csf-info mission`, `uses`, and `compare` expose summaries, dependency and
+  missing reports, safe graph export, reverse uses, and graph comparison.
+- Synthetic tests cover resolution precedence, slash/case handling, DFF-to-RPC
+  mapping, traversal rejection, adapters, missing edges, reverse uses, and JSON
+  determinism. All 21 reference SCNs build without a fatal error.
+
+The resolver does not claim semantic names for unknown PHD fields. A zero-sized
+VIS reference is retained as a missing optional edge, and M3D/AND terminal bytes
+remain preserved as adapter tails. These are evidence-preserving limitations,
+not guessed schemas. The detailed contract and corpus measurements are in
+[`../mission-resolution.md`](../mission-resolution.md).
+
 ## In scope
 
 - A mission/package descriptor rooted at a chosen SCN or explicit directory.
@@ -278,4 +302,3 @@ Reports should include:
   JSON graphs.
 - All 21 local missions can be scanned read-only without a fatal failure.
 - Synthetic resolution tests and existing RWS tests pass in Release and Debug.
-

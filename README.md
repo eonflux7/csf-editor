@@ -16,6 +16,8 @@ that partially understood assets can still be inspected safely.
 ## Features
 
 - Bounds-checked parsing of little-endian RenderWare chunk streams.
+- Read-only, bounds-checked parsing of generic `CSFFBS` documents with retained
+  raw tables, source offsets, diagnostics, and validated group/array trees.
 - Schema-aware inspection of Clumps, Geometry, Materials, Worlds, Frame Lists,
   Atomics, Skin, HAnim, User Data, Bin Mesh, MatFX, and other common plugins.
 - Decoding of game-specific Pyro Studios metadata, Physics Body/Ragdoll data, and
@@ -50,11 +52,16 @@ RenderWare rights holders.
 | `rws-info` | Inspect, validate, and export one `.rws` file |
 | `rws-corpus` | Recursively inventory a directory of `.rws` files |
 | `rws_core` | Parser, typed decoders, and export library used by all tools |
+| `csf-info` | Summarize, validate, search, and inspect one `CSFFBS` document |
+| `csf_core` | Generic `CSFFBS` parser and immutable document model |
 | `tools/blender/rws_lightmaps` | Blender material, bake, and DDS staging add-on |
 
 Format notes live in [docs/rws-format.md](docs/rws-format.md), corpus results in
 [docs/corpus-findings.md](docs/corpus-findings.md), and planned work in
 [docs/roadmap.md](docs/roadmap.md).
+The generic container grammar is recorded in
+[docs/csffbs-format.md](docs/csffbs-format.md), with the mission-workbench plan in
+[docs/the-great-shift/README.md](docs/the-great-shift/README.md).
 
 ## Requirements
 
@@ -109,6 +116,62 @@ Full-build executables are written to `build\<Config>`. Core-only executables ar
 written to `build-core\<Config>`.
 
 ## Command-line usage
+
+### Inspect a CSFFBS document
+
+`csf-info` selects the parser by the `CSFFBS` magic rather than the filename
+extension. It is read-only and returns a nonzero status for structural errors.
+
+```powershell
+$document = "C:\path\to\mission.scn"
+.\build\Release\csf-info.exe $document --summary
+.\build\Release\csf-info.exe $document --validate
+.\build\Release\csf-info.exe $document --tree
+.\build\Release\csf-info.exe $document --strings
+.\build\Release\csf-info.exe $document --find RUTA_Garita
+.\build\Release\csf-info.exe $document --export-text "C:\path\to\new-output.scn.txt"
+.\build\Release\csf-info.exe $document --export-json "C:\path\to\new-output.scn.json"
+.\build\Release\csf-info.exe corpus "C:\path\to\extracted-game"
+```
+
+Use `-` as an export destination to write the inspection format to standard
+output. File exports refuse the input path and any destination that already
+exists. The recursive corpus report sniffs every regular file by magic and emits
+tab-separated per-file and aggregate records; it never modifies the corpus.
+
+### Resolve a mission package
+
+Mission mode builds a read-only dependency graph from an SCN path or a mission
+directory. Package-local paths take precedence, matching is Windows-like and
+case-insensitive, and every mapped, missing, ambiguous, or case-mismatched edge
+retains its source file and byte offset.
+
+```powershell
+$scene = "C:\path\to\extracted-game\Ambush\Maps\ST08\Ambush.scn"
+$root = "C:\path\to\extracted-game"
+
+.\build\Release\csf-info.exe mission $scene --summary
+.\build\Release\csf-info.exe mission $scene --dependencies
+.\build\Release\csf-info.exe mission $scene --missing
+.\build\Release\csf-info.exe mission $scene --graph "C:\path\to\new-mission-graph.json"
+.\build\Release\csf-info.exe mission $scene --objects
+.\build\Release\csf-info.exe mission $scene --navigation
+.\build\Release\csf-info.exe mission $scene --spatial
+.\build\Release\csf-info.exe mission $scene --symbols class:55
+.\build\Release\csf-info.exe mission $scene --scene-json "C:\path\to\new-mission-scene.json"
+.\build\Release\csf-info.exe mission $scene --summary --root $root
+.\build\Release\csf-info.exe mission $scene --summary --package-root "C:\path\to\package"
+.\build\Release\csf-info.exe mission $scene --summary --duplicates
+.\build\Release\csf-info.exe uses "Ambush\Models\Char\Espia.rpc" --root $root
+.\build\Release\csf-info.exe compare $scene "C:\path\to\another.scn"
+```
+
+Graph export refuses an existing destination. VIS, TXL, M3D, AND, and the
+validated path portions of PHD have bounded adapters; unparsed bytes and partial
+PHD schema status remain explicit. See [Mission resolution](docs/mission-resolution.md)
+for the resolution order, graph schema, and current format evidence.
+Typed SCN identities, validation, reference categories, and scene JSON are
+documented in [Mission Explorer](docs/mission-explorer.md).
 
 ### Inspect one file
 
@@ -173,6 +236,16 @@ loaded document contains Clumps, scene instances, or a World, the assembled
 `Geometry` and then to the `Inspector`. Use the top toolbar or the `1`, `2`, and
 `3` keys to switch workspaces. `Ctrl+Space` temporarily hides the optional side
 panels so the viewport uses the full application content area.
+
+Open an SCN with `File > Open mission...` (`Ctrl+Shift+O`) or drop it on the
+window to enter the Mission workspace. The resolved visual and collision maps
+load together. Actors, navigation points/links, dummies, area outlines, and
+light-radius rings share the existing 3D camera and work in perspective and all
+orthographic projections. The `Overlays` menu controls each layer independently.
+Clicking a marker or line selects its stable SCN entry; the right inspector shows
+its raw CSFFBS subtree and exact class/name definition or candidate sites. The
+left mission tree provides case-insensitive search over names, IDs, class IDs,
+scripts, groups, and navigation points.
 
 `View > Scene tree` opens the parsed RenderWare tree and decoded CSF scene
 instances on the left. `View > Selection inspector` opens a compact selection

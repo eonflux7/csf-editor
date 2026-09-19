@@ -1,4 +1,5 @@
 #include "geometry_preview.hpp"
+#include "csf/overlay.hpp"
 #include "rws/world_recovery.hpp"
 
 #include <imgui.h>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace rwsman {
 namespace {
@@ -500,6 +502,16 @@ void GeometryPreview::clear() {
     texture_status_.clear();
     selected_uv_set_ = 0;
     error_.clear();
+    mission_points_.clear();
+    mission_lines_.clear();
+    selected_mission_entry_.reset();
+}
+
+void GeometryPreview::set_mission_overlays(std::vector<MissionOverlayPoint> points,
+                                           std::vector<MissionOverlayLine> lines) {
+    mission_points_ = std::move(points);
+    mission_lines_ = std::move(lines);
+    selected_mission_entry_.reset();
 }
 
 void GeometryPreview::select_uv_set(const std::size_t index) {
@@ -949,7 +961,13 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                                  const std::filesystem::path& source_path,
                                  const rws::Document* collision_document,
                                  const bool main_is_collision) {
+    auto mission_points = std::move(mission_points_);
+    auto mission_lines = std::move(mission_lines_);
+    const auto mission_selection = selected_mission_entry_;
     clear();
+    mission_points_ = std::move(mission_points);
+    mission_lines_ = std::move(mission_lines);
+    selected_mission_entry_ = mission_selection;
     scene_mode_ = true;
     view_style_ = 1;
     wireframe_ = false;
@@ -2167,6 +2185,26 @@ bool GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks, const st
     ImGui::SameLine();
     if (ImGui::Button("Tools"))
         open_tools = true;
+    if (!mission_points_.empty() || !mission_lines_.empty()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Overlays")) ImGui::OpenPopup("mission_overlays");
+        if (ImGui::BeginPopup("mission_overlays")) {
+            constexpr const char* names[] = {"Actors", "Navigation points", "Navigation links", "Dummies", "Areas", "Lights"};
+            for (std::size_t i = 0; i < std::size(names); ++i) {
+                std::unordered_set<std::uint32_t> identities;
+                ImU32 color = IM_COL32(180,180,180,255);
+                for (const auto& point : mission_points_) if (static_cast<std::size_t>(point.kind) == i) { identities.insert(point.source_entry); color = point.color; }
+                for (const auto& line : mission_lines_) if (static_cast<std::size_t>(line.kind) == i) { identities.insert(line.source_entry); color = line.color; }
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::ColorButton("legend", ImGui::ColorConvertU32ToFloat4(color), ImGuiColorEditFlags_NoTooltip, {12,12});
+                ImGui::SameLine();
+                const auto text = std::string(names[i]) + " (" + std::to_string(identities.size()) + ")";
+                ImGui::Checkbox(text.c_str(), &mission_layer_visible_[i]);
+                ImGui::PopID();
+            }
+            ImGui::EndPopup();
+        }
+    }
     ImGui::SameLine();
     if (compact_toolbar) {
         if (ImGui::Button("Display"))
@@ -2217,13 +2255,36 @@ bool GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks, const st
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             const auto drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (drag.x * drag.x + drag.y * drag.y < 16.0F) {
-                const auto collision_hit = pick_collision(io.MousePos.x, io.MousePos.y);
-                if (collision_hit && (prefer_collision_ || measurement_mode_ || io.KeyAlt)) {
-                    select_collision(*collision_hit);
-                } else if (const auto picked = pick_scene(io.MousePos.x, io.MousePos.y)) {
-                    selected_chunk = *picked;
-                } else if (collision_hit) {
-                    select_collision(*collision_hit);
+                std::vector<csf::ScreenOverlayPrimitive> primitives;
+                primitives.reserve(mission_points_.size() + mission_lines_.size());
+                for (const auto& point : mission_points_) {
+                    if (!mission_layer_visible_[static_cast<std::size_t>(point.kind)]) continue;
+                    if (!rws::collision_point_visible(point.position, clips_)) continue;
+                    if (const auto screen = project_point(point.position))
+                        primitives.push_back({point.source_entry, csf::OverlayPrimitiveKind::point,
+                                              screen->x, screen->y, screen->x, screen->y, 0, true, false});
+                }
+                for (const auto& line : mission_lines_) {
+                    if (!mission_layer_visible_[static_cast<std::size_t>(line.kind)]) continue;
+                    if (!rws::collision_point_visible(line.first, clips_) ||
+                        !rws::collision_point_visible(line.second, clips_)) continue;
+                    const auto a = project_point(line.first), b = project_point(line.second);
+                    if (!a || !b) continue;
+                    primitives.push_back({line.source_entry, csf::OverlayPrimitiveKind::segment,
+                                          a->x, a->y, b->x, b->y, 1, true, false});
+                }
+                if (const auto overlay = csf::pick_overlay(primitives, io.MousePos.x, io.MousePos.y)) {
+                    selected_mission_entry_ = overlay->source_entry;
+                } else {
+                    selected_mission_entry_.reset();
+                    const auto collision_hit = pick_collision(io.MousePos.x, io.MousePos.y);
+                    if (collision_hit && (prefer_collision_ || measurement_mode_ || io.KeyAlt)) {
+                        select_collision(*collision_hit);
+                    } else if (const auto picked = pick_scene(io.MousePos.x, io.MousePos.y)) {
+                        selected_chunk = *picked;
+                    } else if (collision_hit) {
+                        select_collision(*collision_hit);
+                    }
                 }
             }
         }
@@ -2328,6 +2389,24 @@ bool GeometryPreview::draw_scene(const std::vector<rws::Chunk>& chunks, const st
             std::snprintf(label, sizeof(label), "%.6g", measurement.distance);
             draw_list->AddText({(a->x + b->x) * 0.5F + 5.0F, (a->y + b->y) * 0.5F + 5.0F}, IM_COL32(255, 240, 150, 255),
                                label);
+        }
+    }
+    for (const auto& line : mission_lines_) {
+        if (!mission_layer_visible_[static_cast<std::size_t>(line.kind)]) continue;
+        if (!rws::collision_point_visible(line.first, clips_) ||
+            !rws::collision_point_visible(line.second, clips_)) continue;
+        line3d(line.first, line.second, line.color, selected_mission_entry_ == line.source_entry ? 3.0F : 1.5F);
+    }
+    for (const auto& point : mission_points_) {
+        if (!mission_layer_visible_[static_cast<std::size_t>(point.kind)]) continue;
+        if (!rws::collision_point_visible(point.position, clips_)) continue;
+        if (const auto screen = project_point(point.position)) {
+            const bool selected = selected_mission_entry_ == point.source_entry;
+            const float radius = selected ? 7.0F : 4.0F;
+            draw_list->AddCircleFilled(*screen, radius, point.color, 12);
+            draw_list->AddCircle(*screen, radius + 1.0F, selected ? IM_COL32(255,255,255,255) : IM_COL32(15,18,22,220), 12, selected ? 2.0F : 1.0F);
+            if (selected && !point.label.empty())
+                draw_list->AddText({screen->x + 9.0F, screen->y - 9.0F}, IM_COL32(255,255,255,255), point.label.c_str());
         }
     }
     if (selected_collision_ && selected_collision_->world_index < collision_worlds_.size()) {

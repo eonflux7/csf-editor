@@ -12,6 +12,9 @@
 #include "rws/scene_export.hpp"
 #include "rws/world_recovery.hpp"
 #include "geometry_preview.hpp"
+#include "csf/document.hpp"
+#include "csf/mission.hpp"
+#include "csf/mission_scene.hpp"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -31,6 +34,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -42,6 +46,7 @@ namespace {
 std::optional<std::filesystem::path> dropped_file;
 
 enum class Workspace {
+    mission,
     scene,
     geometry,
     inspector,
@@ -49,6 +54,7 @@ enum class Workspace {
 
 const char* workspace_name(const Workspace workspace) {
     switch (workspace) {
+    case Workspace::mission: return "Mission";
     case Workspace::scene: return "Scene";
     case Workspace::geometry: return "Geometry";
     case Workspace::inspector: return "Inspector";
@@ -62,6 +68,17 @@ std::optional<std::filesystem::path> choose_rws_file(const std::filesystem::path
     const auto initial=directory.wstring();
     OPENFILENAMEW dialog{}; dialog.lStructSize=sizeof(dialog); dialog.lpstrFile=path.data();
     dialog.nMaxFile=static_cast<DWORD>(path.size()); dialog.lpstrFilter=L"RenderWare streams (*.rws)\0*.rws\0All files\0*.*\0\0";
+    dialog.lpstrInitialDir=initial.empty()?nullptr:initial.c_str();
+    dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&dialog)) return std::nullopt;
+    return std::filesystem::path(path.data());
+}
+
+std::optional<std::filesystem::path> choose_mission_file(const std::filesystem::path& directory) {
+    std::array<wchar_t, 32768> path{};
+    const auto initial=directory.wstring();
+    OPENFILENAMEW dialog{}; dialog.lStructSize=sizeof(dialog); dialog.lpstrFile=path.data();
+    dialog.nMaxFile=static_cast<DWORD>(path.size()); dialog.lpstrFilter=L"CSF mission scenes (*.scn)\0*.scn\0All files\0*.*\0\0";
     dialog.lpstrInitialDir=initial.empty()?nullptr:initial.c_str();
     dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&dialog)) return std::nullopt;
@@ -772,6 +789,104 @@ void draw_typed_details(const rws::Chunk& chunk, rws::Document& document, std::s
     ImGui::SeparatorText("Raw payload");
 }
 
+struct MissionOverlays {
+    std::vector<rwsman::GeometryPreview::MissionOverlayPoint> points;
+    std::vector<rwsman::GeometryPreview::MissionOverlayLine> lines;
+};
+
+rws::Vec3 rws_point(const csf::Vec3 value) { return {value.x, value.y, value.z}; }
+
+MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
+    using Kind = rwsman::GeometryPreview::MissionOverlayKind;
+    MissionOverlays result;
+    for (const auto& actor : scene.actors()) if (actor.position)
+        result.points.push_back({Kind::actor, actor.source.entry_index, rws_point(*actor.position),
+                                 actor.name.value_or("Actor"), IM_COL32(255, 150, 60, 255)});
+    std::map<std::pair<std::int32_t, std::int32_t>, csf::Vec3> nav_points;
+    for (const auto& group : scene.navigation()) for (const auto& point : group.points) if (point.position && point.group_id && point.id) {
+        nav_points[{*point.group_id, *point.id}] = *point.position;
+        result.points.push_back({Kind::navigation_point, point.source.entry_index, rws_point(*point.position),
+                                 point.name.value_or("Nav point"), IM_COL32(60, 205, 255, 255)});
+    }
+    auto add_connection = [&](const csf::NavConnection& connection) {
+        if (!connection.valid) return;
+        const auto origin = nav_points.find({*connection.origin_group, *connection.origin_point});
+        const auto destination = nav_points.find({*connection.destination_group, *connection.destination_point});
+        if (origin != nav_points.end() && destination != nav_points.end())
+            result.lines.push_back({Kind::navigation_connection, connection.source.entry_index,
+                                    rws_point(origin->second), rws_point(destination->second),
+                                    IM_COL32(50, 175, 225, 180)});
+    };
+    for (const auto& group : scene.navigation()) for (const auto& connection : group.connections) add_connection(connection);
+    for (const auto& connection : scene.cross_group_connections()) add_connection(connection);
+    for (const auto& dummy : scene.dummies()) if (dummy.position)
+        result.points.push_back({Kind::dummy, dummy.source.entry_index, rws_point(*dummy.position),
+                                 dummy.name.value_or("Dummy"), IM_COL32(190, 105, 255, 255)});
+    for (const auto& area : scene.areas()) for (std::size_t i = 0; i < area.points.size(); ++i) {
+        const auto& a = area.points[i]; const auto& b = area.points[(i + 1) % area.points.size()];
+        result.lines.push_back({Kind::area, area.source.entry_index, rws_point(a), rws_point(b),
+                                IM_COL32(255, 215, 70, 210)});
+    }
+    for (const auto& light : scene.lights()) if (light.position) {
+        result.points.push_back({Kind::light, light.source.entry_index, rws_point(*light.position),
+                                 light.name.value_or("Light"), IM_COL32(255, 245, 145, 255)});
+        if (light.radius && *light.radius > 0 && std::isfinite(*light.radius)) {
+            constexpr int segments = 24;
+            for (int i = 0; i < segments; ++i) {
+                const float a = static_cast<float>(i) * 6.283185307F / segments;
+                const float b = static_cast<float>(i + 1) * 6.283185307F / segments;
+                const auto center = *light.position;
+                result.lines.push_back({Kind::light, light.source.entry_index,
+                    {center.x + std::cos(a) * *light.radius, center.y, center.z + std::sin(a) * *light.radius},
+                    {center.x + std::cos(b) * *light.radius, center.y, center.z + std::sin(b) * *light.radius},
+                    IM_COL32(255, 235, 115, 120)});
+            }
+        }
+    }
+    return result;
+}
+
+const csf::CsfSourceId* find_mission_source(const csf::MissionScene& scene, const std::uint32_t entry,
+                                            std::string& kind, std::string& label) {
+    for (const auto& value : scene.actors()) if (value.source.entry_index == entry) { kind="Actor"; label=value.name.value_or(""); return &value.source; }
+    for (const auto& group : scene.navigation()) {
+        if (group.source.entry_index == entry) { kind="Navigation group"; label=group.name.value_or(""); return &group.source; }
+        for (const auto& value : group.points) if (value.source.entry_index == entry) { kind="Navigation point"; label=value.name.value_or(""); return &value.source; }
+        for (const auto& value : group.connections) if (value.source.entry_index == entry) { kind="Navigation connection"; return &value.source; }
+    }
+    for (const auto& value : scene.cross_group_connections()) if (value.source.entry_index == entry) { kind="Navigation connection"; return &value.source; }
+    for (const auto& value : scene.dummies()) if (value.source.entry_index == entry) { kind="Dummy"; label=value.name.value_or(""); return &value.source; }
+    for (const auto& value : scene.areas()) if (value.source.entry_index == entry) { kind="Area"; label=value.name.value_or(""); return &value.source; }
+    for (const auto& value : scene.lights()) if (value.source.entry_index == entry) { kind="Light"; label=value.name.value_or(""); return &value.source; }
+    return nullptr;
+}
+
+const csf::Node* find_csf_node(const std::vector<csf::Node>& nodes, const std::uint32_t entry) {
+    for (const auto& node : nodes) {
+        if (node.entry_index == entry) return &node;
+        if (const auto* found = find_csf_node(node.children, entry)) return found;
+    }
+    return nullptr;
+}
+
+void draw_csf_subtree(const csf::Document& document, const csf::Node& node) {
+    std::string name = "(anonymous)";
+    if (node.identifier_index) if (const auto* value = document.identifier(*node.identifier_index)) name = value->display_utf8();
+    std::string value;
+    if (const auto* integer = std::get_if<std::int32_t>(&node.scalar)) value = " = " + std::to_string(*integer);
+    else if (const auto* real = std::get_if<float>(&node.scalar)) value = " = " + std::to_string(*real);
+    else if (const auto* index = std::get_if<std::uint32_t>(&node.scalar))
+        if (const auto* text = document.string(*index)) value = " = \"" + text->display_utf8() + "\"";
+    const auto text = name + value + "  [entry " + std::to_string(node.entry_index) + "]";
+    ImGui::PushID(static_cast<int>(node.entry_index));
+    if (node.children.empty()) ImGui::BulletText("%s", text.c_str());
+    else if (ImGui::TreeNodeEx(text.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+        for (const auto& child : node.children) draw_csf_subtree(document, child);
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+}
+
 } // namespace
 
 int run_app(const std::optional<std::filesystem::path>& initial_path) {
@@ -797,6 +912,10 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
 
     std::unique_ptr<rws::Document> document;
     std::unique_ptr<rws::Document> collision_document;
+    std::unique_ptr<csf::MissionGraph> mission_graph;
+    std::unique_ptr<csf::Document> mission_document;
+    std::unique_ptr<csf::MissionScene> mission_scene;
+    std::unique_ptr<csf::MissionSymbolIndex> mission_symbols;
     auto recent_pairs = load_recent_pairs();
     std::string collision_status = "No document loaded";
     bool main_is_collision{};
@@ -809,7 +928,13 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
     bool show_viewport_tools = false;
     bool maximize_viewport = false;
     std::optional<std::uint64_t> previous_selection;
-    std::string status = "Drop an .rws file on this window or pass one on the command line.";
+    std::array<char, 128> mission_search{};
+    std::string status = "Drop an .scn or .rws file on this window, or pass one on the command line.";
+    auto restore_mission_overlays = [&] {
+        if (!mission_scene) return;
+        const auto overlays = make_mission_overlays(*mission_scene);
+        geometry_preview.set_mission_overlays(overlays.points, overlays.lines);
+    };
     auto pair_collision = [&](const std::filesystem::path& candidate_path, const bool remember) {
         if (!document)
             return false;
@@ -822,6 +947,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             collision_document = std::move(candidate);
             collision_status = "Loaded manual companion " + candidate_path.string();
             geometry_preview.clear();
+            restore_mission_overlays();
             if (remember) {
                 std::error_code error;
                 const auto main_path = std::filesystem::weakly_canonical(document->source_path(), error);
@@ -845,6 +971,10 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
     auto load = [&](const std::filesystem::path& path) {
         try {
             auto loaded_document = std::make_unique<rws::Document>(rws::Document::load(path));
+            mission_graph.reset();
+            mission_document.reset();
+            mission_scene.reset();
+            mission_symbols.reset();
             document = std::move(loaded_document);
             collision_document.reset();
             collision_status.clear();
@@ -901,12 +1031,74 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             status = error.what();
         }
     };
-    if (initial_path) load(*initial_path);
+    auto load_mission = [&](const std::filesystem::path& path) {
+        try {
+            auto candidate_graph = std::make_unique<csf::MissionGraph>(
+                csf::MissionGraph::load(csf::MissionOptions{path}));
+            auto candidate_document = std::make_unique<csf::Document>(csf::Document::load(candidate_graph->scene_path()));
+            auto candidate_scene = std::make_unique<csf::MissionScene>(csf::MissionScene::project(*candidate_document));
+            auto candidate_symbols = std::make_unique<csf::MissionSymbolIndex>();
+            candidate_symbols->add_scene(*candidate_scene);
+            for (const auto& node : candidate_graph->nodes()) {
+                if (node.resolved_path.empty() || node.resolved_path == candidate_graph->scene_path() ||
+                    (node.kind != csf::ResourceKind::mission_script && node.kind != csf::ResourceKind::cutscene_script &&
+                     node.kind != csf::ResourceKind::database)) continue;
+                const auto reference_document = csf::Document::load(node.resolved_path);
+                if (reference_document.state() != csf::ParseState::non_csffbs) candidate_symbols->add_document(reference_document);
+            }
+            const auto resolved = [&](const csf::DependencyKind kind) -> std::filesystem::path {
+                for (const auto& edge : candidate_graph->edges()) {
+                    if (edge.kind != kind || !edge.target) continue;
+                    const auto found = std::ranges::find_if(candidate_graph->nodes(),
+                        [&](const auto& node) { return node.id == *edge.target && node.state == csf::LoadState::available; });
+                    if (found != candidate_graph->nodes().end()) return found->resolved_path;
+                }
+                return {};
+            };
+            const auto visual_path = resolved(csf::DependencyKind::visual_map);
+            if (visual_path.empty()) throw std::runtime_error("Mission has no resolved visual map");
+            auto candidate_visual = std::make_unique<rws::Document>(rws::Document::load(visual_path));
+            std::unique_ptr<rws::Document> candidate_collision;
+            const auto collision_path = resolved(csf::DependencyKind::collision_map);
+            if (!collision_path.empty()) candidate_collision = std::make_unique<rws::Document>(rws::Document::load(collision_path));
+            const auto overlays = make_mission_overlays(*candidate_scene);
+
+            document = std::move(candidate_visual);
+            collision_document = std::move(candidate_collision);
+            mission_graph = std::move(candidate_graph);
+            mission_document = std::move(candidate_document);
+            mission_scene = std::move(candidate_scene);
+            mission_symbols = std::move(candidate_symbols);
+            main_is_collision = false;
+            collision_status = collision_document ? "Loaded mission collision map " + collision_path.string()
+                                                  : "Mission collision map is unresolved";
+            geometry_preview.clear();
+            geometry_preview.set_mission_overlays(overlays.points, overlays.lines);
+            display_names = resolve_chunk_display_names(document->chunks(), document->bytes(), document->scene_instances());
+            selected.reset(); previous_selection.reset();
+            workspace = Workspace::mission;
+            show_scene_tree = true;
+            show_inspector = true;
+            show_viewport_tools = false;
+            status = "Loaded mission " + mission_graph->scene_path().string();
+            const auto title = mission_graph->scene_path().filename().string() + " - CSF Mission Explorer";
+            glfwSetWindowTitle(window, title.c_str());
+        } catch (const std::exception& error) {
+            status = "Mission unchanged: " + std::string(error.what());
+        }
+    };
+    if (initial_path) {
+        auto extension = initial_path->extension().string();
+        std::ranges::transform(extension, extension.begin(), [](const unsigned char value) { return static_cast<char>(std::tolower(value)); });
+        if (extension == ".scn") load_mission(*initial_path); else load(*initial_path);
+    }
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         if (dropped_file) {
-            load(*dropped_file);
+            auto extension = dropped_file->extension().string();
+            std::ranges::transform(extension, extension.begin(), [](const unsigned char value) { return static_cast<char>(std::tolower(value)); });
+            if (extension == ".scn") load_mission(*dropped_file); else load(*dropped_file);
             dropped_file.reset();
         }
         ImGui_ImplOpenGL3_NewFrame();
@@ -918,6 +1110,13 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             if (const auto path = choose_rws_file(document ? document->source_path().parent_path() :
                                                    std::filesystem::path{}))
                 load(*path);
+#endif
+        };
+        const auto open_mission = [&] {
+#ifdef _WIN32
+            const auto directory = mission_graph ? mission_graph->scene_path().parent_path() :
+                (document ? document->source_path().parent_path() : std::filesystem::path{});
+            if (const auto path = choose_mission_file(directory)) load_mission(*path);
 #endif
         };
         const auto save_copy = [&] {
@@ -932,7 +1131,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
 
         const auto& io = ImGui::GetIO();
         const bool shortcuts_enabled = !io.WantTextInput && !io.WantCaptureKeyboard;
-        if (shortcuts_enabled && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) open_document();
+        if (shortcuts_enabled && io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_O)) open_mission();
+        else if (shortcuts_enabled && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) open_document();
         if (shortcuts_enabled && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) save_copy();
         if (shortcuts_enabled && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space) &&
             (maximize_viewport || show_scene_tree || show_inspector || show_viewport_tools))
@@ -957,7 +1157,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             find_enclosing_clump(document->chunks(), *selected) : nullptr;
         const auto* collision_export_document = main_is_collision ? document.get() : collision_document.get();
         static std::string previous_window_title;
-        const std::string window_title = document ?
+        const std::string window_title = mission_graph ?
+            mission_graph->scene_path().filename().string() + " - CSF Mission Explorer" : document ?
             document->source_path().filename().string() + (document->dirty() ? " *" : "") +
                 " - CSF RWS Tools" :
             "CSF RWS Tools - rws-man";
@@ -968,6 +1169,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
 
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("File")) {
+                if (ImGui::MenuItem("Open mission...", "Ctrl+Shift+O")) open_mission();
                 if (ImGui::MenuItem("Open RWS...", "Ctrl+O")) open_document();
                 if (ImGui::BeginMenu("Collision companion", document && !main_is_collision)) {
                     if (ImGui::MenuItem("Open companion...")) {
@@ -980,6 +1182,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                         collision_document.reset();
                         collision_status = "Collision companion cleared";
                         geometry_preview.clear();
+                        restore_mission_overlays();
                     }
                     if (ImGui::BeginMenu("Recent pairings", !recent_pairs.empty())) {
                         for (const auto& pair : recent_pairs) {
@@ -1001,6 +1204,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("View")) {
+                if (ImGui::MenuItem("Mission", nullptr, workspace == Workspace::mission, mission_scene != nullptr))
+                    workspace = Workspace::mission;
                 if (ImGui::MenuItem("Scene", "1", workspace == Workspace::scene, document != nullptr))
                     workspace = Workspace::scene;
                 if (ImGui::MenuItem("Selected geometry", "2", workspace == Workspace::geometry,
@@ -1028,6 +1233,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             if (ImGui::BeginMenu("Tools")) {
                 if (ImGui::MenuItem("Reload preview from edited bytes", nullptr, false, document != nullptr)) {
                     geometry_preview.clear();
+                    restore_mission_overlays();
                     status = "Preview will reload from the current in-memory document";
                 }
                 if (ImGui::MenuItem("Open scene / collision tools", nullptr, false,
@@ -1098,6 +1304,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 ImGui::TextUnformatted("Left drag: look   Right drag: orbit   Middle drag: pan");
                 ImGui::TextUnformatted("Wheel: zoom   Double-click: frame   WASD/QE: move");
                 ImGui::TextUnformatted("1/2/3: workspace   Ctrl+Space: maximize viewport");
+                ImGui::TextUnformatted("Ctrl+Shift+O: open mission");
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
@@ -1109,9 +1316,14 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         if (ImGui::Button("Open")) open_document();
         ImGui::SameLine();
+        if (ImGui::Button("Mission")) open_mission();
+        ImGui::SameLine();
         ImGui::SetNextItemWidth(130.0F);
         if (ImGui::BeginCombo("##workspace", workspace_name(workspace)))
         {
+            const auto mission_flags = mission_scene ? ImGuiSelectableFlags_None : ImGuiSelectableFlags_Disabled;
+            if (ImGui::Selectable("Mission", workspace == Workspace::mission, mission_flags) && mission_scene)
+                workspace = Workspace::mission;
             if (ImGui::Selectable("Scene", workspace == Workspace::scene))
                 workspace = Workspace::scene;
             if (ImGui::Selectable("Geometry", workspace == Workspace::geometry))
@@ -1141,7 +1353,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
         ImGui::EndDisabled();
         if (document) {
             ImGui::SameLine();
-            ImGui::TextDisabled("%s%s", document->source_path().filename().string().c_str(),
+            ImGui::TextDisabled("%s%s", (mission_graph ? mission_graph->scene_path() : document->source_path()).filename().string().c_str(),
                                 document->dirty() ? " *" : "");
         }
         ImGui::EndChild();
@@ -1151,7 +1363,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
         if (!document) {
             const auto available = ImGui::GetContentRegionAvail();
             ImGui::SetCursorPosY(std::max(available.y * 0.42F, 20.0F));
-            const char* prompt = "Drop an .rws file here or press Ctrl+O";
+            const char* prompt = "Drop an .scn/.rws file here, or open a Mission/RWS";
             ImGui::SetCursorPosX(std::max((available.x - ImGui::CalcTextSize(prompt).x) * 0.5F, 12.0F));
             ImGui::TextDisabled("%s", prompt);
         } else {
@@ -1172,12 +1384,58 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
 
             if (tree_visible) {
                 ImGui::BeginChild("scene_tree", {panel_width, 0.0F}, ImGuiChildFlags_Borders);
-                ImGui::Text("%zu chunks | %zu instances | %zu diagnostics", document->chunks().size(),
-                            document->scene_instances().size(), document->diagnostics().size());
+                if (workspace == Workspace::mission && mission_scene) {
+                    ImGui::Text("%zu actors | %zu nav points | %zu diagnostics", mission_scene->actors().size(),
+                                mission_scene->navigation_stats().points, mission_scene->diagnostics().size());
+                    ImGui::SetNextItemWidth(-1.0F);
+                    ImGui::InputTextWithHint("##mission_search", "Search name, class, ID...", mission_search.data(), mission_search.size());
+                } else ImGui::Text("%zu chunks | %zu instances | %zu diagnostics", document->chunks().size(),
+                                   document->scene_instances().size(), document->diagnostics().size());
                 ImGui::Separator();
-                draw_tree(document->chunks(), selected, display_names, minimum_clump_size, maximum_clump_size,
-                          reveal_selected);
-                draw_instance_tree(document->scene_instances(), selected, reveal_selected);
+                if (workspace == Workspace::mission && mission_scene) {
+                    std::string needle = mission_search.data();
+                    std::ranges::transform(needle, needle.begin(), [](const unsigned char value) { return static_cast<char>(std::tolower(value)); });
+                    const auto matches = [&](const std::string& text) {
+                        if (needle.empty()) return true;
+                        auto lowered = text; std::ranges::transform(lowered, lowered.begin(), [](const unsigned char value) { return static_cast<char>(std::tolower(value)); });
+                        return lowered.find(needle) != std::string::npos;
+                    };
+                    const auto selected_entry = geometry_preview.selected_mission_entry();
+                    if (ImGui::TreeNodeEx("Actors", ImGuiTreeNodeFlags_DefaultOpen)) {
+                        for (const auto& actor : mission_scene->actors()) {
+                            const auto text = actor.name.value_or("(unnamed)") + "  [class " + std::to_string(actor.class_id.value_or(-1)) + ", ID " + std::to_string(actor.id.value_or(-1)) +
+                                ", group " + std::to_string(actor.group.value_or(-1)) + ", script " + actor.script.value_or("") + "]";
+                            ImGui::PushID(static_cast<int>(actor.source.entry_index));
+                            if (matches(text) && ImGui::Selectable(text.c_str(), selected_entry == actor.source.entry_index)) geometry_preview.select_mission_entry(actor.source.entry_index);
+                            ImGui::PopID();
+                        }
+                        ImGui::TreePop();
+                    }
+                    if (ImGui::TreeNode("Navigation")) {
+                        for (const auto& group : mission_scene->navigation()) {
+                            const auto group_text = group.name.value_or("(unnamed)") + "  (" + std::to_string(group.points.size()) + " points)";
+                            ImGui::PushID(static_cast<int>(group.source.entry_index));
+                            if (matches(group_text) && ImGui::Selectable(group_text.c_str(), selected_entry == group.source.entry_index)) geometry_preview.select_mission_entry(group.source.entry_index);
+                            ImGui::PopID();
+                            if (!needle.empty()) for (const auto& point : group.points) {
+                                const auto point_text = "  " + point.name.value_or("(unnamed)") + "  [" + std::to_string(point.group_id.value_or(-1)) + ":" + std::to_string(point.id.value_or(-1)) + "]";
+                                ImGui::PushID(static_cast<int>(point.source.entry_index));
+                                if (matches(point_text) && ImGui::Selectable(point_text.c_str(), selected_entry == point.source.entry_index)) geometry_preview.select_mission_entry(point.source.entry_index);
+                                ImGui::PopID();
+                            }
+                        }
+                        ImGui::TreePop();
+                    }
+                    if (ImGui::TreeNode("Spatial")) {
+                        for (const auto& value : mission_scene->dummies()) { const auto text="Dummy: "+value.name.value_or("(unnamed)")+" ["+std::to_string(value.id.value_or(-1))+"]"; ImGui::PushID(static_cast<int>(value.source.entry_index)); if(matches(text)&&ImGui::Selectable(text.c_str(),selected_entry==value.source.entry_index))geometry_preview.select_mission_entry(value.source.entry_index); ImGui::PopID(); }
+                        for (const auto& value : mission_scene->areas()) { const auto text="Area: "+value.name.value_or("(unnamed)")+" ["+std::to_string(value.id.value_or(-1))+"]"; ImGui::PushID(static_cast<int>(value.source.entry_index)); if(matches(text)&&ImGui::Selectable(text.c_str(),selected_entry==value.source.entry_index))geometry_preview.select_mission_entry(value.source.entry_index); ImGui::PopID(); }
+                        for (const auto& value : mission_scene->lights()) { const auto text="Light: "+value.name.value_or("(unnamed)")+" ["+std::to_string(value.id.value_or(-1))+"]"; ImGui::PushID(static_cast<int>(value.source.entry_index)); if(matches(text)&&ImGui::Selectable(text.c_str(),selected_entry==value.source.entry_index))geometry_preview.select_mission_entry(value.source.entry_index); ImGui::PopID(); }
+                        ImGui::TreePop();
+                    }
+                } else {
+                    draw_tree(document->chunks(), selected, display_names, minimum_clump_size, maximum_clump_size, reveal_selected);
+                    draw_instance_tree(document->scene_instances(), selected, reveal_selected);
+                }
                 ImGui::EndChild();
                 ImGui::SameLine();
             }
@@ -1187,7 +1445,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 "primary_workspace",
                 {inspector_width > 0.0F ? -(inspector_width + ImGui::GetStyle().ItemSpacing.x) : 0.0F, 0.0F},
                 ImGuiChildFlags_Borders);
-            if (workspace == Workspace::scene) {
+            if (workspace == Workspace::scene || workspace == Workspace::mission) {
                 if (geometry_preview.draw_scene(document->chunks(), document->bytes(), document->scene_instances(),
                                                 document->source_path(), selected,
                                                 main_is_collision ? document.get() : collision_document.get(),
@@ -1250,7 +1508,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             if (inspector_width > 0.0F) {
                 ImGui::SameLine();
                 ImGui::BeginChild("selection_inspector", {0.0F, 0.0F}, ImGuiChildFlags_Borders);
-                if (workspace == Workspace::scene) {
+                if (workspace == Workspace::scene || workspace == Workspace::mission) {
                     if (ImGui::Button("Selection", {110.0F, 0.0F}))
                         show_viewport_tools = false;
                     ImGui::SameLine();
@@ -1263,11 +1521,46 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                     }
                     ImGui::Separator();
                 }
-                if (show_viewport_tools && workspace == Workspace::scene) {
+                if (show_viewport_tools && (workspace == Workspace::scene || workspace == Workspace::mission)) {
                     geometry_preview.draw_scene_tools(collision_status);
                 } else {
                     ImGui::SeparatorText("Selection");
-                    if (selected_chunk) {
+                    const auto mission_entry = mission_scene ? geometry_preview.selected_mission_entry() : std::nullopt;
+                    std::string mission_kind, mission_label;
+                    const auto* mission_source = mission_entry && mission_scene ?
+                        find_mission_source(*mission_scene, *mission_entry, mission_kind, mission_label) : nullptr;
+                    if (workspace == Workspace::mission && mission_source) {
+                        ImGui::TextWrapped("%s", mission_kind.c_str());
+                        if (!mission_label.empty()) ImGui::TextWrapped("%s", mission_label.c_str());
+                        ImGui::Text("Entry %u", mission_source->entry_index);
+                        ImGui::Text("Offset 0x%llX", static_cast<unsigned long long>(mission_source->range.offset));
+                        ImGui::TextWrapped("%s", mission_source->file.string().c_str());
+                        ImGui::TextDisabled("Stable identity is source file + entry index");
+                        if (mission_document) if (const auto* raw = find_csf_node(mission_document->roots(), mission_source->entry_index)) {
+                            ImGui::SeparatorText("Raw CSFFBS subtree");
+                            draw_csf_subtree(*mission_document, *raw);
+                        }
+                        if (mission_symbols && mission_scene) {
+                            const auto actor = std::ranges::find_if(mission_scene->actors(), [&](const auto& value) {
+                                return value.source.entry_index == mission_source->entry_index;
+                            });
+                            std::vector<const csf::SymbolSite*> sites;
+                            if (actor != mission_scene->actors().end() && actor->class_id)
+                                sites = mission_symbols->exact("class:" + std::to_string(*actor->class_id));
+                            if (!mission_label.empty()) {
+                                const auto named = mission_symbols->exact(mission_label);
+                                sites.insert(sites.end(), named.begin(), named.end());
+                            }
+                            if (!sites.empty()) {
+                                ImGui::SeparatorText("Definitions and exact uses");
+                                for (const auto* site : sites) {
+                                    if (site->source.file == mission_source->file && site->source.entry_index == mission_source->entry_index) continue;
+                                    ImGui::TextWrapped("%s / %s", csf::symbol_role_name(site->role), csf::symbol_category_name(site->category));
+                                    ImGui::TextDisabled("%s : entry %u", site->source.file.filename().string().c_str(), site->source.entry_index);
+                                }
+                            }
+                        }
+                    } else if (selected_chunk) {
                         ImGui::TextWrapped("%s", rws::chunk_name(selected_chunk->type).data());
                         ImGui::TextDisabled("Type 0x%08X", selected_chunk->type);
                         ImGui::Text("Offset  0x%llX", static_cast<unsigned long long>(selected_chunk->offset));
