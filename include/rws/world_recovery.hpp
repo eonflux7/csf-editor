@@ -2,8 +2,8 @@
 
 #include "rws/decoded.hpp"
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -91,8 +91,15 @@ struct RecoveredWorldTriangle {
     std::array<Vec3, 3> vertices{};
 };
 
-struct CollisionRay { Vec3 origin, direction; };
-struct CollisionClipPlane { bool enabled{}; std::uint8_t axis{}; bool keep_greater{true}; float position{}; };
+struct CollisionRay {
+    Vec3 origin, direction;
+};
+struct CollisionClipPlane {
+    bool enabled{};
+    std::uint8_t axis{};
+    bool keep_greater{true};
+    float position{};
+};
 struct CollisionHit {
     std::size_t world_index{}, sector_index{};
     std::int32_t triangle_index{}, material_slot{};
@@ -101,25 +108,29 @@ struct CollisionHit {
     Vec3 position, geometric_normal;
     std::array<float, 3> barycentric{};
 };
-struct Measurement { float distance{}; Vec3 absolute_delta; };
+struct Measurement {
+    float distance{};
+    Vec3 absolute_delta;
+};
 
-[[nodiscard]] RecoveredWorld recover_world(const Chunk& world,
-                                           std::span<const std::byte> bytes);
-[[nodiscard]] std::vector<RecoveredWorld> recover_worlds(
-    const std::vector<Chunk>& chunks, std::span<const std::byte> bytes);
-[[nodiscard]] DecodeResult<TriangleInfo> decode_recovered_world_triangle(
-    const RecoveredWorldSector& sector, std::int32_t index,
-    std::span<const std::byte> bytes);
-[[nodiscard]] DecodeResult<Vec3> decode_recovered_world_vertex(
-    const RecoveredWorldSector& sector, std::int32_t index, std::span<const std::byte> bytes);
-[[nodiscard]] DecodeResult<RecoveredWorldTriangle> decode_recovered_world_triangle_resolved(
-    const RecoveredWorld& world, std::size_t sector_index, std::int32_t triangle_index,
-    std::span<const std::byte> bytes);
-[[nodiscard]] std::optional<CollisionHit> pick_collision_worlds(
-    std::span<const RecoveredWorld> worlds, std::span<const std::byte> bytes,
-    const CollisionRay& ray, std::span<const CollisionClipPlane> clips = {});
+[[nodiscard]] RecoveredWorld recover_world(const Chunk& world, std::span<const std::byte> bytes);
+[[nodiscard]] std::vector<RecoveredWorld> recover_worlds(const std::vector<Chunk>& chunks,
+                                                         std::span<const std::byte> bytes);
+[[nodiscard]] DecodeResult<TriangleInfo>
+decode_recovered_world_triangle(const RecoveredWorldSector& sector, std::int32_t index,
+                                std::span<const std::byte> bytes);
+[[nodiscard]] DecodeResult<Vec3> decode_recovered_world_vertex(const RecoveredWorldSector& sector,
+                                                               std::int32_t index,
+                                                               std::span<const std::byte> bytes);
+[[nodiscard]] DecodeResult<RecoveredWorldTriangle>
+decode_recovered_world_triangle_resolved(const RecoveredWorld& world, std::size_t sector_index,
+                                         std::int32_t triangle_index,
+                                         std::span<const std::byte> bytes);
+[[nodiscard]] std::optional<CollisionHit>
+pick_collision_worlds(std::span<const RecoveredWorld> worlds, std::span<const std::byte> bytes,
+                      const CollisionRay& ray, std::span<const CollisionClipPlane> clips = {});
 [[nodiscard]] bool collision_point_visible(Vec3 point,
-    std::span<const CollisionClipPlane> clips) noexcept;
+                                           std::span<const CollisionClipPlane> clips) noexcept;
 [[nodiscard]] Measurement measure_points(Vec3 a, Vec3 b) noexcept;
 [[nodiscard]] const char* world_recovery_status_name(WorldRecoveryStatus status) noexcept;
 [[nodiscard]] const char* world_topology_status_name(WorldTopologyStatus status) noexcept;

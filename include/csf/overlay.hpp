@@ -24,8 +24,8 @@ struct OverlayPick {
 
 // Inputs are already projected into framebuffer coordinates. The threshold is
 // therefore stable under scene zoom and perspective/orthographic changes.
-[[nodiscard]] std::optional<OverlayPick> pick_overlay(
-    std::span<const ScreenOverlayPrimitive> primitives,
-    float mouse_x, float mouse_y, float threshold_pixels = 10.0F) noexcept;
+[[nodiscard]] std::optional<OverlayPick>
+pick_overlay(std::span<const ScreenOverlayPrimitive> primitives, float mouse_x, float mouse_y,
+             float threshold_pixels = 10.0F) noexcept;
 
 } // namespace csf

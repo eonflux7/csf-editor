@@ -134,9 +134,8 @@ void Document::parse() {
     // wrapper size does not describe the complete physical record, so remove
     // that tentative chunk and consume the records with their own grammar.
     std::optional<std::uint64_t> instance_begin;
-    const auto custom = std::find_if(chunks_.begin(), chunks_.end(), [](const Chunk& chunk) {
-        return chunk.type == 0x00016FC0U;
-    });
+    const auto custom = std::find_if(chunks_.begin(), chunks_.end(),
+                                     [](const Chunk& chunk) { return chunk.type == 0x00016FC0U; });
     if (custom != chunks_.end()) {
         instance_begin = custom->offset;
         chunks_.erase(custom, chunks_.end());
@@ -144,10 +143,14 @@ void Document::parse() {
     const auto instance_end = instance_begin ? parse_scene_instances(*instance_begin) : 0U;
     if (instance_begin && instance_end != 0) {
         diagnostics_.erase(std::remove_if(diagnostics_.begin(), diagnostics_.end(),
-            [&](const Diagnostic& diagnostic) {
-                return diagnostic.offset >= *instance_begin && diagnostic.offset < instance_end &&
-                    diagnostic.message == "Remaining bytes are not a chunk sequence with the stream library ID";
-            }), diagnostics_.end());
+                                          [&](const Diagnostic& diagnostic) {
+                                              return diagnostic.offset >= *instance_begin &&
+                                                     diagnostic.offset < instance_end &&
+                                                     diagnostic.message ==
+                                                         "Remaining bytes are not a chunk sequence "
+                                                         "with the stream library ID";
+                                          }),
+                           diagnostics_.end());
     }
 
     // CSF map streams may place a short game-specific instance table between
@@ -159,8 +162,8 @@ void Document::parse() {
         std::uint64_t scan_begin = instance_end;
         if (scan_begin == 0 && !chunks_.empty())
             scan_begin = chunks_.back().payload_offset + chunks_.back().available_size;
-        for (std::uint64_t candidate = scan_begin;
-             candidate + header_size * 2 <= bytes_.size(); ++candidate) {
+        for (std::uint64_t candidate = scan_begin; candidate + header_size * 2 <= bytes_.size();
+             ++candidate) {
             if (read_u32(bytes_, candidate) != 0x0B ||
                 read_u32(bytes_, candidate + 8) != *stream_library_id_ ||
                 read_u32(bytes_, candidate + header_size) != 0x01 ||
@@ -173,9 +176,11 @@ void Document::parse() {
             parse_range(candidate, bytes_.size(), recovered, 0, false);
             if (recovered.size() == 1 && recovered.front().type == 0x0B) {
                 chunks_.push_back(std::move(recovered.front()));
-                diagnostics_.push_back({Diagnostic::Severity::warning, candidate,
-                    scene_instances_.empty() ? "Recovered RenderWare World after opaque map data" :
-                    "Recovered RenderWare World after decoded CSF scene instances"});
+                diagnostics_.push_back(
+                    {Diagnostic::Severity::warning, candidate,
+                     scene_instances_.empty()
+                         ? "Recovered RenderWare World after opaque map data"
+                         : "Recovered RenderWare World after decoded CSF scene instances"});
             }
             break;
         }
@@ -188,11 +193,9 @@ std::uint64_t Document::parse_scene_instances(const std::uint64_t begin) {
     while (cursor <= bytes_.size() && bytes_.size() - cursor >= 116U) {
         if (read_u32(bytes_, cursor) != 0x00016FC0U ||
             read_u32(bytes_, cursor + 8) != *stream_library_id_ ||
-            read_u32(bytes_, cursor + 36) != 0x0DU ||
-            read_u32(bytes_, cursor + 40) != 64U ||
+            read_u32(bytes_, cursor + 36) != 0x0DU || read_u32(bytes_, cursor + 40) != 64U ||
             read_u32(bytes_, cursor + 44) != *stream_library_id_ ||
-            read_u32(bytes_, cursor + 48) != 0x01U ||
-            read_u32(bytes_, cursor + 52) != 52U ||
+            read_u32(bytes_, cursor + 48) != 0x01U || read_u32(bytes_, cursor + 52) != 52U ||
             read_u32(bytes_, cursor + 56) != *stream_library_id_)
             break;
 
@@ -223,12 +226,13 @@ std::uint64_t Document::parse_scene_instances(const std::uint64_t begin) {
         instance.physical_size = 116U + name_size;
 
         const auto finite = std::all_of(instance.rotation.begin(), instance.rotation.end(),
-            [](const float value) { return std::isfinite(value); }) &&
-            std::isfinite(instance.position.x) && std::isfinite(instance.position.y) &&
-            std::isfinite(instance.position.z) &&
-            std::isfinite(instance.maximum_visibility_distance) &&
-            std::isfinite(instance.minimum_visibility_distance) &&
-            std::isfinite(instance.visibility_fade_range);
+                                        [](const float value) { return std::isfinite(value); }) &&
+                            std::isfinite(instance.position.x) &&
+                            std::isfinite(instance.position.y) &&
+                            std::isfinite(instance.position.z) &&
+                            std::isfinite(instance.maximum_visibility_distance) &&
+                            std::isfinite(instance.minimum_visibility_distance) &&
+                            std::isfinite(instance.visibility_fade_range);
         if (!finite) break;
         scene_instances_.push_back(std::move(instance));
         cursor += scene_instances_.back().physical_size;
@@ -241,7 +245,8 @@ void Document::parse_range(const std::uint64_t begin, const std::uint64_t end,
                            std::vector<Chunk>& output, const unsigned depth,
                            const bool require_complete) {
     if (depth > max_depth) {
-        diagnostics_.push_back({Diagnostic::Severity::error, begin, "Maximum chunk nesting exceeded"});
+        diagnostics_.push_back(
+            {Diagnostic::Severity::error, begin, "Maximum chunk nesting exceeded"});
         return;
     }
 
@@ -251,7 +256,7 @@ void Document::parse_range(const std::uint64_t begin, const std::uint64_t end,
         if (remaining < header_size) {
             if (require_complete && remaining != 0) {
                 diagnostics_.push_back({Diagnostic::Severity::warning, cursor,
-                    "Trailing bytes do not form a complete chunk header"});
+                                        "Trailing bytes do not form a complete chunk header"});
             }
             return;
         }
@@ -268,8 +273,9 @@ void Document::parse_range(const std::uint64_t begin, const std::uint64_t end,
         // from coincidental integer patterns inside game-specific binary data.
         if (stream_library_id_ && chunk.library_id != *stream_library_id_) {
             if (require_complete) {
-                diagnostics_.push_back({Diagnostic::Severity::warning, cursor,
-                    "Remaining bytes are not a chunk sequence with the stream library ID"});
+                diagnostics_.push_back(
+                    {Diagnostic::Severity::warning, cursor,
+                     "Remaining bytes are not a chunk sequence with the stream library ID"});
             }
             return;
         }
@@ -279,7 +285,7 @@ void Document::parse_range(const std::uint64_t begin, const std::uint64_t end,
         chunk.truncated = chunk.declared_size > available;
         if (chunk.truncated) {
             diagnostics_.push_back({Diagnostic::Severity::warning, cursor,
-                at_offset("Chunk payload is truncated", cursor)});
+                                    at_offset("Chunk payload is truncated", cursor)});
         }
 
         if (is_container_chunk(chunk.type) && chunk.available_size >= header_size) {

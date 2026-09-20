@@ -18,7 +18,9 @@ struct CsfSourceId {
     SourceRange range{};
 };
 
-struct Vec3 { float x{}, y{}, z{}; };
+struct Vec3 {
+    float x{}, y{}, z{};
+};
 
 struct TypedDiagnostic {
     Diagnostic::Severity severity{Diagnostic::Severity::warning};
@@ -47,6 +49,7 @@ struct MissionActor {
     std::optional<float> heading;
     std::optional<float> pitch;
     std::optional<std::string> script;
+    std::vector<std::int32_t> script_ids;
     std::optional<std::int32_t> group;
     std::optional<std::int32_t> cell;
     std::optional<std::int32_t> collision;
@@ -141,16 +144,24 @@ public:
 
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return source_path_; }
     [[nodiscard]] const PlayerMetadata& player() const noexcept { return player_; }
-    [[nodiscard]] const std::vector<EnvironmentField>& environment() const noexcept { return environment_; }
+    [[nodiscard]] const std::vector<EnvironmentField>& environment() const noexcept {
+        return environment_;
+    }
     [[nodiscard]] const std::vector<MissionActor>& actors() const noexcept { return actors_; }
     [[nodiscard]] const std::vector<NavGroup>& navigation() const noexcept { return navigation_; }
-    [[nodiscard]] const std::vector<NavConnection>& cross_group_connections() const noexcept { return cross_group_; }
-    [[nodiscard]] const NavigationStats& navigation_stats() const noexcept { return navigation_stats_; }
+    [[nodiscard]] const std::vector<NavConnection>& cross_group_connections() const noexcept {
+        return cross_group_;
+    }
+    [[nodiscard]] const NavigationStats& navigation_stats() const noexcept {
+        return navigation_stats_;
+    }
     [[nodiscard]] const std::vector<MissionDummy>& dummies() const noexcept { return dummies_; }
     [[nodiscard]] const std::vector<MissionArea>& areas() const noexcept { return areas_; }
     [[nodiscard]] const std::vector<MissionLight>& lights() const noexcept { return lights_; }
     [[nodiscard]] const std::vector<FolderMembership>& folders() const noexcept { return folders_; }
-    [[nodiscard]] const std::vector<TypedDiagnostic>& diagnostics() const noexcept { return diagnostics_; }
+    [[nodiscard]] const std::vector<TypedDiagnostic>& diagnostics() const noexcept {
+        return diagnostics_;
+    }
 
 private:
     std::filesystem::path source_path_;
@@ -167,7 +178,17 @@ private:
     std::vector<TypedDiagnostic> diagnostics_;
 };
 
-enum class SymbolCategory { actor, navigation_group, navigation_point, dummy, area, light, script, database_record, unknown };
+enum class SymbolCategory {
+    actor,
+    navigation_group,
+    navigation_point,
+    dummy,
+    area,
+    light,
+    script,
+    database_record,
+    unknown
+};
 enum class SymbolRole { definition, typed_reference, candidate };
 
 struct SymbolSite {
@@ -184,6 +205,7 @@ public:
     void add_document(const Document& document);
     [[nodiscard]] std::vector<const SymbolSite*> exact(std::string_view symbol) const;
     [[nodiscard]] const std::vector<SymbolSite>& sites() const noexcept { return sites_; }
+
 private:
     std::vector<SymbolSite> sites_;
 };

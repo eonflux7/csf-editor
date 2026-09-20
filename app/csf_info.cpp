@@ -1,7 +1,10 @@
+#include "csf/animation_catalog.hpp"
+#include "csf/cmo.hpp"
 #include "csf/document.hpp"
 #include "csf/export.hpp"
 #include "csf/mission.hpp"
 #include "csf/mission_scene.hpp"
+#include "csf/object_database.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,11 +35,21 @@ std::string escaped(const std::string_view value) {
     for (const auto character : value) {
         const auto byte = static_cast<unsigned char>(character);
         switch (character) {
-        case '\\': output << "\\\\"; break;
-        case '"': output << "\\\""; break;
-        case '\n': output << "\\n"; break;
-        case '\r': output << "\\r"; break;
-        case '\t': output << "\\t"; break;
+        case '\\':
+            output << "\\\\";
+            break;
+        case '"':
+            output << "\\\"";
+            break;
+        case '\n':
+            output << "\\n";
+            break;
+        case '\r':
+            output << "\\r";
+            break;
+        case '\t':
+            output << "\\t";
+            break;
         default:
             if (byte < 0x20) {
                 output << "\\x" << std::hex << std::setw(2) << std::setfill('0')
@@ -59,8 +72,8 @@ void print_nodes(const csf::Document& document, const std::vector<csf::Node>& no
                  const unsigned depth = 0) {
     for (const auto& node : nodes) {
         const auto& entry = document.entries().at(node.entry_index);
-        std::cout << std::string(depth * 2, ' ') << '[' << node.entry_index << " @0x"
-                  << std::hex << entry.source.offset << std::dec << "] ";
+        std::cout << std::string(depth * 2, ' ') << '[' << node.entry_index << " @0x" << std::hex
+                  << entry.source.offset << std::dec << "] ";
         const auto kind = entry.kind();
         std::cout << (kind ? csf::value_kind_name(*kind) : "unknown");
         const auto label = node_label(document, node);
@@ -71,7 +84,8 @@ void print_nodes(const csf::Document& document, const std::vector<csf::Node>& no
             std::cout << " = " << *value;
         } else if (const auto* index = std::get_if<std::uint32_t>(&node.scalar)) {
             const auto* value = document.string(*index);
-            std::cout << " = \"" << (value ? escaped(value->display_utf8()) : "<invalid-string>") << '"';
+            std::cout << " = \"" << (value ? escaped(value->display_utf8()) : "<invalid-string>")
+                      << '"';
         } else if (kind && (*kind == csf::ValueKind::group || *kind == csf::ValueKind::array)) {
             std::cout << " (declared children=" << entry.raw_value_or_size << ')';
         }
@@ -95,14 +109,12 @@ void print_summary(const csf::Document& document) {
     if (document.state() == csf::ParseState::non_csffbs) return;
     const auto& header = document.header();
     std::cout << "Version: " << header.version << '\n'
-              << "Reserved: 0x" << std::hex
-              << std::to_integer<unsigned>(header.reserved[1])
-              << std::setw(2) << std::setfill('0')
-              << std::to_integer<unsigned>(header.reserved[0])
+              << "Reserved: 0x" << std::hex << std::to_integer<unsigned>(header.reserved[1])
+              << std::setw(2) << std::setfill('0') << std::to_integer<unsigned>(header.reserved[0])
               << std::dec << std::setfill(' ') << '\n'
               << "Entries: " << document.entries().size() << '/' << header.entry_count << '\n'
-              << "Identifiers: " << document.identifiers().size() << '/'
-              << header.identifier_count << '\n'
+              << "Identifiers: " << document.identifiers().size() << '/' << header.identifier_count
+              << '\n'
               << "Strings: " << document.strings().size() << '/' << header.string_count << '\n'
               << "Roots: " << document.roots().size() << '\n'
               << "Trailing bytes: " << document.trailing_bytes().size() << '\n'
@@ -110,44 +122,195 @@ void print_summary(const csf::Document& document) {
 }
 
 void usage() {
-    std::cerr << "Usage: csf-info <file> [--summary|--validate|--tree|--strings|--find <text>\n"
-                 "                            |--export-text <new-path|->|--export-json <new-path|->]\n"
-                 "       csf-info corpus <directory>\n"
-                 "       csf-info mission <scene-or-directory> [--summary|--dependencies|--missing|--objects|--navigation|--spatial]\n"
-                 "                       [--graph <new-json>] [--package-root <directory>] [--duplicates]\n"
-                 "                       [--scene-json <new-json>] [--symbols <exact-name>]\n"
-                 "                       [--root <resource-root>]\n"
-                 "       csf-info uses <asset> --root <resource-root>\n"
-                 "       csf-info compare <scene-a> <scene-b>\n";
+    std::cerr
+        << "Usage: csf-info <file> [--summary|--validate|--tree|--strings|--find <text>\n"
+           "                            |--export-text <new-path|->|--export-json <new-path|->]\n"
+           "       csf-info corpus <directory>\n"
+           "       csf-info cmo <file.cmo>\n"
+           "       csf-info animations <Anims.bdd> [--root <resource-root>]\n"
+           "       csf-info script-animations <file.gsc>\n"
+           "       csf-info cutscene <file.csc>\n"
+           "       csf-info mission <scene-or-directory> "
+           "[--summary|--dependencies|--missing|--objects|--navigation|--spatial|--associations]\n"
+           "                       [--graph <new-json>] [--package-root <directory>] "
+           "[--duplicates]\n"
+           "                       [--scene-json <new-json>] [--symbols <exact-name>]\n"
+           "                       [--root <resource-root>]\n"
+           "       csf-info uses <asset> --root <resource-root>\n"
+           "       csf-info compare <scene-a> <scene-b>\n";
+}
+
+int animations_command(const int argc, char** argv) {
+    if (argc != 3 && argc != 5) {
+        usage();
+        return 1;
+    }
+    std::optional<csf::ResourceIndex> resources;
+    if (argc == 5) {
+        if (std::string_view(argv[3]) != "--root") {
+            usage();
+            return 1;
+        }
+        resources.emplace();
+        resources->add_root(argv[4]);
+        resources->build();
+    }
+    const auto document = csf::Document::load(argv[2]);
+    const auto catalog =
+        csf::AnimationCatalog::project(document, resources ? &*resources : nullptr);
+    std::cout << "ANIMATION-CATALOG\trecords=" << catalog.records().size()
+              << "\tdiagnostics=" << catalog.diagnostics().size() << '\n';
+    for (const auto& record : catalog.records()) {
+        std::cout << "ANIMATION\tentry=" << record.source.entry_index
+                  << "\tid=" << record.id.value_or(-1) << "\tname=" << record.logical_name
+                  << "\tloop=" << (record.loop ? (*record.loop ? "yes" : "no") : "unknown")
+                  << "\tblend=" << (record.blend_in ? std::to_string(*record.blend_in) : "unknown")
+                  << "\tvariants=" << record.variants.size() << "\tsounds=" << record.sounds.size()
+                  << '\n';
+        for (const auto& variant : record.variants)
+            std::cout << "  FILE\t" << variant.reference << "\t"
+                      << (variant.resolution
+                              ? csf::resolution_status_name(variant.resolution->status)
+                              : "not-resolved")
+                      << "\tentry=" << variant.source.entry_index << '\n';
+        for (const auto& sound : record.sounds)
+            std::cout << "  SOUND\t" << sound.logical_id
+                      << "\ttime=" << (sound.time ? std::to_string(*sound.time) : "runtime/unknown")
+                      << '\n';
+    }
+    return 0;
+}
+
+int script_animations_command(const int argc, char** argv) {
+    if (argc != 3) {
+        usage();
+        return 1;
+    }
+    csf::ScriptAnimationIndex index;
+    index.add_document(csf::Document::load(argv[2]));
+    std::cout << "SCRIPT-ANIMATIONS\tuses=" << index.uses().size() << '\n';
+    for (const auto& use : index.uses())
+        std::cout << "USE\tentry=" << use.source.entry_index << "\tscript=" << use.script_id
+                  << "\tname=" << use.script_name << "\topcode=" << use.opcode
+                  << "\tanimation=" << use.animation_id << "\ttarget="
+                  << (use.targets_this ? "THIS"
+                      : use.actor_id   ? std::to_string(*use.actor_id)
+                                       : "unknown")
+                  << '\n';
+    return 0;
+}
+
+int cutscene_command(const int argc, char** argv) {
+    if (argc != 3) {
+        usage();
+        return 1;
+    }
+    const auto document = csf::Document::load(argv[2]);
+    const auto timeline = csf::CutsceneTimeline::project(document);
+    std::cout << "CUTSCENES\tscripts=" << timeline.scripts().size()
+              << "\tdiagnostics=" << timeline.diagnostics().size() << '\n';
+    for (const auto& script : timeline.scripts()) {
+        std::cout << "SCRIPT\tentry=" << script.source.entry_index << "\tname=" << script.name
+                  << "\tactions=" << script.actions.size() << "\tblocks=" << script.blocks.size()
+                  << '\n';
+        for (const auto& block : script.blocks) {
+            std::cout << "  BLOCK\t" << block.index << "\twait=" << block.runtime_wait
+                      << "\tconditional=" << block.conditional << "\tsuccessors=";
+            for (auto successor : block.successors)
+                std::cout << successor << ',';
+            std::cout << '\n';
+            for (auto index : block.action_indices) {
+                const auto& action = script.actions[index];
+                std::cout << "    ACTION\t" << csf::cutscene_action_kind_name(action.kind)
+                          << "\tentry=" << action.source.entry_index << "\topcode=" << action.opcode
+                          << "\tref=" << action.reference << "\ttime="
+                          << (action.explicit_time ? std::to_string(*action.explicit_time)
+                                                   : "ordered/unknown")
+                          << "\tduration="
+                          << (action.duration ? std::to_string(*action.duration)
+                                              : "runtime/unknown")
+                          << "\tvalue="
+                          << (action.numeric_value ? std::to_string(*action.numeric_value) : "-")
+                          << '\n';
+            }
+        }
+    }
+    return 0;
+}
+
+int cmo_command(const int argc, char** argv) {
+    if (argc != 3) {
+        usage();
+        return 1;
+    }
+    const auto document = csf::CmoDocument::load(argv[2]);
+    std::cout << "CMO\tbytes=" << document.source().size()
+              << "\ttokens=" << document.tokens().size() << "\troots=" << document.roots().size()
+              << "\tshapes=" << document.shapes().size()
+              << "\tdiagnostics=" << document.diagnostics().size() << '\n';
+    for (const auto& shape : document.shapes()) {
+        std::cout << "SHAPE\toffset=" << shape.range.offset
+                  << "\ttype=" << csf::cmo_shape_kind_name(shape.kind)
+                  << "\tspelling=" << shape.spelling << "\tbone=" << shape.bone_index.value_or(-1)
+                  << "\tlabel=" << shape.label.value_or("") << "\texternal=" << shape.external
+                  << "\thot-points=" << shape.hot_points.size();
+        if (shape.center)
+            std::cout << "\tcenter=" << shape.center->x << ',' << shape.center->y << ','
+                      << shape.center->z;
+        if (shape.dimensions)
+            std::cout << "\tdimensions=" << shape.dimensions->x << ',' << shape.dimensions->y << ','
+                      << shape.dimensions->z;
+        if (shape.radius) std::cout << "\tradius=" << *shape.radius;
+        std::cout << '\n';
+    }
+    for (const auto& diagnostic : document.diagnostics())
+        std::cerr << (diagnostic.severity == csf::CmoDiagnostic::Severity::error ? "error"
+                                                                                 : "warning")
+                  << " at " << diagnostic.range.offset << ": " << diagnostic.code << ": "
+                  << diagnostic.message << '\n';
+    return std::ranges::any_of(
+               document.diagnostics(),
+               [](const auto& d) { return d.severity == csf::CmoDiagnostic::Severity::error; })
+               ? 2
+               : 0;
 }
 
 void print_mission_summary(const csf::MissionGraph& graph) {
     std::map<std::string, std::uint64_t> kinds;
     std::map<std::string, std::uint64_t> statuses;
-    for (const auto& node : graph.nodes()) ++kinds[csf::resource_kind_name(node.kind)];
-    for (const auto& edge : graph.edges()) ++statuses[csf::resolution_status_name(edge.status)];
+    for (const auto& node : graph.nodes())
+        ++kinds[csf::resource_kind_name(node.kind)];
+    for (const auto& edge : graph.edges())
+        ++statuses[csf::resolution_status_name(edge.status)];
     std::cout << "Scene: " << graph.scene_path().string() << '\n'
               << "Package root: " << graph.package_root().string() << '\n'
               << "Indexed files: " << graph.index().resources().size() << '\n'
               << "Nodes: " << graph.nodes().size() << '\n'
               << "Edges: " << graph.edges().size() << '\n'
               << "Diagnostics: " << graph.diagnostics().size() << '\n';
-    for (const auto& [kind, count] : kinds) std::cout << "Kind " << kind << ": " << count << '\n';
-    for (const auto& [status, count] : statuses) std::cout << "Resolution " << status << ": " << count << '\n';
+    for (const auto& [kind, count] : kinds)
+        std::cout << "Kind " << kind << ": " << count << '\n';
+    for (const auto& [status, count] : statuses)
+        std::cout << "Resolution " << status << ": " << count << '\n';
 }
 
 void print_mission_edges(const csf::MissionGraph& graph, const bool missing_only) {
     for (const auto& edge : graph.edges()) {
         if (missing_only && edge.status != csf::ResolutionStatus::missing &&
             edge.status != csf::ResolutionStatus::ambiguous &&
-            edge.status != csf::ResolutionStatus::outside_root) continue;
+            edge.status != csf::ResolutionStatus::outside_root)
+            continue;
         std::cout << edge.source << '\t';
-        if (edge.target) std::cout << *edge.target; else std::cout << '-';
+        if (edge.target)
+            std::cout << *edge.target;
+        else
+            std::cout << '-';
         std::cout << '\t' << csf::dependency_kind_name(edge.kind) << '\t'
-                  << csf::resolution_status_name(edge.status) << '\t'
-                  << edge.original_reference << '\t' << edge.evidence.file.string()
-                  << ":0x" << std::hex << edge.evidence.offset << std::dec << '\n';
-        for (const auto& candidate : edge.candidates) std::cout << "  candidate\t" << candidate.string() << '\n';
+                  << csf::resolution_status_name(edge.status) << '\t' << edge.original_reference
+                  << '\t' << edge.evidence.file.string() << ":0x" << std::hex
+                  << edge.evidence.offset << std::dec << '\n';
+        for (const auto& candidate : edge.candidates)
+            std::cout << "  candidate\t" << candidate.string() << '\n';
     }
 }
 
@@ -158,19 +321,74 @@ void print_scene_objects(const csf::MissionScene& scene) {
               << "\tspy=" << scene.player().spy_start.value_or(-1) << '\n';
     for (const auto& actor : scene.actors()) {
         std::cout << "ACTOR\tentry=" << actor.source.entry_index << "\tid=" << actor.id.value_or(-1)
-                  << "\tclass=" << actor.class_id.value_or(-1) << "\tname=" << actor.name.value_or("");
-        if (actor.position) std::cout << "\tpos=" << actor.position->x << ',' << actor.position->y << ',' << actor.position->z;
+                  << "\tclass=" << actor.class_id.value_or(-1)
+                  << "\tname=" << actor.name.value_or("");
+        if (actor.position)
+            std::cout << "\tpos=" << actor.position->x << ',' << actor.position->y << ','
+                      << actor.position->z;
         if (actor.group) std::cout << "\tgroup=" << *actor.group;
         if (actor.cell) std::cout << "\tpoint=" << *actor.cell;
         if (actor.script) std::cout << "\tscript=" << *actor.script;
+        if (!actor.script_ids.empty()) {
+            std::cout << "\tscript_ids=";
+            for (const auto id : actor.script_ids)
+                std::cout << id << ',';
+        }
         std::cout << '\n';
+    }
+}
+
+void print_actor_associations(const csf::MissionScene& scene, const csf::MissionGraph& graph) {
+    const auto object_node = std::ranges::find_if(graph.nodes(), [](const auto& node) {
+        auto name = node.resolved_path.filename().string();
+        std::ranges::transform(name, name.begin(), [](const unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return name == "objetos.bdd" && node.state == csf::LoadState::available;
+    });
+    if (object_node == graph.nodes().end()) {
+        std::cout << "DIAGNOSTIC\tObjetos.bdd is unresolved\n";
+        return;
+    }
+    const auto object_document = csf::Document::load(object_node->resolved_path);
+    const auto database = csf::ObjectDatabase::project(object_document);
+    const auto associations = csf::associate_actors(scene, database, graph.index());
+    std::cout << "OBJECT-DATABASE\tdefinitions=" << database.definitions().size()
+              << "\tdiagnostics=" << database.diagnostics().size() << '\n';
+    for (const auto& association : associations) {
+        std::cout << "ACTOR\tentry=" << association.actor.entry_index
+                  << "\tclass=" << association.class_id.value_or(-1)
+                  << "\tdefinitions=" << association.definitions.size() << '\n';
+        const auto print = [&](const char* kind,
+                               const std::vector<csf::AssociationEvidence>& evidence) {
+            for (const auto& item : evidence) {
+                std::cout << "  " << kind << '\t'
+                          << csf::resolution_status_name(item.resolution.status) << '\t'
+                          << item.resolution.original_reference << '\t';
+                if (item.resolved_path)
+                    std::cout << item.resolved_path->string();
+                else
+                    std::cout << '-';
+                std::cout << "\tevidence=" << item.source.file.filename().string()
+                          << ":entry=" << item.source.entry_index << ':' << item.field << '\n';
+            }
+        };
+        print("VISUAL", association.visual_models);
+        print("LOD", association.lod_models);
+        print("CMO", association.collision_models);
+        print("PHYSICS", association.physics_models);
+        print("RAGDOLL", association.ragdolls);
+        print("ANIMATION", association.animations);
+        for (const auto& diagnostic : association.diagnostics)
+            std::cout << "  DIAGNOSTIC\t" << diagnostic << '\n';
     }
 }
 
 void print_navigation(const csf::MissionScene& scene) {
     const auto& stats = scene.navigation_stats();
     std::cout << "NAVIGATION\tgroups=" << stats.groups << "\tpoints=" << stats.points
-              << "\tconnections=" << stats.connections << "\tcomponents=" << stats.connected_components
+              << "\tconnections=" << stats.connections
+              << "\tcomponents=" << stats.connected_components
               << "\torphans=" << stats.orphan_points << "\tinvalid=" << stats.invalid_connections
               << "\tduplicate-groups=" << stats.duplicate_group_ids
               << "\tduplicate-points=" << stats.duplicate_point_ids << '\n';
@@ -179,9 +397,12 @@ void print_navigation(const csf::MissionScene& scene) {
                   << "\tname=" << group.name.value_or("") << "\tpoints=" << group.points.size()
                   << "\tconnections=" << group.connections.size() << '\n';
         for (const auto& point : group.points) {
-            std::cout << "POINT\tentry=" << point.source.entry_index << "\tgroup=" << point.group_id.value_or(-1)
+            std::cout << "POINT\tentry=" << point.source.entry_index
+                      << "\tgroup=" << point.group_id.value_or(-1)
                       << "\tid=" << point.id.value_or(-1) << "\tname=" << point.name.value_or("");
-            if (point.position) std::cout << "\tpos=" << point.position->x << ',' << point.position->y << ',' << point.position->z;
+            if (point.position)
+                std::cout << "\tpos=" << point.position->x << ',' << point.position->y << ','
+                          << point.position->z;
             std::cout << '\n';
         }
     }
@@ -191,7 +412,9 @@ void print_spatial(const csf::MissionScene& scene) {
     for (const auto& value : scene.dummies()) {
         std::cout << "DUMMY\tentry=" << value.source.entry_index << "\tid=" << value.id.value_or(-1)
                   << "\tname=" << value.name.value_or("");
-        if (value.position) std::cout << "\tpos=" << value.position->x << ',' << value.position->y << ',' << value.position->z;
+        if (value.position)
+            std::cout << "\tpos=" << value.position->x << ',' << value.position->y << ','
+                      << value.position->z;
         std::cout << '\n';
     }
     for (const auto& value : scene.areas())
@@ -200,8 +423,11 @@ void print_spatial(const csf::MissionScene& scene) {
                   << "\theight=" << value.height.value_or(0) << '\n';
     for (const auto& value : scene.lights()) {
         std::cout << "LIGHT\tentry=" << value.source.entry_index << "\tid=" << value.id.value_or(-1)
-                  << "\tname=" << value.name.value_or("") << "\tradius=" << value.radius.value_or(0);
-        if (value.position) std::cout << "\tpos=" << value.position->x << ',' << value.position->y << ',' << value.position->z;
+                  << "\tname=" << value.name.value_or("")
+                  << "\tradius=" << value.radius.value_or(0);
+        if (value.position)
+            std::cout << "\tpos=" << value.position->x << ',' << value.position->y << ','
+                      << value.position->z;
         std::cout << '\n';
     }
     for (const auto& value : scene.folders())
@@ -210,32 +436,48 @@ void print_spatial(const csf::MissionScene& scene) {
 }
 
 void write_new_file(const std::filesystem::path& path, const std::string_view contents) {
-    if (std::filesystem::exists(path)) throw std::runtime_error("Output already exists: " + path.string());
-    auto temporary = path; temporary += ".csf-info.tmp";
-    #ifdef _WIN32
+    if (std::filesystem::exists(path))
+        throw std::runtime_error("Output already exists: " + path.string());
+    auto temporary = path;
+    temporary += ".csf-info.tmp";
+#ifdef _WIN32
     const auto handle = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                     FILE_ATTRIBUTE_TEMPORARY, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) throw std::runtime_error("Cannot exclusively create temporary output: " + temporary.string());
+    if (handle == INVALID_HANDLE_VALUE)
+        throw std::runtime_error("Cannot exclusively create temporary output: " +
+                                 temporary.string());
     std::size_t offset{};
     while (offset < contents.size()) {
-        const auto amount = static_cast<DWORD>(std::min<std::size_t>(contents.size() - offset, 1U << 30U));
+        const auto amount =
+            static_cast<DWORD>(std::min<std::size_t>(contents.size() - offset, 1U << 30U));
         DWORD written{};
-        if (!WriteFile(handle, contents.data() + offset, amount, &written, nullptr) || written != amount) {
-            CloseHandle(handle); std::filesystem::remove(temporary);
+        if (!WriteFile(handle, contents.data() + offset, amount, &written, nullptr) ||
+            written != amount) {
+            CloseHandle(handle);
+            std::filesystem::remove(temporary);
             throw std::runtime_error("Cannot write output: " + path.string());
         }
         offset += written;
     }
-    if (!CloseHandle(handle)) { std::filesystem::remove(temporary); throw std::runtime_error("Cannot close output: " + path.string()); }
-    #else
-    if (std::filesystem::exists(temporary)) throw std::runtime_error("Temporary output already exists: " + temporary.string());
+    if (!CloseHandle(handle)) {
+        std::filesystem::remove(temporary);
+        throw std::runtime_error("Cannot close output: " + path.string());
+    }
+#else
+    if (std::filesystem::exists(temporary))
+        throw std::runtime_error("Temporary output already exists: " + temporary.string());
     std::ofstream output(temporary, std::ios::binary | std::ios::out);
     if (!output) throw std::runtime_error("Cannot create output: " + path.string());
     output << contents;
-    if (!output) { output.close(); std::filesystem::remove(temporary); throw std::runtime_error("Cannot write output: " + path.string()); }
-    #endif
+    if (!output) {
+        output.close();
+        std::filesystem::remove(temporary);
+        throw std::runtime_error("Cannot write output: " + path.string());
+    }
+#endif
     std::error_code copy_error;
-    if (!std::filesystem::copy_file(temporary, path, std::filesystem::copy_options::none, copy_error)) {
+    if (!std::filesystem::copy_file(temporary, path, std::filesystem::copy_options::none,
+                                    copy_error)) {
         std::filesystem::remove(temporary);
         throw std::runtime_error("Cannot create output: " + copy_error.message());
     }
@@ -243,7 +485,10 @@ void write_new_file(const std::filesystem::path& path, const std::string_view co
 }
 
 int mission_command(const int argc, char** argv) {
-    if (argc < 3) { usage(); return 1; }
+    if (argc < 3) {
+        usage();
+        return 1;
+    }
     csf::MissionOptions options{std::filesystem::path(argv[2])};
     std::string_view mode = "--summary";
     bool mode_was_set = false;
@@ -270,7 +515,8 @@ int mission_command(const int argc, char** argv) {
             graph_output = std::filesystem::path(argv[argument]);
             set_mode("--graph");
         } else if (value == "--scene-json") {
-            if (++argument >= argc) throw std::runtime_error("--scene-json requires a new output path");
+            if (++argument >= argc)
+                throw std::runtime_error("--scene-json requires a new output path");
             scene_output = std::filesystem::path(argv[argument]);
             set_mode("--scene-json");
         } else if (value == "--symbols") {
@@ -278,57 +524,79 @@ int mission_command(const int argc, char** argv) {
             symbol = argv[argument];
             set_mode("--symbols");
         } else if (value == "--summary" || value == "--dependencies" || value == "--missing" ||
-                   value == "--objects" || value == "--navigation" || value == "--spatial") {
+                   value == "--objects" || value == "--navigation" || value == "--spatial" ||
+                   value == "--associations") {
             set_mode(value);
-        } else throw std::runtime_error("Unknown mission option: " + std::string(value));
+        } else
+            throw std::runtime_error("Unknown mission option: " + std::string(value));
     }
     const auto graph = csf::MissionGraph::load(options);
     std::optional<csf::Document> scene_document;
     std::optional<csf::MissionScene> scene;
     if (mode == "--objects" || mode == "--navigation" || mode == "--spatial" ||
-        mode == "--scene-json" || mode == "--symbols") {
+        mode == "--associations" || mode == "--scene-json" || mode == "--symbols") {
         scene_document = csf::Document::load(graph.scene_path());
         scene = csf::MissionScene::project(*scene_document);
     }
-    if (mode == "--dependencies") print_mission_edges(graph, false);
-    else if (mode == "--missing") print_mission_edges(graph, true);
-    else if (mode == "--objects") print_scene_objects(*scene);
-    else if (mode == "--navigation") print_navigation(*scene);
-    else if (mode == "--spatial") print_spatial(*scene);
-    else if (mode == "--scene-json") write_new_file(*scene_output, csf::mission_scene_json(*scene));
+    if (mode == "--dependencies")
+        print_mission_edges(graph, false);
+    else if (mode == "--missing")
+        print_mission_edges(graph, true);
+    else if (mode == "--objects")
+        print_scene_objects(*scene);
+    else if (mode == "--navigation")
+        print_navigation(*scene);
+    else if (mode == "--spatial")
+        print_spatial(*scene);
+    else if (mode == "--associations")
+        print_actor_associations(*scene, graph);
+    else if (mode == "--scene-json")
+        write_new_file(*scene_output, csf::mission_scene_json(*scene));
     else if (mode == "--symbols") {
         csf::MissionSymbolIndex index;
         index.add_scene(*scene);
         for (const auto& node : graph.nodes()) {
             if (node.resolved_path.empty() || node.resolved_path == graph.scene_path()) continue;
-            if (node.kind != csf::ResourceKind::mission_script && node.kind != csf::ResourceKind::cutscene_script &&
-                node.kind != csf::ResourceKind::database) continue;
+            if (node.kind != csf::ResourceKind::mission_script &&
+                node.kind != csf::ResourceKind::cutscene_script &&
+                node.kind != csf::ResourceKind::database)
+                continue;
             const auto document = csf::Document::load(node.resolved_path);
             if (document.state() != csf::ParseState::non_csffbs) index.add_document(document);
         }
         for (const auto* site : index.exact(*symbol))
-            std::cout << csf::symbol_role_name(site->role) << '\t' << csf::symbol_category_name(site->category)
-                      << '\t' << site->source.file.string() << ":entry=" << site->source.entry_index
-                      << "\t" << site->field << '\n';
-    }
-    else if (mode == "--graph") {
+            std::cout << csf::symbol_role_name(site->role) << '\t'
+                      << csf::symbol_category_name(site->category) << '\t'
+                      << site->source.file.string() << ":entry=" << site->source.entry_index << "\t"
+                      << site->field << '\n';
+    } else if (mode == "--graph") {
         write_new_file(*graph_output, csf::mission_graph_json(graph));
-    } else print_mission_summary(graph);
-    return std::ranges::any_of(graph.diagnostics(), [](const auto& diagnostic) {
-        return diagnostic.severity == csf::MissionDiagnostic::Severity::error;
-    }) ? 2 : 0;
+    } else
+        print_mission_summary(graph);
+    return std::ranges::any_of(graph.diagnostics(),
+                               [](const auto& diagnostic) {
+                                   return diagnostic.severity ==
+                                          csf::MissionDiagnostic::Severity::error;
+                               })
+               ? 2
+               : 0;
 }
 
 int uses_command(const int argc, char** argv) {
-    if (argc != 5 || std::string_view(argv[3]) != "--root") { usage(); return 1; }
+    if (argc != 5 || std::string_view(argv[3]) != "--root") {
+        usage();
+        return 1;
+    }
     const auto root = std::filesystem::path(argv[4]);
     const auto asset_argument = std::filesystem::path(argv[2]);
-    const auto asset = std::filesystem::absolute(asset_argument.is_absolute() ? asset_argument : root / asset_argument)
+    const auto asset = std::filesystem::absolute(
+                           asset_argument.is_absolute() ? asset_argument : root / asset_argument)
                            .lexically_normal();
     std::vector<std::filesystem::path> scenes;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(
              root, std::filesystem::directory_options::skip_permission_denied)) {
-        if (entry.is_regular_file() && lower_extension(entry.path()) == ".scn") scenes.push_back(entry.path());
+        if (entry.is_regular_file() && lower_extension(entry.path()) == ".scn")
+            scenes.push_back(entry.path());
     }
     std::ranges::sort(scenes);
     const auto package_for = [](const std::filesystem::path& scene) {
@@ -336,7 +604,8 @@ int uses_command(const int argc, char** argv) {
         std::error_code error;
         while (!current.empty()) {
             if (std::filesystem::is_directory(current / "Maps", error) ||
-                std::filesystem::is_directory(current / "BDD", error)) return current;
+                std::filesystem::is_directory(current / "BDD", error))
+                return current;
             error.clear();
             const auto parent = current.parent_path();
             if (parent == current) break;
@@ -345,7 +614,8 @@ int uses_command(const int argc, char** argv) {
         return scene.parent_path();
     };
     csf::ResourceIndex shared_index;
-    for (const auto& scene : scenes) shared_index.add_root(package_for(scene));
+    for (const auto& scene : scenes)
+        shared_index.add_root(package_for(scene));
     shared_index.build();
     std::uint64_t count{};
     for (const auto& scene : scenes) {
@@ -361,7 +631,8 @@ int uses_command(const int argc, char** argv) {
                           << ":0x" << std::hex << edge->evidence.offset << std::dec << '\n';
             }
         } catch (const std::exception& exception) {
-            std::cerr << "warning: cannot inspect " << scene.string() << ": " << exception.what() << '\n';
+            std::cerr << "warning: cannot inspect " << scene.string() << ": " << exception.what()
+                      << '\n';
         }
     }
     std::cout << "Uses: " << count << '\n';
@@ -369,7 +640,10 @@ int uses_command(const int argc, char** argv) {
 }
 
 int compare_command(const int argc, char** argv) {
-    if (argc != 4) { usage(); return 1; }
+    if (argc != 4) {
+        usage();
+        return 1;
+    }
     const auto left = csf::MissionGraph::load({std::filesystem::path(argv[2])});
     const auto right = csf::MissionGraph::load({std::filesystem::path(argv[3])});
     if (left.nodes().front().content_hash == right.nodes().front().content_hash &&
@@ -378,10 +652,16 @@ int compare_command(const int argc, char** argv) {
     else
         std::cout << "!\tSCN content differs\n";
     std::set<std::string> left_edges, right_edges;
-    for (const auto& edge : left.edges()) left_edges.insert(std::string(csf::dependency_kind_name(edge.kind)) + "\t" + edge.normalized_key);
-    for (const auto& edge : right.edges()) right_edges.insert(std::string(csf::dependency_kind_name(edge.kind)) + "\t" + edge.normalized_key);
-    for (const auto& value : left_edges) if (!right_edges.contains(value)) std::cout << "-\t" << value << '\n';
-    for (const auto& value : right_edges) if (!left_edges.contains(value)) std::cout << "+\t" << value << '\n';
+    for (const auto& edge : left.edges())
+        left_edges.insert(std::string(csf::dependency_kind_name(edge.kind)) + "\t" +
+                          edge.normalized_key);
+    for (const auto& edge : right.edges())
+        right_edges.insert(std::string(csf::dependency_kind_name(edge.kind)) + "\t" +
+                           edge.normalized_key);
+    for (const auto& value : left_edges)
+        if (!right_edges.contains(value)) std::cout << "-\t" << value << '\n';
+    for (const auto& value : right_edges)
+        if (!left_edges.contains(value)) std::cout << "+\t" << value << '\n';
     return 0;
 }
 
@@ -390,7 +670,8 @@ bool file_has_magic(const std::filesystem::path& path) {
     if (!input) return false;
     std::array<std::byte, 6> bytes{};
     input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    return input.gcount() == static_cast<std::streamsize>(bytes.size()) && csf::Document::sniff(bytes);
+    return input.gcount() == static_cast<std::streamsize>(bytes.size()) &&
+           csf::Document::sniff(bytes);
 }
 
 std::string lower_extension(const std::filesystem::path& path) {
@@ -430,7 +711,8 @@ int scan_corpus(const std::filesystem::path& root) {
     std::map<std::string, std::uint64_t> identifiers;
     std::map<std::string, std::uint64_t> diagnostics;
 
-    std::cout << "FILE\tstate\textension\tbytes\tentries\tidentifiers\tstrings\tdiagnostics\tpath\n";
+    std::cout
+        << "FILE\tstate\textension\tbytes\tentries\tidentifiers\tstrings\tdiagnostics\tpath\n";
     for (const auto& path : files) {
         if (!file_has_magic(path)) {
             ++non_csffbs_files;
@@ -442,19 +724,22 @@ int scan_corpus(const std::filesystem::path& root) {
         ++extensions[extension];
         std::ostringstream header_key;
         header_key << "reserved=" << std::hex << std::setw(2) << std::setfill('0')
-                   << std::to_integer<unsigned>(document.header().reserved[0])
-                   << std::setw(2) << std::to_integer<unsigned>(document.header().reserved[1])
-                   << std::dec << ",version=" << document.header().version;
+                   << std::to_integer<unsigned>(document.header().reserved[0]) << std::setw(2)
+                   << std::to_integer<unsigned>(document.header().reserved[1]) << std::dec
+                   << ",version=" << document.header().version;
         ++headers[header_key.str()];
-        for (const auto& entry : document.entries()) ++entry_types[entry.raw_type];
-        for (const auto& identifier : document.identifiers()) ++identifiers[escaped(identifier.display_utf8())];
+        for (const auto& entry : document.entries())
+            ++entry_types[entry.raw_type];
+        for (const auto& identifier : document.identifiers())
+            ++identifiers[escaped(identifier.display_utf8())];
         for (const auto& diagnostic : document.diagnostics()) {
-            const auto prefix = diagnostic.severity == csf::Diagnostic::Severity::error ? "error: " : "warning: ";
+            const auto prefix =
+                diagnostic.severity == csf::Diagnostic::Severity::error ? "error: " : "warning: ";
             ++diagnostics[prefix + diagnostic.message];
         }
         if (document.has_errors()) ++error_files;
-        std::cout << "FILE\t" << csf::parse_state_name(document.state()) << '\t' << extension << '\t'
-                  << document.bytes().size() << '\t' << document.entries().size() << '\t'
+        std::cout << "FILE\t" << csf::parse_state_name(document.state()) << '\t' << extension
+                  << '\t' << document.bytes().size() << '\t' << document.entries().size() << '\t'
                   << document.identifiers().size() << '\t' << document.strings().size() << '\t'
                   << document.diagnostics().size() << '\t' << path.string() << '\n';
     }
@@ -462,16 +747,20 @@ int scan_corpus(const std::filesystem::path& root) {
               << "TOTAL\tCSFFBS\t" << csffbs_files << '\n'
               << "TOTAL\tnon-CSFFBS\t" << non_csffbs_files << '\n'
               << "TOTAL\terror-files\t" << error_files << '\n';
-    for (const auto& [value, count] : extensions) std::cout << "EXTENSION\t" << value << '\t' << count << '\n';
-    for (const auto& [value, count] : headers) std::cout << "HEADER\t" << value << '\t' << count << '\n';
+    for (const auto& [value, count] : extensions)
+        std::cout << "EXTENSION\t" << value << '\t' << count << '\n';
+    for (const auto& [value, count] : headers)
+        std::cout << "HEADER\t" << value << '\t' << count << '\n';
     for (const auto& [value, count] : entry_types) {
         const csf::Entry entry{0, 0, -1, value, 0, {}};
         const auto kind = entry.kind();
         std::cout << "ENTRY-TYPE\t" << value << '\t'
                   << (kind ? csf::value_kind_name(*kind) : "unknown") << '\t' << count << '\n';
     }
-    for (const auto& [value, count] : identifiers) std::cout << "IDENTIFIER\t" << value << '\t' << count << '\n';
-    for (const auto& [value, count] : diagnostics) std::cout << "DIAGNOSTIC\t" << value << '\t' << count << '\n';
+    for (const auto& [value, count] : identifiers)
+        std::cout << "IDENTIFIER\t" << value << '\t' << count << '\n';
+    for (const auto& [value, count] : diagnostics)
+        std::cout << "DIAGNOSTIC\t" << value << '\t' << count << '\n';
     return error_files == 0 ? 0 : 2;
 }
 
@@ -484,6 +773,11 @@ int main(const int argc, char** argv) {
     }
     try {
         if (std::string_view(argv[1]) == "mission") return mission_command(argc, argv);
+        if (std::string_view(argv[1]) == "cmo") return cmo_command(argc, argv);
+        if (std::string_view(argv[1]) == "animations") return animations_command(argc, argv);
+        if (std::string_view(argv[1]) == "script-animations")
+            return script_animations_command(argc, argv);
+        if (std::string_view(argv[1]) == "cutscene") return cutscene_command(argc, argv);
         if (std::string_view(argv[1]) == "uses") return uses_command(argc, argv);
         if (std::string_view(argv[1]) == "compare") return compare_command(argc, argv);
         if (std::string_view(argv[1]) == "corpus") {
@@ -516,7 +810,8 @@ int main(const int argc, char** argv) {
             for (const auto& value : document.identifiers()) {
                 const auto text = value.display_utf8();
                 if (text.find(needle) != std::string::npos)
-                    std::cout << "identifier[" << value.table_index << "] " << escaped(text) << '\n';
+                    std::cout << "identifier[" << value.table_index << "] " << escaped(text)
+                              << '\n';
             }
             for (const auto& value : document.strings()) {
                 const auto text = value.display_utf8();
@@ -524,9 +819,10 @@ int main(const int argc, char** argv) {
                     std::cout << "string[" << value.table_index << "] " << escaped(text) << '\n';
             }
         } else if (mode == "--export-text" || mode == "--export-json") {
-            if (argc < 4) throw std::runtime_error(std::string(mode) + " requires an output path or -");
-            const auto contents = mode == "--export-text" ? csf::export_text(document)
-                                                          : csf::export_json(document);
+            if (argc < 4)
+                throw std::runtime_error(std::string(mode) + " requires an output path or -");
+            const auto contents =
+                mode == "--export-text" ? csf::export_text(document) : csf::export_json(document);
             if (std::string_view(argv[3]) == "-") {
                 std::cout << contents;
             } else {

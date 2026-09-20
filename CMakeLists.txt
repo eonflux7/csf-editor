@@ -6,9 +6,11 @@ option(RWSMAN_BUILD_GUI "Build the Dear ImGui desktop application" ON)
 option(RWSMAN_BUILD_TESTS "Build parser tests" ON)
 
 add_library(rws_core
+    src/animation.cpp
     src/document.cpp
     src/chunk_names.cpp
     src/decoded.cpp
+    src/physics_inspection.cpp
     src/world_recovery.cpp
     src/obj_export.cpp
     src/scene_export.cpp
@@ -23,10 +25,13 @@ else()
 endif()
 
 add_library(csf_core
+    src/csf_animation_catalog.cpp
+    src/csf_cmo.cpp
     src/csf_document.cpp
     src/csf_export.cpp
     src/csf_mission.cpp
     src/csf_mission_scene.cpp
+    src/csf_object_database.cpp
     src/csf_overlay.cpp
 )
 add_library(csf::core ALIAS csf_core)

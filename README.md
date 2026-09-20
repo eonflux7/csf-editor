@@ -20,6 +20,12 @@ that partially understood assets can still be inspected safely.
   raw tables, source offsets, diagnostics, and validated group/array trees.
 - Schema-aware inspection of Clumps, Geometry, Materials, Worlds, Frame Lists,
   Atomics, Skin, HAnim, User Data, Bin Mesh, MatFX, and other common plugins.
+- ANM `0x1B` decoding, track recovery, pose evaluation, selected-actor CPU
+  skinning, playback controls, root motion, and animation glTF export.
+- Typed `Anims.bdd` catalogs and conservative CSC cutscene basic-block lanes
+  with explicit branches and runtime waits. A dedicated Animation workspace
+  traces SCN actor script IDs through GSC `PLAY_ANMBDD*` actions to exact BDD
+  records and highlights cutscene camera dummies.
 - Decoding of game-specific Pyro Studios metadata, Physics Body/Ragdoll data, and
   CSF scene-instance records.
 - A Dear ImGui desktop application with a chunk tree, typed inspectors, hex
@@ -49,8 +55,8 @@ RenderWare rights holders.
 | Component | Purpose |
 | --- | --- |
 | `rws-man` | Desktop chunk inspector, hex editor, and 3D preview |
-| `rws-info` | Inspect, validate, and export one `.rws` file |
-| `rws-corpus` | Recursively inventory a directory of `.rws` files |
+| `rws-info` | Inspect, validate, and export one `.rws` or Clump `.rpc` file |
+| `rws-corpus` | Recursively inventory a directory of `.rws` and `.rpc` files |
 | `rws_core` | Parser, typed decoders, and export library used by all tools |
 | `csf-info` | Summarize, validate, search, and inspect one `CSFFBS` document |
 | `csf_core` | Generic `CSFFBS` parser and immutable document model |
@@ -86,7 +92,7 @@ Open PowerShell in the repository root:
 .\build\Release\rws-man.exe "C:\path\to\asset.rws"
 ```
 
-You can also start `rws-man.exe` without an argument and drag an `.rws` file onto
+You can also start `rws-man.exe` without an argument and drag an `.rws` or `.rpc` file onto
 the window.
 
 Both scripts build **Release** by default. They use the checked-in CMake presets,
@@ -162,6 +168,9 @@ $root = "C:\path\to\extracted-game"
 .\build\Release\csf-info.exe mission $scene --summary --root $root
 .\build\Release\csf-info.exe mission $scene --summary --package-root "C:\path\to\package"
 .\build\Release\csf-info.exe mission $scene --summary --duplicates
+.\build\Release\csf-info.exe animations "C:\path\to\BDD\Anims.bdd" --root $root
+.\build\Release\csf-info.exe script-animations "C:\path\to\mission.gsc"
+.\build\Release\csf-info.exe cutscene "C:\path\to\mission.csc"
 .\build\Release\csf-info.exe uses "Ambush\Models\Char\Espia.rpc" --root $root
 .\build\Release\csf-info.exe compare $scene "C:\path\to\another.scn"
 ```
@@ -172,6 +181,12 @@ PHD schema status remain explicit. See [Mission resolution](docs/mission-resolut
 for the resolution order, graph schema, and current format evidence.
 Typed SCN identities, validation, reference categories, and scene JSON are
 documented in [Mission Explorer](docs/mission-explorer.md).
+
+Actor class/model/CMO/Physics joins, standalone RPC inspection, lossless CMO
+parsing, and ragdoll uncertainty rules are documented in
+[Actor and Physics inspection](docs/actor-physics-inspection.md). Use
+`csf-info mission Mission.scn --associations` for an evidence-backed association
+report or `csf-info cmo file.cmo` for the source-backed collision-shape view.
 
 ### Inspect one file
 
@@ -197,6 +212,8 @@ Additional modes are:
 | `--export-collision-gltf <file.gltf>` | Export only validated World collision geometry to glTF |
 | `--export-collision-obj <file.obj>` | Export only validated World collision geometry to OBJ/MTL |
 | `--export-clump-gltf <offset> <file.gltf>` | Export the top-level Clump at a decimal or `0x` byte offset |
+| `--animation-report[=frames]` | Report ANM variants, tracks, validation, and optionally every source-stable key |
+| `--export-animation-gltf <model.rpc> <file.gltf>` | Export a compatible RPC hierarchy/skin and ANM channels |
 
 Examples:
 
@@ -218,7 +235,7 @@ $output = "C:\path\to\exports"
 
 ### Scan an extracted corpus
 
-`rws-corpus` recursively scans `.rws` files and prints a tab-separated per-file
+`rws-corpus` recursively scans `.rws` and `.rpc` files and prints a tab-separated per-file
 report including declared/recovered World totals and recovery status, followed by
 root-format, chunk-type, diagnostic, scene-instance, and aggregate World-recovery totals:
 

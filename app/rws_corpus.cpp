@@ -1,5 +1,6 @@
-#include "rws/document.hpp"
+#include "rws/animation.hpp"
 #include "rws/decoded.hpp"
+#include "rws/document.hpp"
 #include "rws/world_recovery.hpp"
 
 #include <algorithm>
@@ -15,7 +16,9 @@
 
 namespace {
 
-struct Stats { std::uint64_t count{}, bytes{}, truncated{}; };
+struct Stats {
+    std::uint64_t count{}, bytes{}, truncated{};
+};
 
 void collect(const std::vector<rws::Chunk>& chunks, std::map<std::uint32_t, Stats>& stats) {
     for (const auto& chunk : chunks) {
@@ -29,9 +32,10 @@ void collect(const std::vector<rws::Chunk>& chunks, std::map<std::uint32_t, Stat
 
 bool is_rws(const std::filesystem::path& path) {
     auto extension = path.extension().string();
-    std::transform(extension.begin(), extension.end(), extension.begin(),
+    std::transform(
+        extension.begin(), extension.end(), extension.begin(),
         [](const unsigned char value) { return static_cast<char>(std::tolower(value)); });
-    return extension == ".rws";
+    return extension == ".rws" || extension == ".rpc" || extension == ".anm";
 }
 
 struct RootKey {
@@ -43,7 +47,7 @@ struct RootKey {
 
 int main(const int argc, char** argv) {
     if (argc != 2) {
-        std::cerr << "Usage: rws-corpus <directory>\n";
+        std::cerr << "Usage: rws-corpus <directory>  (scans .rws, .rpc, and .anm)\n";
         return 2;
     }
     const std::filesystem::path root(argv[1]);
@@ -54,18 +58,32 @@ int main(const int argc, char** argv) {
     }
 
     std::vector<std::filesystem::path> files;
-    for (std::filesystem::recursive_directory_iterator it(root, error), end; it != end; it.increment(error)) {
-        if (error) { std::cerr << "warning: " << error.message() << '\n'; error.clear(); continue; }
+    for (std::filesystem::recursive_directory_iterator it(root, error), end; it != end;
+         it.increment(error)) {
+        if (error) {
+            std::cerr << "warning: " << error.message() << '\n';
+            error.clear();
+            continue;
+        }
         if (it->is_regular_file(error) && is_rws(it->path())) files.push_back(it->path());
     }
     std::sort(files.begin(), files.end());
 
     std::map<RootKey, Stats> roots;
     std::map<std::uint32_t, Stats> chunks;
-    std::uint64_t total_bytes{}, warning_files{}, failed_files{}, instance_files{}, total_instances{};
+    std::uint64_t total_bytes{}, warning_files{}, failed_files{}, instance_files{},
+        total_instances{};
     std::uint64_t complete_worlds{}, partial_worlds{}, failed_worlds{};
     std::map<std::uint32_t, std::uint64_t> instance_prototypes;
-    std::cout << "file\tbytes\troot\tversion/build\tinstances\tdiagnostics\tworld-sectors\tworld-triangles\tworld-vertices\tworld-recovery\n";
+    struct AnimationKey {
+        std::uint32_t stamp{}, interpolator{}, serialized_size{}, logical_stride{};
+        auto operator<=>(const AnimationKey&) const = default;
+    };
+    std::map<AnimationKey, Stats> animation_variants;
+    std::uint64_t animation_files{}, invalid_animations{};
+    std::cout << "file\tbytes\troot\tversion/"
+                 "build\tinstances\tdiagnostics\tworld-sectors\tworld-triangles\tworld-"
+                 "vertices\tworld-recovery\n";
     for (const auto& path : files) {
         try {
             const auto document = rws::Document::load(path);
@@ -76,22 +94,39 @@ int main(const int argc, char** argv) {
             for (const auto& instance : document.scene_instances())
                 ++instance_prototypes[instance.prototype_id];
             collect(document.chunks(), chunks);
+            if (!document.chunks().empty() && document.chunks().front().type == 0x1B) {
+                ++animation_files;
+                const auto clip =
+                    rws::decode_animation(document.chunks().front(), document.bytes());
+                auto& variant =
+                    animation_variants[{clip.library_id, clip.interpolation_type,
+                                        clip.serialized_record_size, clip.logical_record_stride}];
+                ++variant.count;
+                variant.bytes += document.bytes().size();
+                if (!clip.valid()) {
+                    ++invalid_animations;
+                    ++variant.truncated;
+                }
+            }
             const auto worlds = rws::recover_worlds(document.chunks(), document.bytes());
             std::cout << std::filesystem::relative(path, root, error).string() << '\t'
                       << document.bytes().size() << '\t';
             if (!document.chunks().empty()) {
                 const auto& first = document.chunks().front();
                 auto& value = roots[{first.type, first.library_id}];
-                ++value.count; value.bytes += document.bytes().size(); value.truncated += first.truncated ? 1U : 0U;
+                ++value.count;
+                value.bytes += document.bytes().size();
+                value.truncated += first.truncated ? 1U : 0U;
                 const auto version = rws::decode_library_id(first.library_id);
-                std::cout << "0x" << std::hex << first.type << std::dec << " " << rws::chunk_name(first.type)
-                          << '\t' << version.major << '.' << version.minor << '.' << version.revision << '.'
-                          << version.binary << '/' << version.build;
+                std::cout << "0x" << std::hex << first.type << std::dec << " "
+                          << rws::chunk_name(first.type) << '\t' << version.major << '.'
+                          << version.minor << '.' << version.revision << '.' << version.binary
+                          << '/' << version.build;
             } else {
                 std::cout << "none\tunknown";
             }
             std::uint64_t recovered_sectors{}, declared_sectors{}, recovered_triangles{},
-                          declared_triangles{}, recovered_vertices{}, declared_vertices{};
+                declared_triangles{}, recovered_vertices{}, declared_vertices{};
             auto file_status = rws::WorldRecoveryStatus::complete;
             for (const auto& world : worlds) {
                 recovered_sectors += world.sectors.size();
@@ -105,12 +140,15 @@ int main(const int argc, char** argv) {
                 else if (world.status == rws::WorldRecoveryStatus::partial &&
                          file_status != rws::WorldRecoveryStatus::failed)
                     file_status = rws::WorldRecoveryStatus::partial;
-                if (world.status == rws::WorldRecoveryStatus::complete) ++complete_worlds;
-                else if (world.status == rws::WorldRecoveryStatus::partial) ++partial_worlds;
-                else ++failed_worlds;
+                if (world.status == rws::WorldRecoveryStatus::complete)
+                    ++complete_worlds;
+                else if (world.status == rws::WorldRecoveryStatus::partial)
+                    ++partial_worlds;
+                else
+                    ++failed_worlds;
             }
-            std::cout << '\t' << document.scene_instances().size()
-                      << '\t' << document.diagnostics().size() << '\t';
+            std::cout << '\t' << document.scene_instances().size() << '\t'
+                      << document.diagnostics().size() << '\t';
             if (worlds.empty()) {
                 std::cout << "-\t-\t-\tnone\n";
             } else {
@@ -131,6 +169,16 @@ int main(const int argc, char** argv) {
               << " files\n";
     std::cout << "World recovery: " << complete_worlds << " complete, " << partial_worlds
               << " partial, " << failed_worlds << " failed\n";
+    std::cout << "Animations: " << animation_files << " files, " << invalid_animations
+              << " unsupported/invalid\n";
+    if (!animation_variants.empty()) {
+        std::cout << "Animation variants (stamp/interpolator/serialized/logical):\n";
+        for (const auto& [key, value] : animation_variants)
+            std::cout << "  0x" << std::hex << key.stamp << std::dec << '/' << key.interpolator
+                      << '/' << key.serialized_size << '/' << key.logical_stride
+                      << " files=" << value.count << " bytes=" << value.bytes
+                      << " invalid=" << value.truncated << '\n';
+    }
     if (!instance_prototypes.empty()) {
         std::cout << "Instance prototypes:\n";
         for (const auto& [prototype, count] : instance_prototypes)
@@ -140,17 +188,18 @@ int main(const int argc, char** argv) {
     for (const auto& [key, value] : roots) {
         const auto version = rws::decode_library_id(key.stamp);
         std::cout << "  0x" << std::hex << std::setw(8) << std::setfill('0') << key.type << std::dec
-                  << std::setfill(' ') << "  " << std::left << std::setw(28) << rws::chunk_name(key.type)
-                  << std::right << " files=" << value.count << " bytes=" << value.bytes
-                  << " RW=" << version.major << '.' << version.minor << '.' << version.revision << '.'
-                  << version.binary << " build=" << version.build << '\n';
+                  << std::setfill(' ') << "  " << std::left << std::setw(28)
+                  << rws::chunk_name(key.type) << std::right << " files=" << value.count
+                  << " bytes=" << value.bytes << " RW=" << version.major << '.' << version.minor
+                  << '.' << version.revision << '.' << version.binary << " build=" << version.build
+                  << '\n';
     }
     std::cout << "\nChunk inventory:\n";
     for (const auto& [type, value] : chunks) {
         std::cout << "  0x" << std::hex << std::setw(8) << std::setfill('0') << type << std::dec
-                  << std::setfill(' ') << "  " << std::left << std::setw(32) << rws::chunk_name(type)
-                  << std::right << " count=" << value.count << " payload=" << value.bytes
-                  << " truncated=" << value.truncated << '\n';
+                  << std::setfill(' ') << "  " << std::left << std::setw(32)
+                  << rws::chunk_name(type) << std::right << " count=" << value.count
+                  << " payload=" << value.bytes << " truncated=" << value.truncated << '\n';
     }
     return failed_files == 0 ? 0 : 1;
 }

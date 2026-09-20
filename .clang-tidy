@@ -1,0 +1,33 @@
+---
+# Static analysis for the CSFFBS / RWS tools.
+# Focused on high-signal correctness and performance checks; stylistic
+# readability-* checks are intentionally omitted because clang-format owns style.
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  performance-*,
+  modernize-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-unchecked-optional-access,
+  -modernize-avoid-c-arrays,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -modernize-return-braced-init-list,
+  -modernize-use-auto,
+  -modernize-concat-nested-namespaces,
+  -modernize-loop-convert,
+  -modernize-avoid-bind,
+  -modernize-use-integer-sign-comparison,
+  -modernize-use-designated-initializers,
+  -modernize-raw-string-literal,
+  -modernize-use-ranges,
+  -performance-enum-size,
+  -clang-diagnostic-missing-field-initializers,
+  -performance-avoid-endl
+WarningsAsErrors: ''
+HeaderFilterRegex: '(include|src|app)/'
+FormatStyle: file
+SystemHeaders: false
+...

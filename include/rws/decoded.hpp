@@ -21,8 +21,13 @@ struct LibraryVersion {
     unsigned binary{};
 };
 
-struct Vec3 { float x{}, y{}, z{}; };
-struct Sphere { Vec3 center; float radius{}; };
+struct Vec3 {
+    float x{}, y{}, z{};
+};
+struct Sphere {
+    Vec3 center;
+    float radius{};
+};
 
 struct ClumpInfo {
     std::int32_t atomics{};
@@ -37,7 +42,9 @@ struct FrameInfo {
     std::uint32_t flags{};
 };
 
-struct FrameListInfo { std::vector<FrameInfo> frames; };
+struct FrameListInfo {
+    std::vector<FrameInfo> frames;
+};
 
 struct AtomicInfo {
     std::int32_t frame_index{};
@@ -75,7 +82,10 @@ struct MaterialEffectsInfo {
     std::uint32_t trailing_slot_type{};
 };
 
-struct HAnimNodeInfo { std::int32_t node_id{}, node_index{}; std::uint32_t flags{}; };
+struct HAnimNodeInfo {
+    std::int32_t node_id{}, node_index{};
+    std::uint32_t flags{};
+};
 struct HAnimInfo {
     std::uint32_t version{};
     std::int32_t hierarchy_id{};
@@ -83,7 +93,10 @@ struct HAnimInfo {
     std::vector<HAnimNodeInfo> nodes;
 };
 
-struct BinMeshEntry { std::uint32_t material_index{}; std::vector<std::uint32_t> indices; };
+struct BinMeshEntry {
+    std::uint32_t material_index{};
+    std::vector<std::uint32_t> indices;
+};
 struct BinMeshInfo {
     std::uint32_t flags{}, total_indices{};
     std::vector<BinMeshEntry> meshes;
@@ -116,8 +129,12 @@ struct TableOfContentsInfo {
     std::vector<TableOfContentsEntryInfo> entries;
 };
 
-struct RightToRenderInfo { std::uint32_t plugin_id{}, extra_data{}; };
-struct AnisotropyInfo { float coefficient{}; };
+struct RightToRenderInfo {
+    std::uint32_t plugin_id{}, extra_data{};
+};
+struct AnisotropyInfo {
+    float coefficient{};
+};
 
 struct SkinInfo {
     std::uint8_t bone_count{}, used_bone_count{}, max_weights_per_vertex{}, padding{};
@@ -136,7 +153,9 @@ struct UserDataArrayInfo {
     std::vector<float> reals;
     std::vector<std::string> strings;
 };
-struct UserDataInfo { std::vector<UserDataArrayInfo> arrays; };
+struct UserDataInfo {
+    std::vector<UserDataArrayInfo> arrays;
+};
 
 struct PhysicsVolumeInfo {
     std::uint16_t version{};
@@ -183,8 +202,18 @@ enum class PhysicsBodyFlag : std::uint32_t {
 [[nodiscard]] std::string physics_body_flag_names(std::uint32_t flags);
 
 struct PhysicsRagdollDefInfo {
+    struct JointInfo {
+        std::uint64_t source_offset{};
+        std::uint32_t type{};
+        std::array<Vec3, 2> vectors{};
+        std::array<std::array<float, 4>, 2> quaternions{};
+        std::array<std::uint32_t, 4> integers{};
+        std::array<std::array<float, 4>, 2> four_float_records{};
+        std::array<std::array<float, 3>, 6> triple_records{};
+    };
     std::uint16_t type_0{}, type_1{}, body_count{}, joint_count{};
     std::vector<PhysicsBodyDefInfo> bodies;
+    std::vector<JointInfo> joints;
     std::vector<std::array<std::uint16_t, 2>> joint_pairs;
     std::uint32_t table_rows{}, table_columns{};
     std::vector<std::uint32_t> table_values;
@@ -210,7 +239,8 @@ struct PyroExtensionInfo {
     }
     [[nodiscard]] std::string_view object_name() const noexcept {
         return (owner_type == 0x07 || owner_type == 0x0E || owner_type == 0x14) && !strings.empty()
-            ? std::string_view(strings.front()) : std::string_view{};
+                   ? std::string_view(strings.front())
+                   : std::string_view{};
     }
     [[nodiscard]] std::optional<std::uint16_t> atomic_object_index() const noexcept {
         if (owner_type != 0x14 || words.empty() || (words.front() & 0xFFFFU) == 0xFFFFU)
@@ -284,36 +314,41 @@ struct DecodeResult {
 [[nodiscard]] LibraryVersion decode_library_id(std::uint32_t stamp) noexcept;
 [[nodiscard]] const Chunk* find_child(const Chunk& parent, std::uint32_t type) noexcept;
 [[nodiscard]] DecodeResult<ClumpInfo> decode_clump(const Chunk&, std::span<const std::byte>);
-[[nodiscard]] DecodeResult<FrameListInfo> decode_frame_list(const Chunk&, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<FrameListInfo> decode_frame_list(const Chunk&,
+                                                            std::span<const std::byte>);
 [[nodiscard]] DecodeResult<AtomicInfo> decode_atomic(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<MaterialInfo> decode_material(const Chunk&, std::span<const std::byte>);
-[[nodiscard]] DecodeResult<MaterialListInfo> decode_material_list(const Chunk&, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<MaterialListInfo> decode_material_list(const Chunk&,
+                                                                  std::span<const std::byte>);
 [[nodiscard]] DecodeResult<TextureInfo> decode_texture(const Chunk&, std::span<const std::byte>);
-[[nodiscard]] DecodeResult<MaterialEffectsInfo> decode_material_effects(
-    const Chunk&, std::uint32_t owner_type, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<MaterialEffectsInfo>
+decode_material_effects(const Chunk&, std::uint32_t owner_type, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<HAnimInfo> decode_hanim(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<BinMeshInfo> decode_bin_mesh(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<CollisionTreeInfo> decode_collision_tree(const Chunk&,
                                                                     std::span<const std::byte>);
-[[nodiscard]] DecodeResult<TableOfContentsInfo> decode_table_of_contents(const Chunk&,
-                                                                         std::span<const std::byte>);
-[[nodiscard]] DecodeResult<RightToRenderInfo> decode_right_to_render(const Chunk&, std::span<const std::byte>);
-[[nodiscard]] DecodeResult<AnisotropyInfo> decode_anisotropy(const Chunk&, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<TableOfContentsInfo>
+decode_table_of_contents(const Chunk&, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<RightToRenderInfo> decode_right_to_render(const Chunk&,
+                                                                     std::span<const std::byte>);
+[[nodiscard]] DecodeResult<AnisotropyInfo> decode_anisotropy(const Chunk&,
+                                                             std::span<const std::byte>);
 [[nodiscard]] DecodeResult<SkinInfo> decode_skin(const Chunk&, std::int32_t vertex_count,
                                                  std::span<const std::byte>);
 [[nodiscard]] DecodeResult<UserDataInfo> decode_user_data(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<PhysicsBodyDefInfo> decode_physics_body_def(const Chunk&,
                                                                        std::span<const std::byte>);
-[[nodiscard]] DecodeResult<PhysicsRagdollDefInfo> decode_physics_ragdoll_def(const Chunk&,
-                                                                             std::span<const std::byte>);
-[[nodiscard]] DecodeResult<PyroExtensionInfo> decode_pyro_extension(const Chunk&,
-                                                                    std::uint32_t owner_type,
-                                                                    std::span<const std::byte>);
+[[nodiscard]] DecodeResult<PhysicsRagdollDefInfo>
+decode_physics_ragdoll_def(const Chunk&, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<PyroExtensionInfo>
+decode_pyro_extension(const Chunk&, std::uint32_t owner_type, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<GeometryInfo> decode_geometry(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<TriangleInfo> decode_triangle(const GeometryInfo&, std::int32_t index,
                                                          std::span<const std::byte>);
 [[nodiscard]] DecodeResult<WorldInfo> decode_world(const Chunk&, std::span<const std::byte>);
-[[nodiscard]] DecodeResult<PlaneSectorInfo> decode_plane_sector(const Chunk&, std::span<const std::byte>);
-[[nodiscard]] DecodeResult<WorldSectorInfo> decode_world_sector(const Chunk&, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<PlaneSectorInfo> decode_plane_sector(const Chunk&,
+                                                                std::span<const std::byte>);
+[[nodiscard]] DecodeResult<WorldSectorInfo> decode_world_sector(const Chunk&,
+                                                                std::span<const std::byte>);
 
 } // namespace rws

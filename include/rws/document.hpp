@@ -7,9 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
-#include <optional>
 #include <vector>
 
 namespace rws {
@@ -31,8 +31,8 @@ enum class SceneInstanceFlag : std::uint32_t {
     scene_registered = 0x400,
 };
 
-[[nodiscard]] constexpr bool has_scene_instance_flag(
-    const std::uint32_t flags, const SceneInstanceFlag flag) noexcept {
+[[nodiscard]] constexpr bool has_scene_instance_flag(const std::uint32_t flags,
+                                                     const SceneInstanceFlag flag) noexcept {
     return (flags & static_cast<std::uint32_t>(flag)) != 0;
 }
 
@@ -71,7 +71,9 @@ public:
     [[nodiscard]] const std::vector<SceneInstance>& scene_instances() const noexcept {
         return scene_instances_;
     }
-    [[nodiscard]] const std::vector<Diagnostic>& diagnostics() const noexcept { return diagnostics_; }
+    [[nodiscard]] const std::vector<Diagnostic>& diagnostics() const noexcept {
+        return diagnostics_;
+    }
     [[nodiscard]] bool dirty() const noexcept { return dirty_; }
 
 private:

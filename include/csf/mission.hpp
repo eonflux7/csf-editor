@@ -44,6 +44,7 @@ enum class DependencyKind {
     texture_directory,
     sky_model,
     render_model,
+    collision_shape,
     physics_body,
     animation,
     texture,
@@ -101,10 +102,15 @@ public:
     void add_root(const std::filesystem::path& root);
     void build();
 
-    [[nodiscard]] const std::vector<std::filesystem::path>& roots() const noexcept { return roots_; }
-    [[nodiscard]] const std::vector<IndexedResource>& resources() const noexcept { return resources_; }
-    [[nodiscard]] Resolution resolve(std::string_view reference,
-                                     std::optional<std::size_t> preferred_root = std::nullopt) const;
+    [[nodiscard]] const std::vector<std::filesystem::path>& roots() const noexcept {
+        return roots_;
+    }
+    [[nodiscard]] const std::vector<IndexedResource>& resources() const noexcept {
+        return resources_;
+    }
+    [[nodiscard]] Resolution
+    resolve(std::string_view reference,
+            std::optional<std::size_t> preferred_root = std::nullopt) const;
     [[nodiscard]] std::vector<std::size_t> find_path(const std::filesystem::path& path) const;
 
     [[nodiscard]] static std::string normalize(std::string_view path);
@@ -173,11 +179,15 @@ public:
     [[nodiscard]] static MissionGraph load(const MissionOptions& options);
 
     [[nodiscard]] const std::filesystem::path& scene_path() const noexcept { return scene_path_; }
-    [[nodiscard]] const std::filesystem::path& package_root() const noexcept { return package_root_; }
+    [[nodiscard]] const std::filesystem::path& package_root() const noexcept {
+        return package_root_;
+    }
     [[nodiscard]] const ResourceIndex& index() const noexcept { return index_; }
     [[nodiscard]] const std::vector<ResourceNode>& nodes() const noexcept { return nodes_; }
     [[nodiscard]] const std::vector<DependencyEdge>& edges() const noexcept { return edges_; }
-    [[nodiscard]] const std::vector<MissionDiagnostic>& diagnostics() const noexcept { return diagnostics_; }
+    [[nodiscard]] const std::vector<MissionDiagnostic>& diagnostics() const noexcept {
+        return diagnostics_;
+    }
     [[nodiscard]] std::vector<const DependencyEdge*> uses(const std::filesystem::path& path) const;
 
 private:

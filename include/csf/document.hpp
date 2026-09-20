@@ -89,10 +89,14 @@ public:
     [[nodiscard]] std::span<const std::byte> bytes() const noexcept { return bytes_; }
     [[nodiscard]] const Header& header() const noexcept { return header_; }
     [[nodiscard]] const std::vector<Entry>& entries() const noexcept { return entries_; }
-    [[nodiscard]] const std::vector<RawString>& identifiers() const noexcept { return identifiers_; }
+    [[nodiscard]] const std::vector<RawString>& identifiers() const noexcept {
+        return identifiers_;
+    }
     [[nodiscard]] const std::vector<RawString>& strings() const noexcept { return strings_; }
     [[nodiscard]] const std::vector<Node>& roots() const noexcept { return roots_; }
-    [[nodiscard]] const std::vector<Diagnostic>& diagnostics() const noexcept { return diagnostics_; }
+    [[nodiscard]] const std::vector<Diagnostic>& diagnostics() const noexcept {
+        return diagnostics_;
+    }
     [[nodiscard]] std::span<const std::byte> trailing_bytes() const noexcept;
     [[nodiscard]] ParseState state() const noexcept { return state_; }
     [[nodiscard]] bool has_errors() const noexcept;

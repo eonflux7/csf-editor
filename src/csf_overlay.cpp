@@ -10,7 +10,8 @@ std::optional<OverlayPick> pick_overlay(const std::span<const ScreenOverlayPrimi
                                         const float mouse_x, const float mouse_y,
                                         const float threshold_pixels) noexcept {
     if (!std::isfinite(mouse_x) || !std::isfinite(mouse_y) || !std::isfinite(threshold_pixels) ||
-        threshold_pixels < 0) return std::nullopt;
+        threshold_pixels < 0)
+        return std::nullopt;
     float best_squared = threshold_pixels * threshold_pixels;
     std::uint8_t best_priority = std::numeric_limits<std::uint8_t>::max();
     std::optional<std::uint32_t> best;
@@ -20,10 +21,14 @@ std::optional<OverlayPick> pick_overlay(const std::span<const ScreenOverlayPrimi
         if (primitive.kind == OverlayPrimitiveKind::segment) {
             const float vx = primitive.x2 - primitive.x1, vy = primitive.y2 - primitive.y1;
             const float length_squared = vx * vx + vy * vy;
-            const float t = length_squared > 0 ? std::clamp(
-                ((mouse_x - primitive.x1) * vx + (mouse_y - primitive.y1) * vy) / length_squared,
-                0.0F, 1.0F) : 0.0F;
-            closest_x += t * vx; closest_y += t * vy;
+            const float t =
+                length_squared > 0
+                    ? std::clamp(((mouse_x - primitive.x1) * vx + (mouse_y - primitive.y1) * vy) /
+                                     length_squared,
+                                 0.0F, 1.0F)
+                    : 0.0F;
+            closest_x += t * vx;
+            closest_y += t * vy;
         }
         const float dx = closest_x - mouse_x, dy = closest_y - mouse_y;
         const float distance_squared = dx * dx + dy * dy;

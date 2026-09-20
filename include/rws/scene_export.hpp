@@ -29,19 +29,19 @@ struct SceneExportStats {
 // baked into vertex positions, World Sectors remain separate nodes, and UV0/
 // UV1 are exported as TEXCOORD_0/TEXCOORD_1. A sibling manifest records the
 // original RWS offsets and base/lightmap texture names for round-trip tooling.
-[[nodiscard]] SceneExportStats export_scene_gltf(
-    const std::vector<Chunk>& chunks, std::span<const SceneInstance> instances,
-    std::span<const std::byte> bytes,
-    const std::filesystem::path& output_path);
+[[nodiscard]] SceneExportStats export_scene_gltf(const std::vector<Chunk>& chunks,
+                                                 std::span<const SceneInstance> instances,
+                                                 std::span<const std::byte> bytes,
+                                                 const std::filesystem::path& output_path);
 
 // Exports every Atomic belonging to one Clump, with the same layout and
 // manifest as the whole-scene export.
-[[nodiscard]] SceneExportStats export_clump_gltf(
-    const Chunk& clump, std::span<const std::byte> bytes,
-    const std::filesystem::path& output_path);
+[[nodiscard]] SceneExportStats export_clump_gltf(const Chunk& clump,
+                                                 std::span<const std::byte> bytes,
+                                                 const std::filesystem::path& output_path);
 
-[[nodiscard]] SceneExportStats export_collision_gltf(
-    const std::vector<Chunk>& chunks, std::span<const std::byte> bytes,
-    const std::filesystem::path& output_path);
+[[nodiscard]] SceneExportStats export_collision_gltf(const std::vector<Chunk>& chunks,
+                                                     std::span<const std::byte> bytes,
+                                                     const std::filesystem::path& output_path);
 
 } // namespace rws
