@@ -23,11 +23,33 @@ The established projections are:
 
 - `.MUNDOVIS` scalar environment fields and `.PLAYER`/`.INICIO_*` metadata;
 - `.BICHOS` actor records, including ID, class, transform, collision, flags,
-  optional script, and navigation cell;
+  secondary-explosion setting, optional faction/portrait, explicit animation
+  bindings, door box, optional script, and navigation cell;
 - `.MALLA_NAVEGACION` groups, points, local links, and cross-group links;
 - `.MALLA_DUMMIES` records and nested folder memberships;
-- `.MALLA_AREAS` polygon points and established height/flag fields;
-- `.MALLA_LUCES` position, color, modulation, and radius.
+- `.MALLA_AREAS` polygon points, height/flag fields, occlusion, and reverb fields;
+- `.MALLA_LUCES` position, color, modulation, and radius;
+- `.EFECTOS` ID, class, dummy placement, priority, and share-group records.
+
+The GUI presents these typed values before the raw subtree. It draws orientation
+and navigation arrows, extrudes area outlines by their height, uses each SCN light
+color, places effects through an exact dummy-ID join, and exposes dummy/light
+folder membership with per-folder visibility controls. Missing or ambiguous
+effect dummy references remain visible as diagnostics rather than being guessed.
+
+## Placement and rotation conventions
+
+Actor `.ANGULO` and `.ANGULO_X` values are degrees. Navigation-point and dummy
+`.ROT`/`.ROT_X` values are radians and are not inferred from their magnitude or
+implicitly normalized. The viewport converts actor angles exactly once at the
+model/overlay boundary.
+
+An actor with a non-negative, uniquely resolved `.CELDA` group/point uses that
+navigation point as its effective spawn position. Actor `.POS` remains visible as
+the authored fallback and is used when the cell is absent, negative, ambiguous,
+or has no position. The reference corpus stores identical `.POS` and cell-point
+positions for every resolvable actor, but the editor keeps both values distinct
+so modified files expose a disagreement instead of silently losing it.
 
 No record is promoted to a camera, player-start position, or zone volume solely
 because its name suggests that role.
@@ -65,7 +87,7 @@ csf-info mission Mission.scn --scene-json new-overlay.json
 
 `--scene-json` uses schema `csf-mission-scene-1` and includes source identities,
 environment fields, actor records, retained unknown fields, complete navigation
-topology and validation counters, dummies, area polygons, lights, folder
+topology and validation counters, dummies, area polygons, lights, effects, folder
 memberships, and typed diagnostics. Non-finite floating-point values serialize
 as `null` with a diagnostic. It refuses an existing path and publishes through
 an exclusively created same-directory temporary file.
@@ -74,5 +96,6 @@ an exclusively created same-directory temporary file.
 
 A read-only scan of the 21 locally available SCNs produced 3,564 actors, 1,714
 navigation groups, 17,201 points, 8,070 valid connections, 5,295 dummies, 1,404
-areas, and 1,382 lights. No connection referenced a missing group/point in that
-corpus. These are observations, not parser limits or fixture expectations.
+areas, 1,382 lights, and 2,055 effect records. No connection referenced a missing
+group/point in that corpus. These are observations, not parser limits or fixture
+expectations.

@@ -114,6 +114,7 @@ public:
     [[nodiscard]] std::vector<std::size_t> find_path(const std::filesystem::path& path) const;
 
     [[nodiscard]] static std::string normalize(std::string_view path);
+    [[nodiscard]] static std::string normalize_path(const std::filesystem::path& path);
 
 private:
     std::vector<std::filesystem::path> roots_;
@@ -160,6 +161,36 @@ struct AdapterResult {
     std::vector<MissionDiagnostic> diagnostics;
 };
 
+struct TextureCatalogEntry {
+    std::string reference;
+    std::filesystem::path resolved_path;
+    std::string family_key;
+    std::uint32_t variant{};
+    SourceLocation source;
+};
+
+// A mission TXL is a flat list of package-root-relative texture paths.  Material
+// texture names are normally bare stems, so the catalog provides the missing
+// path association and groups Foo_AltNNN images as variants of Foo.  Extension
+// changes between a base texture and an alternative are intentional in shipped
+// data and therefore do not affect family matching.
+class TextureCatalog {
+public:
+    void add(const AdapterResult& txl, const ResourceIndex& resources,
+             std::optional<std::size_t> preferred_root = std::nullopt);
+
+    [[nodiscard]] const std::vector<TextureCatalogEntry>& entries() const noexcept {
+        return entries_;
+    }
+    [[nodiscard]] std::optional<std::filesystem::path>
+    resolve(std::string_view texture_name, std::uint32_t variant = 0) const;
+    [[nodiscard]] std::vector<std::uint32_t> variants(std::string_view texture_name) const;
+    [[nodiscard]] std::uint32_t maximum_variant() const noexcept;
+
+private:
+    std::vector<TextureCatalogEntry> entries_;
+};
+
 [[nodiscard]] AdapterResult read_vis(const std::filesystem::path& path);
 [[nodiscard]] AdapterResult read_txl(const std::filesystem::path& path);
 [[nodiscard]] AdapterResult read_m3d(const std::filesystem::path& path);
@@ -183,6 +214,7 @@ public:
         return package_root_;
     }
     [[nodiscard]] const ResourceIndex& index() const noexcept { return index_; }
+    [[nodiscard]] const TextureCatalog& textures() const noexcept { return textures_; }
     [[nodiscard]] const std::vector<ResourceNode>& nodes() const noexcept { return nodes_; }
     [[nodiscard]] const std::vector<DependencyEdge>& edges() const noexcept { return edges_; }
     [[nodiscard]] const std::vector<MissionDiagnostic>& diagnostics() const noexcept {
@@ -194,6 +226,7 @@ private:
     std::filesystem::path scene_path_;
     std::filesystem::path package_root_;
     ResourceIndex index_;
+    TextureCatalog textures_;
     std::vector<ResourceNode> nodes_;
     std::vector<DependencyEdge> edges_;
     std::vector<MissionDiagnostic> diagnostics_;

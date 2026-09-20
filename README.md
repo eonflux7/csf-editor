@@ -1,7 +1,7 @@
 # csf-rws-tools
 
-csf-rws-tools is a Windows inspection and reverse-engineering toolkit for
-RenderWare Binary Stream (`.rws`) assets from *Commandos: Strike Force*. It
+csf-rws-tools is a Windows and Linux inspection and reverse-engineering toolkit
+for RenderWare Binary Stream (`.rws`) assets from *Commandos: Strike Force*. It
 provides the `rws-man` graphical chunk browser and 3D scene preview, command-line
 analysis tools, OBJ/glTF export, and a Blender add-on for inspecting and rebaking
 the game's lightmaps.
@@ -31,8 +31,9 @@ that partially understood assets can still be inspected safely.
 - A Dear ImGui desktop application with a chunk tree, typed inspectors, hex
   editing, drag-and-drop loading, and save-to-copy behavior.
 - Depth-tested OpenGL previews for individual geometry and assembled scenes,
-  including DDS base textures, secondary-UV lightmaps, material diagnostics, and
-  wireframe modes. Map previews automatically discover a same-directory
+  including DDS and PNG base textures, secondary-UV lightmaps, material
+  diagnostics, and wireframe modes. Map previews automatically discover a
+  same-directory
   `_col.rws` sibling and can show its recovered level collision as a translucent,
   surface-colored, wireframe, or X-ray overlay.
 - Shared, range-checked World-sector and validated BSP topology recovery used by the GUI, glTF exporter,
@@ -71,20 +72,39 @@ The generic container grammar is recorded in
 
 ## Requirements
 
-- Windows x64.
+Windows x64:
+
 - Visual Studio Build Tools 2026 (18.9.2) with the **Desktop development with
   C++** workload.
-- CMake 3.24 or newer, available on `PATH`.
-- Git, available on `PATH`.
-- An OpenGL-capable graphics driver for the GUI.
 
-CMake downloads the pinned GLFW 3.4 and Dear ImGui 1.91.9b sources the first time
-the GUI build is configured. The core-only build does not require GLFW, ImGui, or
-OpenGL.
+Linux:
+
+- GCC 13+ or Clang 16+ with C++20 support, plus Ninja and `pkg-config`.
+- X11 and/or Wayland development headers and an OpenGL-capable driver for the GUI.
+  On Fedora:
+
+  ```bash
+  sudo dnf install mesa-libGL-devel mesa-libEGL-devel libglvnd-devel \
+      libX11-devel libXext-devel libXrandr-devel libXi-devel libXcursor-devel \
+      libXinerama-devel libXxf86vm-devel libXrender-devel libXfixes-devel libxcb-devel \
+      xorg-x11-proto-devel wayland-devel wayland-protocols-devel libxkbcommon-devel
+  ```
+
+Both platforms:
+
+- CMake 3.24 or newer, available on `PATH`.
+- Git, available on `PATH` (used to fetch the pinned dependencies).
+
+CMake downloads the pinned GLFW 3.4, Dear ImGui 1.91.9b, and stb_image sources
+the first time the build is configured. stb_image supplies portable PNG decoding,
+so no system image library is required on either platform. The core-only build
+does not require GLFW, ImGui, or OpenGL.
 
 ## Quick start
 
-Open PowerShell in the repository root:
+Open PowerShell on Windows or a terminal on Linux in the repository root.
+
+Windows:
 
 ```powershell
 .\build.ps1
@@ -92,7 +112,15 @@ Open PowerShell in the repository root:
 .\build\Release\rws-man.exe "C:\path\to\asset.rws"
 ```
 
-You can also start `rws-man.exe` without an argument and drag an `.rws` or `.rpc` file onto
+Linux:
+
+```bash
+./build.sh
+./test.sh
+./build/Release/rws-man "/path/to/asset.rws"
+```
+
+You can also start the GUI without an argument and drag an `.rws` or `.rpc` file onto
 the window.
 
 Both scripts build **Release** by default. They use the checked-in CMake presets,
@@ -118,8 +146,27 @@ missing. Useful variants are:
 .\test.ps1 -NoBuild
 ```
 
-Full-build executables are written to `build\<Config>`. Core-only executables are
-written to `build-core\<Config>`.
+```bash
+# Debug build and tests
+./build.sh --config Debug
+./test.sh --config Debug
+
+# Build only the GUI and its dependencies
+./build.sh --target rws-man
+
+# Build the parser, command-line tools, and tests without GUI dependencies
+./build.sh --core-only
+./test.sh --core-only
+
+# Force CMake to configure the selected build tree again
+./build.sh --reconfigure
+
+# Run tests without rebuilding the test executable
+./test.sh --no-build
+```
+
+Full-build executables are written to `build/<Config>`. Core-only executables are
+written to `build-core/<Config>`.
 
 ## Command-line usage
 
@@ -127,6 +174,8 @@ written to `build-core\<Config>`.
 
 `csf-info` selects the parser by the `CSFFBS` magic rather than the filename
 extension. It is read-only and returns a nonzero status for structural errors.
+
+Windows:
 
 ```powershell
 $document = "C:\path\to\mission.scn"
@@ -140,6 +189,20 @@ $document = "C:\path\to\mission.scn"
 .\build\Release\csf-info.exe corpus "C:\path\to\extracted-game"
 ```
 
+Linux:
+
+```bash
+document="/path/to/mission.scn"
+./build/Release/csf-info "$document" --summary
+./build/Release/csf-info "$document" --validate
+./build/Release/csf-info "$document" --tree
+./build/Release/csf-info "$document" --strings
+./build/Release/csf-info "$document" --find RUTA_Garita
+./build/Release/csf-info "$document" --export-text "/path/to/new-output.scn.txt"
+./build/Release/csf-info "$document" --export-json "/path/to/new-output.scn.json"
+./build/Release/csf-info corpus "/path/to/extracted-game"
+```
+
 Use `-` as an export destination to write the inspection format to standard
 output. File exports refuse the input path and any destination that already
 exists. The recursive corpus report sniffs every regular file by magic and emits
@@ -151,6 +214,8 @@ Mission mode builds a read-only dependency graph from an SCN path or a mission
 directory. Package-local paths take precedence, matching is Windows-like and
 case-insensitive, and every mapped, missing, ambiguous, or case-mismatched edge
 retains its source file and byte offset.
+
+Windows:
 
 ```powershell
 $scene = "C:\path\to\extracted-game\Ambush\Maps\ST08\Ambush.scn"
@@ -175,6 +240,31 @@ $root = "C:\path\to\extracted-game"
 .\build\Release\csf-info.exe compare $scene "C:\path\to\another.scn"
 ```
 
+Linux:
+
+```bash
+scene="/path/to/extracted-game/Ambush/Maps/ST08/Ambush.scn"
+root="/path/to/extracted-game"
+
+./build/Release/csf-info mission "$scene" --summary
+./build/Release/csf-info mission "$scene" --dependencies
+./build/Release/csf-info mission "$scene" --missing
+./build/Release/csf-info mission "$scene" --graph "/path/to/new-mission-graph.json"
+./build/Release/csf-info mission "$scene" --objects
+./build/Release/csf-info mission "$scene" --navigation
+./build/Release/csf-info mission "$scene" --spatial
+./build/Release/csf-info mission "$scene" --symbols class:55
+./build/Release/csf-info mission "$scene" --scene-json "/path/to/new-mission-scene.json"
+./build/Release/csf-info mission "$scene" --summary --root "$root"
+./build/Release/csf-info mission "$scene" --summary --package-root "/path/to/package"
+./build/Release/csf-info mission "$scene" --summary --duplicates
+./build/Release/csf-info animations "/path/to/BDD/Anims.bdd" --root "$root"
+./build/Release/csf-info script-animations "/path/to/mission.gsc"
+./build/Release/csf-info cutscene "/path/to/mission.csc"
+./build/Release/csf-info uses "Ambush/Models/Char/Espia.rpc" --root "$root"
+./build/Release/csf-info compare "$scene" "/path/to/another.scn"
+```
+
 Graph export refuses an existing destination. VIS, TXL, M3D, AND, and the
 validated path portions of PHD have bounded adapters; unparsed bytes and partial
 PHD schema status remain explicit. See [Mission resolution](docs/mission-resolution.md)
@@ -192,8 +282,16 @@ report or `csf-info cmo file.cmo` for the source-backed collision-shape view.
 
 Running `rws-info` with only a file prints its complete chunk tree:
 
+Windows:
+
 ```powershell
 .\build\Release\rws-info.exe "C:\path\to\asset.rws"
+```
+
+Linux:
+
+```bash
+./build/Release/rws-info "/path/to/asset.rws"
 ```
 
 Additional modes are:
@@ -217,6 +315,8 @@ Additional modes are:
 
 Examples:
 
+Windows:
+
 ```powershell
 $asset = "C:\path\to\map.rws"
 $output = "C:\path\to\exports"
@@ -233,14 +333,40 @@ $output = "C:\path\to\exports"
 .\build\Release\rws-info.exe $asset --export-clump-gltf 0x1234 "$output\clump.gltf"
 ```
 
+Linux:
+
+```bash
+asset="/path/to/map.rws"
+output="/path/to/exports"
+
+./build/Release/rws-info "$asset" --summary
+./build/Release/rws-info "$asset" --world-report
+./build/Release/rws-info "$asset" --bsp-report
+./build/Release/rws-info "$asset" --instances
+./build/Release/rws-info "$asset" --validate-types
+./build/Release/rws-info "$asset" --export-obj "$output/obj"
+./build/Release/rws-info "$asset" --export-scene-gltf "$output/map.gltf"
+./build/Release/rws-info "$asset" --export-collision-gltf "$output/map.collision.gltf"
+./build/Release/rws-info "$asset" --export-collision-obj "$output/map.collision.obj"
+./build/Release/rws-info "$asset" --export-clump-gltf 0x1234 "$output/clump.gltf"
+```
+
 ### Scan an extracted corpus
 
 `rws-corpus` recursively scans `.rws` and `.rpc` files and prints a tab-separated per-file
 report including declared/recovered World totals and recovery status, followed by
 root-format, chunk-type, diagnostic, scene-instance, and aggregate World-recovery totals:
 
+Windows:
+
 ```powershell
 .\build\Release\rws-corpus.exe "C:\path\to\extracted-game"
+```
+
+Linux:
+
+```bash
+./build/Release/rws-corpus "/path/to/extracted-game"
 ```
 
 It is read-only: it does not modify the files it scans.
@@ -256,11 +382,14 @@ panels so the viewport uses the full application content area.
 
 Open an SCN with `File > Open mission...` (`Ctrl+Shift+O`) or drop it on the
 window to enter the Mission workspace. The resolved visual and collision maps
-load together. Actors, navigation points/links, dummies, area outlines, and
-light-radius rings share the existing 3D camera and work in perspective and all
-orthographic projections. The `Overlays` menu controls each layer independently.
-Clicking a marker or line selects its stable SCN entry; the right inspector shows
-its raw CSFFBS subtree and exact class/name definition or candidate sites. The
+load together. Actors, navigation points/links, dummies, extruded areas,
+SCN-colored light-radius rings, and effects placed through referenced dummies
+share the existing 3D camera and work in perspective and all orthographic
+projections. Orientation and navigation arrows expose record direction. The
+`Overlays` menu controls each layer independently, while SCN folders can hide or
+show their dummy/light members. Clicking a marker or line selects its stable SCN
+entry; the right inspector shows typed details, its raw CSFFBS subtree, and exact
+class/name definition or candidate sites. The
 left mission tree provides case-insensitive search over names, IDs, class IDs,
 scripts, groups, and navigation points.
 
@@ -287,9 +416,13 @@ advanced options kept in its **Options** popup.
 The preview offers textured, material-index, material-color, UV-checker,
 lightmap-UV, lightmap-only, combined base/lightmap, and wireframe views. Its DDS
 loader accepts legacy DXT1, DXT3, DXT5, 16-bit mask-based RGB/RGBA, and 32-bit
-mask-based RGB/RGBA images. Base
-textures use UV1 (`TEXCOORD_0`) and MatFX lightmaps use UV2 (`TEXCOORD_1`). DDS
-textures are resolved from a `Textures` directory beside the loaded asset.
+mask-based RGB/RGBA images, and its portable PNG loader accepts standard PNG
+images. Base
+textures use UV1 (`TEXCOORD_0`) and MatFX lightmaps use UV2 (`TEXCOORD_1`). In a
+mission, DDS and PNG textures first use the package-relative paths listed by its
+`.txl`; the preview falls back to nearby `Textures` directories when no TXL
+entry matches. TXL `_AltNNN` families are selectable in **Viewport tools**, with
+per-texture fallback to the base image.
 
 When `NAME.rws` is opened, the GUI first checks for `NAME_col.rws` in the same
 directory. A valid companion remains a separate read-only document; a missing,
@@ -433,8 +566,16 @@ Keep parsing and export logic in `rws_core`; the GUI and console programs should
 remain clients of that library. Parser, decoder, or exporter changes should add or
 update coverage in `tests/document_tests.cpp` and pass:
 
+Windows:
+
 ```powershell
 .\test.ps1
+```
+
+Linux:
+
+```bash
+./test.sh
 ```
 
 Generated `build*`, `_deps`, and Python `__pycache__` content must not be committed.

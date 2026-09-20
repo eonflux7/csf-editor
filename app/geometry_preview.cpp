@@ -1,6 +1,16 @@
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+// clang-format off
+// windows.h must precede the headers below; they depend on its declarations.
+#include <windows.h>
+// clang-format on
+#endif
+
 #include "geometry_preview.hpp"
 #include "csf/overlay.hpp"
 #include "rws/physics_inspection.hpp"
+#include "rws/texture_image.hpp"
 #include "rws/world_recovery.hpp"
 
 #include <GLFW/glfw3.h>
@@ -13,8 +23,9 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -65,6 +76,12 @@ constexpr GLenum gl_texture0 = 0x84C0;
 constexpr GLenum gl_texture1 = gl_texture0 + 1;
 constexpr GLenum gl_texture_max_anisotropy = 0x84FE;
 constexpr GLenum gl_max_texture_max_anisotropy = 0x84FF;
+constexpr std::uint64_t actor_owner_mask = 0x8000000000000000ULL;
+
+std::optional<std::uint32_t> actor_owner(const std::uint64_t owner_offset) {
+    if ((owner_offset & actor_owner_mask) == 0) return std::nullopt;
+    return static_cast<std::uint32_t>(owner_offset & ~actor_owner_mask);
+}
 
 struct GlApi {
     CreateShaderProc create_shader{};
@@ -216,6 +233,90 @@ std::array<float, 12> draw_transform(const AffineTransform& value) {
             value.rotation[6], value.rotation[7], value.rotation[8], value.position.z};
 }
 
+AffineTransform draw_matrix_transform(const std::array<float, 12>& value) {
+    return {{{value[0], value[1], value[2], value[4], value[5], value[6], value[8], value[9],
+              value[10]}},
+            {value[3], value[7], value[11]}};
+}
+
+AffineTransform matrix_transform(const std::array<float, 16>& value) {
+    return {{{value[0], value[4], value[8], value[1], value[5], value[9], value[2], value[6],
+              value[10]}},
+            {value[12], value[13], value[14]}};
+}
+
+std::string normalized_bone_name(std::string value) {
+    std::ranges::transform(value, value.begin(), [](const unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    value.erase(std::remove_if(value.begin(), value.end(), [](const unsigned char c) {
+                    return !std::isalnum(c);
+                }),
+                value.end());
+    return value;
+}
+
+std::vector<std::string> frame_labels(const rws::Chunk& frame_list,
+                                      const std::span<const std::byte> bytes,
+                                      const std::size_t frame_count) {
+    std::vector<std::string> result(frame_count);
+    std::size_t frame{};
+    for (const auto& extension : frame_list.children) {
+        if (extension.type != 0x03 || frame >= result.size()) continue;
+        for (const auto& plugin : extension.children) {
+            if (plugin.type != 0x11F) continue;
+            const auto decoded = rws::decode_user_data(plugin, bytes);
+            if (!decoded) continue;
+            for (const auto& array : decoded.value->arrays) {
+                for (const auto& value : array.strings) {
+                    const auto normalized = normalized_bone_name(value);
+                    if (normalized.find("BONE") != std::string::npos ||
+                        normalized.find("BIP") != std::string::npos ||
+                        normalized.find("HAND") != std::string::npos ||
+                        normalized.find("MANO") != std::string::npos) {
+                        result[frame] = value;
+                        break;
+                    }
+                    if (result[frame].empty()) result[frame] = value;
+                }
+                if (!result[frame].empty()) break;
+            }
+        }
+        ++frame;
+    }
+    return result;
+}
+
+std::optional<std::size_t> find_hand_frame(const rws::HAnimBinding& binding,
+                                           const std::span<const std::string> labels,
+                                           const bool left_hand) {
+    const auto matches = [&](const std::string& value) {
+        const auto name = normalized_bone_name(value);
+        const bool hand = name.find("HAND") != std::string::npos ||
+                          name.find("MANO") != std::string::npos;
+        const bool left = name.find("LEFT") != std::string::npos ||
+                          name.find("IZQ") != std::string::npos ||
+                          name.find("LHAND") != std::string::npos;
+        const bool right = name.find("RIGHT") != std::string::npos ||
+                           name.find("DER") != std::string::npos ||
+                           name.find("RHAND") != std::string::npos;
+        return hand && (left_hand ? left && !right : right && !left);
+    };
+    for (std::size_t frame = 0; frame < labels.size(); ++frame)
+        if (matches(labels[frame])) return frame;
+
+    const std::string attachment_tag = left_hand ? "TAG50" : "TAG40";
+    for (std::size_t frame = 0; frame < labels.size(); ++frame)
+        if (normalized_bone_name(labels[frame]).find(attachment_tag) != std::string::npos)
+            return frame;
+
+    // Some unmodified RenderWare humanoids retain the standard hand node IDs.
+    const std::int32_t wanted = left_hand ? 23 : 33;
+    for (std::size_t frame = 0; frame < binding.frame_node_ids.size(); ++frame)
+        if (binding.frame_node_ids[frame] == wanted) return frame;
+    return std::nullopt;
+}
+
 rws::Vec3 transform_draw_point(const std::array<float, 12>& m, const rws::Vec3 p) {
     return {m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3],
             m[4] * p.x + m[5] * p.y + m[6] * p.z + m[7],
@@ -294,212 +395,6 @@ std::array<std::uint8_t, 4> collision_surface_color(std::string name,
             static_cast<std::uint8_t>((packed >> IM_COL32_B_SHIFT) & 0xFFU), 255};
 }
 
-std::uint16_t read_u16(const std::vector<std::byte>& bytes, const std::size_t offset) {
-    return static_cast<std::uint16_t>(std::to_integer<std::uint16_t>(bytes[offset]) |
-                                      (std::to_integer<std::uint16_t>(bytes[offset + 1]) << 8U));
-}
-
-std::uint32_t read_u32(const std::vector<std::byte>& bytes, const std::size_t offset) {
-    return std::to_integer<std::uint32_t>(bytes[offset]) |
-           (std::to_integer<std::uint32_t>(bytes[offset + 1]) << 8U) |
-           (std::to_integer<std::uint32_t>(bytes[offset + 2]) << 16U) |
-           (std::to_integer<std::uint32_t>(bytes[offset + 3]) << 24U);
-}
-
-std::array<std::uint8_t, 4> color_565(const std::uint16_t value) {
-    const auto r = static_cast<std::uint8_t>((value >> 11U) & 31U);
-    const auto g = static_cast<std::uint8_t>((value >> 5U) & 63U);
-    const auto b = static_cast<std::uint8_t>(value & 31U);
-    return {static_cast<std::uint8_t>((r << 3U) | (r >> 2U)),
-            static_cast<std::uint8_t>((g << 2U) | (g >> 4U)),
-            static_cast<std::uint8_t>((b << 3U) | (b >> 2U)), 255};
-}
-
-std::uint8_t masked_channel(const std::uint32_t value, const std::uint32_t mask,
-                            const std::uint8_t fallback) {
-    if (mask == 0) return fallback;
-    const auto shift = std::countr_zero(mask);
-    const auto maximum = mask >> shift;
-    if (maximum == 0) return fallback;
-    return static_cast<std::uint8_t>(((value & mask) >> shift) * 255U / maximum);
-}
-
-bool decode_dds(const std::filesystem::path& path, int& width, int& height,
-                std::vector<std::uint8_t>& rgba, std::string& error) {
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        error = "Cannot open " + path.string();
-        return false;
-    }
-    stream.seekg(0, std::ios::end);
-    const auto file_size = stream.tellg();
-    if (file_size < 0) {
-        error = "Cannot determine DDS size for " + path.string();
-        return false;
-    }
-    std::vector<std::byte> bytes(static_cast<std::size_t>(file_size));
-    stream.seekg(0, std::ios::beg);
-    if (!bytes.empty() && !stream.read(reinterpret_cast<char*>(bytes.data()), file_size)) {
-        error = "Cannot read " + path.string();
-        return false;
-    }
-    if (bytes.size() < 128 || std::to_integer<char>(bytes[0]) != 'D' ||
-        std::to_integer<char>(bytes[1]) != 'D' || std::to_integer<char>(bytes[2]) != 'S' ||
-        std::to_integer<char>(bytes[3]) != ' ') {
-        error = "Invalid DDS header in " + path.string();
-        return false;
-    }
-    width = static_cast<int>(read_u32(bytes, 16));
-    height = static_cast<int>(read_u32(bytes, 12));
-    const std::string fourcc{std::to_integer<char>(bytes[84]), std::to_integer<char>(bytes[85]),
-                             std::to_integer<char>(bytes[86]), std::to_integer<char>(bytes[87])};
-    constexpr std::uint32_t ddpf_alpha_pixels = 0x01U;
-    constexpr std::uint32_t ddpf_fourcc = 0x04U;
-    constexpr std::uint32_t ddpf_rgb = 0x40U;
-    const auto pixel_flags = read_u32(bytes, 80);
-    const auto rgb_bits = read_u32(bytes, 88);
-    const auto red_mask = read_u32(bytes, 92), green_mask = read_u32(bytes, 96);
-    const auto blue_mask = read_u32(bytes, 100), alpha_mask = read_u32(bytes, 104);
-    const bool dxt1 = (pixel_flags & ddpf_fourcc) && fourcc == "DXT1";
-    const bool dxt3 = (pixel_flags & ddpf_fourcc) && fourcc == "DXT3";
-    const bool dxt5 = (pixel_flags & ddpf_fourcc) && fourcc == "DXT5";
-    const bool uncompressed = (pixel_flags & ddpf_rgb) && (rgb_bits == 16U || rgb_bits == 32U) &&
-                              red_mask && green_mask && blue_mask;
-    if (width <= 0 || height <= 0 || width > 16384 || height > 16384 ||
-        (!dxt1 && !dxt3 && !dxt5 && !uncompressed)) {
-        error = "Unsupported DDS format/dimensions in " + path.string();
-        return false;
-    }
-    if (static_cast<std::size_t>(width) >
-        std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>(height) / 4U) {
-        error = "DDS dimensions overflow in " + path.string();
-        return false;
-    }
-    if (uncompressed) {
-        const auto bytes_per_pixel = static_cast<std::size_t>(rgb_bits / 8U);
-        const auto row_bytes = static_cast<std::size_t>(width) * bytes_per_pixel;
-        constexpr std::uint32_t ddsd_pitch = 0x08U;
-        const auto declared_pitch = static_cast<std::size_t>(read_u32(bytes, 20));
-        const auto pitch = (read_u32(bytes, 8) & ddsd_pitch) && declared_pitch >= row_bytes
-                               ? declared_pitch
-                               : row_bytes;
-        if (pitch > (bytes.size() - 128U) / static_cast<std::size_t>(height)) {
-            error = "Truncated DDS image in " + path.string();
-            return false;
-        }
-        rgba.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U, 0);
-        for (int y = 0; y < height; ++y)
-            for (int x = 0; x < width; ++x) {
-                const auto source = 128U + static_cast<std::size_t>(y) * pitch +
-                                    static_cast<std::size_t>(x) * bytes_per_pixel;
-                const auto packed =
-                    bytes_per_pixel == 2U ? read_u16(bytes, source) : read_u32(bytes, source);
-                const auto output = (static_cast<std::size_t>(y) * static_cast<std::size_t>(width) +
-                                     static_cast<std::size_t>(x)) *
-                                    4U;
-                rgba[output] = masked_channel(packed, red_mask, 0);
-                rgba[output + 1] = masked_channel(packed, green_mask, 0);
-                rgba[output + 2] = masked_channel(packed, blue_mask, 0);
-                rgba[output + 3] =
-                    masked_channel(packed, alpha_mask, (pixel_flags & ddpf_alpha_pixels) ? 0 : 255);
-            }
-        return true;
-    }
-
-    const std::size_t block_size = dxt1 ? 8U : 16U;
-    const auto blocks_x = static_cast<std::size_t>((width + 3) / 4);
-    const auto blocks_y = static_cast<std::size_t>((height + 3) / 4);
-    if (blocks_x > std::numeric_limits<std::size_t>::max() / blocks_y ||
-        blocks_x * blocks_y > (bytes.size() - 128) / block_size) {
-        error = "Truncated DDS image in " + path.string();
-        return false;
-    }
-    rgba.assign(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U, 0);
-    std::size_t cursor = 128;
-    for (std::size_t by = 0; by < blocks_y; ++by)
-        for (std::size_t bx = 0; bx < blocks_x; ++bx) {
-            std::uint64_t alpha = ~std::uint64_t{};
-            if (dxt3) {
-                alpha = static_cast<std::uint64_t>(read_u32(bytes, cursor)) |
-                        (static_cast<std::uint64_t>(read_u32(bytes, cursor + 4)) << 32U);
-                cursor += 8;
-            } else if (dxt5) {
-                const auto alpha0 = std::to_integer<std::uint8_t>(bytes[cursor]);
-                const auto alpha1 = std::to_integer<std::uint8_t>(bytes[cursor + 1]);
-                std::array<std::uint8_t, 8> palette{alpha0, alpha1};
-                if (alpha0 > alpha1) {
-                    for (unsigned i = 1; i <= 6; ++i)
-                        palette[i + 1] =
-                            static_cast<std::uint8_t>(((7U - i) * alpha0 + i * alpha1) / 7U);
-                } else {
-                    for (unsigned i = 1; i <= 4; ++i)
-                        palette[i + 1] =
-                            static_cast<std::uint8_t>(((5U - i) * alpha0 + i * alpha1) / 5U);
-                    palette[6] = 0;
-                    palette[7] = 255;
-                }
-                std::uint64_t alpha_indices{};
-                for (unsigned i = 0; i < 6; ++i)
-                    alpha_indices |= static_cast<std::uint64_t>(
-                                         std::to_integer<std::uint8_t>(bytes[cursor + 2 + i]))
-                                     << (i * 8U);
-                alpha = alpha_indices;
-                cursor += 8;
-                // Store the decoded palette below; DXT5's alpha indices are three bits.
-                for (unsigned py = 0; py < 4; ++py)
-                    for (unsigned px = 0; px < 4; ++px) {
-                        const auto pixel = py * 4U + px;
-                        const auto x = bx * 4U + px, y = by * 4U + py;
-                        if (x >= static_cast<std::size_t>(width) ||
-                            y >= static_cast<std::size_t>(height))
-                            continue;
-                        const auto output = (y * static_cast<std::size_t>(width) + x) * 4U;
-                        rgba[output + 3] = palette[(alpha_indices >> (pixel * 3U)) & 7U];
-                    }
-            }
-            const auto c0_raw = read_u16(bytes, cursor), c1_raw = read_u16(bytes, cursor + 2);
-            std::array<std::array<std::uint8_t, 4>, 4> colors{};
-            colors[0] = color_565(c0_raw);
-            colors[1] = color_565(c1_raw);
-            if (dxt3 || dxt5 || c0_raw > c1_raw) {
-                for (unsigned channel = 0; channel < 3; ++channel) {
-                    colors[2][channel] = static_cast<std::uint8_t>(
-                        (2U * colors[0][channel] + colors[1][channel]) / 3U);
-                    colors[3][channel] = static_cast<std::uint8_t>(
-                        (colors[0][channel] + 2U * colors[1][channel]) / 3U);
-                }
-                colors[2][3] = colors[3][3] = 255;
-            } else {
-                for (unsigned channel = 0; channel < 3; ++channel)
-                    colors[2][channel] =
-                        static_cast<std::uint8_t>((colors[0][channel] + colors[1][channel]) / 2U);
-                colors[2][3] = 255;
-                colors[3] = {0, 0, 0, 0};
-            }
-            const auto indices = read_u32(bytes, cursor + 4);
-            cursor += 8;
-            for (unsigned py = 0; py < 4; ++py)
-                for (unsigned px = 0; px < 4; ++px) {
-                    const auto x = bx * 4U + px, y = by * 4U + py;
-                    if (x >= static_cast<std::size_t>(width) ||
-                        y >= static_cast<std::size_t>(height))
-                        continue;
-                    const auto pixel = py * 4U + px;
-                    auto color = colors[(indices >> (pixel * 2U)) & 3U];
-                    if (dxt3)
-                        color[3] = static_cast<std::uint8_t>(((alpha >> (pixel * 4U)) & 15U) * 17U);
-                    if (dxt5) {
-                        const auto output = (y * static_cast<std::size_t>(width) + x) * 4U;
-                        color[3] = rgba[output + 3];
-                    }
-                    const auto output = (y * static_cast<std::size_t>(width) + x) * 4U;
-                    std::copy(color.begin(), color.end(),
-                              rgba.begin() + static_cast<std::ptrdiff_t>(output));
-                }
-        }
-    return true;
-}
-
 unsigned int upload_texture(const int width, const int height, const std::uint8_t* rgba) {
     GLuint texture{};
     auto& gl = gl_api();
@@ -521,13 +416,51 @@ unsigned int upload_texture(const int width, const int height, const std::uint8_
     return texture;
 }
 
+bool has_fractional_alpha(const std::span<const std::uint8_t> rgba) {
+    for (std::size_t index = 3; index < rgba.size(); index += 4)
+        if (rgba[index] != 0 && rgba[index] != 255) return true;
+    return false;
+}
+
+unsigned int upload_checker_texture(const bool missing) {
+    std::array<std::uint8_t, 64 * 64 * 4> checker{};
+    for (int y = 0; y < 64; ++y)
+        for (int x = 0; x < 64; ++x) {
+            const bool bright = ((x / 8) ^ (y / 8)) & 1;
+            const auto offset = static_cast<std::size_t>(y * 64 + x) * 4U;
+            checker[offset] = missing ? (bright ? 255 : 35) : (bright ? 210 : 65);
+            checker[offset + 1] = missing ? 0 : checker[offset];
+            checker[offset + 2] = missing ? (bright ? 220 : 35) : checker[offset];
+            checker[offset + 3] = 255;
+        }
+    return upload_texture(64, 64, checker.data());
+}
+
 std::filesystem::path find_texture(const std::filesystem::path& source_path,
-                                   const std::string& name) {
+                                   const std::string& name,
+                                   const csf::TextureCatalog* catalog = nullptr,
+                                   const std::uint32_t variant = 0) {
     if (name.empty()) return {};
-    const std::array candidates{source_path.parent_path() / "Textures" / (name + ".dds"),
-                                source_path.parent_path() / (name + ".dds"),
-                                source_path.parent_path().parent_path() / "Textures" /
-                                    (name + ".dds")};
+    if (catalog)
+        if (const auto resolved = catalog->resolve(name, variant)) return *resolved;
+    const auto requested = std::filesystem::path(name);
+    std::vector<std::filesystem::path> relative_paths;
+    if (requested.extension().empty()) {
+        relative_paths.push_back(requested.string() + ".dds");
+        relative_paths.push_back(requested.string() + ".png");
+    } else
+        relative_paths.push_back(requested);
+    std::vector<std::filesystem::path> candidates;
+    auto directory = source_path.parent_path();
+    for (const auto& relative : relative_paths)
+        candidates.push_back(directory / relative);
+    for (std::size_t depth = 0; depth < 8 && !directory.empty(); ++depth) {
+        for (const auto& relative : relative_paths)
+            candidates.push_back(directory / "Textures" / relative);
+        const auto parent = directory.parent_path();
+        if (parent == directory) break;
+        directory = parent;
+    }
     std::error_code error;
     for (const auto& candidate : candidates)
         if (std::filesystem::is_regular_file(candidate, error)) return candidate;
@@ -572,10 +505,14 @@ void GeometryPreview::clear() {
     material_texture_names_.clear();
     material_lightmap_texture_names_.clear();
     owned_texture_ids_.clear();
+    translucent_texture_ids_.clear();
     checker_texture_ = 0;
     visual_material_slot_count_ = 0;
     loaded_texture_count_ = missing_texture_count_ = 0;
     texture_status_.clear();
+    texture_diagnostics_.clear();
+    texture_catalog_ = {};
+    texture_variant_ = 0;
     selected_uv_set_ = 0;
     error_.clear();
     mission_points_.clear();
@@ -584,8 +521,11 @@ void GeometryPreview::clear() {
     skeleton_lines_.clear();
     physics_lines_.clear();
     animated_actor_ranges_.clear();
+    actor_material_layouts_.clear();
+    actor_hand_poses_.clear();
     animated_actor_dirty_ = false;
     selected_mission_entry_.reset();
+    hidden_mission_entries_.clear();
     preserve_view_on_scene_reload_ = false;
 }
 
@@ -596,9 +536,28 @@ void GeometryPreview::set_mission_overlays(std::vector<MissionOverlayPoint> poin
     selected_mission_entry_.reset();
 }
 
+void GeometryPreview::set_texture_catalog(csf::TextureCatalog catalog) {
+    texture_catalog_ = std::move(catalog);
+    texture_variant_ = std::min(texture_variant_, texture_catalog_.maximum_variant());
+}
+
 void GeometryPreview::set_mission_actor_models(std::vector<MissionActorModel> models) {
     mission_actor_models_ = std::move(models);
     scene_mode_ = false;
+}
+
+void GeometryPreview::set_mission_entries_visible(const std::span<const std::uint32_t> entries,
+                                                   const bool visible) {
+    for (const auto entry : entries) {
+        if (visible)
+            hidden_mission_entries_.erase(entry);
+        else
+            hidden_mission_entries_.insert(entry);
+    }
+}
+
+bool GeometryPreview::mission_entry_visible(const std::uint32_t entry) const noexcept {
+    return !hidden_mission_entries_.contains(entry);
 }
 
 bool GeometryPreview::set_mission_actor_animation(const std::uint32_t source_entry,
@@ -644,7 +603,7 @@ void GeometryPreview::refresh_mission_actor_animation() {
         auto saved = std::move(gpu_vertices_);
         gpu_vertices_.clear();
         gpu_vertices_.reserve(range.vertex_count);
-        actor_geometry_builder_(*found->prototype, *found, range.material);
+        actor_geometry_builder_(*found->prototype, *found);
         auto rebuilt = std::move(gpu_vertices_);
         gpu_vertices_ = std::move(saved);
         if (rebuilt.size() != range.vertex_count ||
@@ -654,6 +613,20 @@ void GeometryPreview::refresh_mission_actor_animation() {
         }
         std::copy(rebuilt.begin(), rebuilt.end(),
                   gpu_vertices_.begin() + static_cast<std::ptrdiff_t>(range.vertex_begin));
+        const float cy = std::cos(found->heading_radians),
+                    sy = std::sin(found->heading_radians),
+                    cp = std::cos(found->pitch_radians), sp = std::sin(found->pitch_radians);
+        const AffineTransform placement{
+            {{cy, sy * sp, sy * cp, 0, cp, -sp, -sy, cy * sp, cy * cp}}, found->position};
+        auto attachment_placement = placement;
+        const auto hand_pose = actor_hand_poses_.find(found->source_entry);
+        if (hand_pose != actor_hand_poses_.end() && hand_pose->second.followed)
+            attachment_placement =
+                compose(placement, draw_matrix_transform(hand_pose->second.transform));
+        for (auto& batch : draw_batches_)
+            if (batch.actor_attachment &&
+                actor_owner(batch.owner_offset) == found->source_entry)
+                batch.transform = draw_transform(attachment_placement);
         gl.bind_buffer(gl_array_buffer, vertex_buffer_);
         gl.buffer_sub_data(gl_array_buffer,
                            static_cast<GlSizePtr>(range.vertex_begin * sizeof(GpuVertex)),
@@ -949,6 +922,7 @@ bool GeometryPreview::load(const rws::Chunk& geometry_chunk, const std::span<con
         }
     }
     if (view_style_ >= 4 && view_style_ <= 6 && uv_sets_.size() > 1) selected_uv_set_ = 1;
+    checker_texture_ = upload_checker_texture(true);
 
     if (const auto* material_list_chunk = rws::find_child(geometry_chunk, 0x08)) {
         const auto material_list = rws::decode_material_list(*material_list_chunk, bytes);
@@ -967,24 +941,30 @@ bool GeometryPreview::load(const rws::Chunk& geometry_chunk, const std::span<con
                 if (name.empty()) return 0;
                 if (const auto cached = texture_cache.find(name); cached != texture_cache.end())
                     return cached->second;
-                const auto path = find_texture(source_path, name);
+                const auto path =
+                    find_texture(source_path, name, &texture_catalog_, texture_variant_);
                 if (path.empty()) {
                     ++missing_texture_count_;
-                    if (texture_status_.empty())
-                        texture_status_ = "Could not locate " + name + ".dds from " +
-                                          source_path.parent_path().string();
-                    return 0;
+                    const auto message = "Missing texture '" + name + "' referenced by " +
+                                         source_path.string();
+                    texture_diagnostics_.push_back(message);
+                    if (texture_status_.empty()) texture_status_ = message;
+                    texture_cache.emplace(name, checker_texture_);
+                    return checker_texture_;
                 }
                 int width{}, height{};
                 std::vector<std::uint8_t> rgba;
                 std::string texture_error;
-                if (!decode_dds(path, width, height, rgba, texture_error)) {
+                if (!rws::decode_texture_image(path, width, height, rgba, texture_error)) {
                     ++missing_texture_count_;
-                    if (texture_status_.empty()) texture_status_ = std::move(texture_error);
-                    return 0;
+                    texture_diagnostics_.push_back(texture_error);
+                    if (texture_status_.empty()) texture_status_ = texture_error;
+                    texture_cache.emplace(name, checker_texture_);
+                    return checker_texture_;
                 }
                 const auto id = upload_texture(width, height, rgba.data());
                 owned_texture_ids_.push_back(id);
+                if (has_fractional_alpha(rgba)) translucent_texture_ids_.insert(id);
                 texture_cache.emplace(name, id);
                 ++loaded_texture_count_;
                 return id;
@@ -1028,15 +1008,6 @@ bool GeometryPreview::load(const rws::Chunk& geometry_chunk, const std::span<con
             }
         }
     }
-    std::array<std::uint8_t, 64 * 64 * 4> checker{};
-    for (int y = 0; y < 64; ++y)
-        for (int x = 0; x < 64; ++x) {
-            const bool bright = ((x / 8) ^ (y / 8)) & 1;
-            const auto offset = static_cast<std::size_t>(y * 64 + x) * 4U;
-            checker[offset] = checker[offset + 1] = checker[offset + 2] = bright ? 210 : 65;
-            checker[offset + 3] = 255;
-        }
-    checker_texture_ = upload_texture(64, 64, checker.data());
     const auto vertex_bytes = static_cast<std::uint64_t>(geometry.value->vertex_count) * 12U;
     if (morph->vertices_offset > bytes.size() ||
         vertex_bytes > bytes.size() - morph->vertices_offset) {
@@ -1152,41 +1123,57 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
     auto mission_points = std::move(mission_points_);
     auto mission_lines = std::move(mission_lines_);
     auto mission_actor_models = std::move(mission_actor_models_);
+    auto texture_catalog = std::move(texture_catalog_);
+    const auto texture_variant = texture_variant_;
     const auto mission_selection = selected_mission_entry_;
     clear();
+    texture_catalog_ = std::move(texture_catalog);
+    texture_variant_ = texture_variant;
     mission_points_ = std::move(mission_points);
     mission_lines_ = std::move(mission_lines);
     mission_actor_models_ = std::move(mission_actor_models);
     selected_mission_entry_ = mission_selection;
     scene_mode_ = true;
-    view_style_ = 1;
     wireframe_ = false;
+    checker_texture_ = upload_checker_texture(true);
 
     rws::Vec3 minimum{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
                       std::numeric_limits<float>::max()};
     rws::Vec3 maximum{-minimum.x, -minimum.y, -minimum.z};
     std::unordered_map<std::string, unsigned int> texture_cache;
-    auto load_texture = [&](const std::string& name) -> unsigned int {
+    auto load_texture = [&](const std::filesystem::path& texture_source,
+                            const std::string& name) -> unsigned int {
         if (name.empty()) return 0;
-        if (const auto cached = texture_cache.find(name); cached != texture_cache.end())
+        const auto path =
+            find_texture(texture_source, name, &texture_catalog_, texture_variant_);
+        const auto cache_key = path.empty()
+                                   ? (texture_source.parent_path() / (name + ".dds")).string()
+                                   : path.string();
+        if (const auto cached = texture_cache.find(cache_key); cached != texture_cache.end())
             return cached->second;
-        const auto path = find_texture(source_path, name);
         if (path.empty()) {
             ++missing_texture_count_;
-            if (texture_status_.empty()) texture_status_ = "Could not locate " + name + ".dds";
-            return 0;
+            const auto message = "Missing texture '" + name + "' referenced by " +
+                                 texture_source.string();
+            texture_diagnostics_.push_back(message);
+            texture_cache.emplace(cache_key, checker_texture_);
+            if (texture_status_.empty()) texture_status_ = message;
+            return checker_texture_;
         }
         int width{}, height{};
         std::vector<std::uint8_t> rgba;
         std::string texture_error;
-        if (!decode_dds(path, width, height, rgba, texture_error)) {
+        if (!rws::decode_texture_image(path, width, height, rgba, texture_error)) {
             ++missing_texture_count_;
-            if (texture_status_.empty()) texture_status_ = std::move(texture_error);
-            return 0;
+            texture_diagnostics_.push_back(texture_error);
+            if (texture_status_.empty()) texture_status_ = texture_error;
+            texture_cache.emplace(cache_key, checker_texture_);
+            return checker_texture_;
         }
         const auto id = upload_texture(width, height, rgba.data());
         owned_texture_ids_.push_back(id);
-        texture_cache.emplace(name, id);
+        if (has_fractional_alpha(rgba)) translucent_texture_ids_.insert(id);
+        texture_cache.emplace(cache_key, id);
         ++loaded_texture_count_;
         return id;
     };
@@ -1311,7 +1298,8 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                         const auto texture = rws::decode_texture(*texture_chunk, bytes);
                         if (texture && !texture.value->name.empty()) {
                             material_texture_names_[destination] = texture.value->name;
-                            material_textures_[destination] = load_texture(texture.value->name);
+                            material_textures_[destination] =
+                                load_texture(source_path, texture.value->name);
                         }
                     }
                     const auto* extension = rws::find_child(material_chunk, 0x03);
@@ -1325,7 +1313,7 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                             material_lightmap_texture_names_[destination] =
                                 effects.value->dual_texture.name;
                             material_lightmap_textures_[destination] =
-                                load_texture(effects.value->dual_texture.name);
+                                load_texture(source_path, effects.value->dual_texture.name);
                         }
                     }
                 }
@@ -1506,12 +1494,120 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
     }
 
     // Mission RPCs use one decoded/uploaded prototype range per resolved document.
-    // Actor draws reference those ranges with SCN placement transforms.
+    // Import their material tables once, then let static and animated actor draws
+    // share the same stable material indices.
     std::unordered_map<const rws::Document*, std::vector<DrawBatch>> actor_prototypes;
-    actor_geometry_builder_ = [this](const rws::Document& prototype, const MissionActorModel& actor,
-                                     const std::uint16_t material) {
+    const auto register_actor_materials = [&](const rws::Document& prototype) {
+        if (std::ranges::any_of(actor_material_layouts_, [&](const auto& value) {
+                return value.prototype == &prototype;
+            }))
+            return;
+
+        ActorPrototypeMaterials prototype_materials;
+        prototype_materials.prototype = &prototype;
+        const auto actor_bytes = prototype.bytes();
+        for (const auto& clump : prototype.chunks()) {
+            if (clump.type != 0x10) continue;
+            const auto* geometry_list = rws::find_child(clump, 0x1A);
+            if (!geometry_list) continue;
+            for (const auto& geometry_chunk : geometry_list->children) {
+                if (geometry_chunk.type != 0x0F) continue;
+                ActorGeometryMaterials geometry_materials;
+                geometry_materials.geometry_offset = geometry_chunk.offset;
+                const auto* material_list_chunk = rws::find_child(geometry_chunk, 0x08);
+                const auto material_list =
+                    material_list_chunk
+                        ? rws::decode_material_list(*material_list_chunk, actor_bytes)
+                        : rws::DecodeResult<rws::MaterialListInfo>{};
+                const auto material_count =
+                    material_list && material_list.value->material_count > 0
+                        ? static_cast<std::size_t>(material_list.value->material_count)
+                        : 1U;
+                if (material_colors_.size() + material_count >
+                    static_cast<std::size_t>(std::numeric_limits<std::uint16_t>::max()) + 1U) {
+                    if (texture_status_.empty())
+                        texture_status_ = "Actor material count exceeds the preview limit";
+                    continue;
+                }
+
+                const auto material_base = material_colors_.size();
+                material_colors_.resize(material_base + material_count, {190, 205, 190, 255});
+                material_textures_.resize(material_base + material_count);
+                material_lightmap_textures_.resize(material_base + material_count);
+                material_texture_names_.resize(material_base + material_count);
+                material_lightmap_texture_names_.resize(material_base + material_count);
+                geometry_materials.slots.reserve(material_count);
+                for (std::size_t slot = 0; slot < material_count; ++slot)
+                    geometry_materials.slots.push_back(
+                        static_cast<std::uint16_t>(material_base + slot));
+
+                if (material_list_chunk && material_list) {
+                    std::vector<const rws::Chunk*> material_chunks;
+                    for (const auto& child : material_list_chunk->children)
+                        if (child.type == 0x07) material_chunks.push_back(&child);
+                    std::size_t next_material{};
+                    for (std::size_t slot = 0; slot < material_count; ++slot) {
+                        const auto destination = material_base + slot;
+                        const auto remap = slot < material_list.value->remap.size()
+                                               ? material_list.value->remap[slot]
+                                               : -1;
+                        if (remap >= 0 && static_cast<std::size_t>(remap) < slot) {
+                            const auto source = material_base + static_cast<std::size_t>(remap);
+                            material_colors_[destination] = material_colors_[source];
+                            material_textures_[destination] = material_textures_[source];
+                            material_lightmap_textures_[destination] =
+                                material_lightmap_textures_[source];
+                            material_texture_names_[destination] = material_texture_names_[source];
+                            material_lightmap_texture_names_[destination] =
+                                material_lightmap_texture_names_[source];
+                            continue;
+                        }
+                        if (next_material >= material_chunks.size()) continue;
+                        const auto& material_chunk = *material_chunks[next_material++];
+                        if (const auto material = rws::decode_material(material_chunk, actor_bytes))
+                            material_colors_[destination] = material.value->color;
+                        if (const auto* texture_chunk = rws::find_child(material_chunk, 0x06)) {
+                            const auto texture = rws::decode_texture(*texture_chunk, actor_bytes);
+                            if (texture && !texture.value->name.empty()) {
+                                material_texture_names_[destination] = texture.value->name;
+                                material_textures_[destination] =
+                                    load_texture(prototype.source_path(), texture.value->name);
+                            }
+                        }
+                        const auto* extension = rws::find_child(material_chunk, 0x03);
+                        const auto* effects_chunk =
+                            extension ? rws::find_child(*extension, 0x120) : nullptr;
+                        if (!effects_chunk) continue;
+                        const auto effects =
+                            rws::decode_material_effects(*effects_chunk, 0x07, actor_bytes);
+                        if (!effects || !effects.value->has_dual_texture ||
+                            effects.value->dual_texture.name.empty())
+                            continue;
+                        material_lightmap_texture_names_[destination] =
+                            effects.value->dual_texture.name;
+                        material_lightmap_textures_[destination] = load_texture(
+                            prototype.source_path(), effects.value->dual_texture.name);
+                    }
+                }
+                prototype_materials.geometries.push_back(std::move(geometry_materials));
+            }
+        }
+        actor_material_layouts_.push_back(std::move(prototype_materials));
+    };
+    for (const auto& actor : mission_actor_models_) {
+        if (actor.prototype) register_actor_materials(*actor.prototype);
+        for (const auto& attachment : actor.attachments)
+            if (attachment.model) register_actor_materials(*attachment.model);
+    }
+
+    actor_geometry_builder_ = [this](const rws::Document& prototype,
+                                     const MissionActorModel& actor) {
         std::vector<DrawBatch> batches;
         const auto actor_bytes = prototype.bytes();
+        const auto prototype_materials =
+            std::ranges::find_if(actor_material_layouts_, [&](const auto& value) {
+                return value.prototype == &prototype;
+            });
         for (const auto& clump : prototype.chunks()) {
             if (clump.type != 0x10) continue;
             const auto* frame_chunk = rws::find_child(clump, 0x0E);
@@ -1523,15 +1619,17 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
             std::vector<unsigned char> states(world_frames.size());
             std::optional<rws::HAnimBinding> binding;
             std::optional<rws::AnimationClip> animation;
-            if (actor.animation) {
-                auto candidate = *actor.animation;
+            if (actor.animation || !actor.attachments.empty()) {
                 const auto decoded_binding = rws::decode_hanim_binding(*frame_chunk, actor_bytes);
                 if (decoded_binding) {
                     binding = std::move(*decoded_binding.value);
-                    const auto compatibility =
-                        rws::map_animation_tracks(candidate, *binding, frames.value->frames.size());
-                    if (compatibility.compatible) animation = std::move(candidate);
                 }
+            }
+            if (actor.animation && binding) {
+                auto candidate = *actor.animation;
+                const auto compatibility =
+                    rws::map_animation_tracks(candidate, *binding, frames.value->frames.size());
+                if (compatibility.compatible) animation = std::move(candidate);
             }
             const auto resolve = [&](auto&& self, std::size_t i) -> bool {
                 if (i >= world_frames.size()) return false;
@@ -1599,6 +1697,32 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                     break;
                 }
             }
+            if (!actor.attachments.empty() && binding) {
+                ActorHandPose hand_pose;
+                const bool left_hand = actor.attachments.front().left_hand;
+                const auto labels = frame_labels(*frame_chunk, actor_bytes,
+                                                 frames.value->frames.size());
+                const auto hand_frame = find_hand_frame(*binding, labels, left_hand);
+                if (hand_frame) {
+                    hand_pose.frame_label =
+                        !labels[*hand_frame].empty()
+                            ? labels[*hand_frame]
+                            : std::string(left_hand ? "left hand" : "right hand") +
+                                  (*hand_frame < binding->frame_node_ids.size()
+                                       ? " (HAnim " +
+                                             std::to_string(
+                                                 binding->frame_node_ids[*hand_frame]) +
+                                             ")"
+                                       : "");
+                    if (animated_pose && *hand_frame < animated_pose->world.size())
+                        hand_pose.transform =
+                            draw_transform(matrix_transform(animated_pose->world[*hand_frame]));
+                    else if (*hand_frame < world_frames.size())
+                        hand_pose.transform = draw_transform(world_frames[*hand_frame]);
+                    hand_pose.followed = *hand_frame < world_frames.size();
+                }
+                actor_hand_poses_[actor.source_entry] = std::move(hand_pose);
+            }
             for (const auto& atomic_chunk : clump.children) {
                 if (atomic_chunk.type != 0x14) continue;
                 const auto atomic = rws::decode_atomic(atomic_chunk, actor_bytes);
@@ -1615,8 +1739,22 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                     std::ranges::find_if(geometry.value->morph_targets,
                                          [](const auto& value) { return value.has_vertices; });
                 if (morph == geometry.value->morph_targets.end()) continue;
-                std::vector<rws::Vec3> positions;
+                const auto& geometry_chunk =
+                    *geometries[static_cast<std::size_t>(atomic.value->geometry_index)];
+                const ActorGeometryMaterials* geometry_materials{};
+                if (prototype_materials != actor_material_layouts_.end()) {
+                    const auto found = std::ranges::find_if(
+                        prototype_materials->geometries, [&](const auto& value) {
+                            return value.geometry_offset == geometry_chunk.offset;
+                        });
+                    if (found != prototype_materials->geometries.end())
+                        geometry_materials = &*found;
+                }
+                if (!geometry_materials || geometry_materials->slots.empty()) continue;
+                std::vector<rws::Vec3> positions, normals;
                 positions.reserve(static_cast<std::size_t>(geometry.value->vertex_count));
+                if (morph->has_normals)
+                    normals.reserve(static_cast<std::size_t>(geometry.value->vertex_count));
                 const auto& frame =
                     world_frames[static_cast<std::size_t>(atomic.value->frame_index)];
                 std::vector<rws::SkinVertex> skin_vertices;
@@ -1638,6 +1776,13 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                         v.position = {read_f32(actor_bytes, offset),
                                       read_f32(actor_bytes, offset + 4),
                                       read_f32(actor_bytes, offset + 8)};
+                        if (morph->has_normals) {
+                            const auto normal_offset =
+                                morph->normals_offset + static_cast<std::uint64_t>(i) * 12U;
+                            v.normal = {read_f32(actor_bytes, normal_offset),
+                                        read_f32(actor_bytes, normal_offset + 4),
+                                        read_f32(actor_bytes, normal_offset + 8)};
+                        }
                         for (std::size_t j = 0; j < 4; ++j) {
                             v.bones[j] =
                                 std::to_integer<std::uint8_t>(actor_bytes[static_cast<std::size_t>(
@@ -1666,8 +1811,10 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                     }
                     if (complete) {
                         const auto skinned = rws::cpu_skin(skin_vertices, inverse_bind, bone_world);
-                        for (const auto& v : skinned)
+                        for (const auto& v : skinned) {
                             positions.push_back(v.position);
+                            if (morph->has_normals) normals.push_back(v.normal);
+                        }
                         used_skinning = true;
                     }
                 }
@@ -1691,18 +1838,73 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                             transform_point(render_frame, {read_f32(actor_bytes, offset),
                                                            read_f32(actor_bytes, offset + 4),
                                                            read_f32(actor_bytes, offset + 8)}));
+                        if (morph->has_normals) {
+                            const auto normal_offset =
+                                morph->normals_offset + static_cast<std::uint64_t>(i) * 12U;
+                            auto normal = rotate(render_frame, {read_f32(actor_bytes, normal_offset),
+                                                                read_f32(actor_bytes,
+                                                                         normal_offset + 4),
+                                                                read_f32(actor_bytes,
+                                                                         normal_offset + 8)});
+                            const auto normal_length = std::sqrt(normal.x * normal.x +
+                                                                 normal.y * normal.y +
+                                                                 normal.z * normal.z);
+                            if (normal_length > 1.0e-8F) {
+                                normal.x /= normal_length;
+                                normal.y /= normal_length;
+                                normal.z /= normal_length;
+                            }
+                            normals.push_back(normal);
+                        }
                     }
                 }
-                DrawBatch batch{material, static_cast<std::uint32_t>(gpu_vertices_.size()), 0, 0};
+                std::vector<Uv> base_uvs, lightmap_uvs;
+                if (!geometry.value->texcoord_offsets.empty()) {
+                    base_uvs.reserve(static_cast<std::size_t>(geometry.value->vertex_count));
+                    const auto offset = geometry.value->texcoord_offsets[0];
+                    for (std::int32_t i = 0; i < geometry.value->vertex_count; ++i)
+                        base_uvs.push_back(
+                            {read_f32(actor_bytes, offset + static_cast<std::uint64_t>(i) * 8U),
+                             read_f32(actor_bytes,
+                                      offset + static_cast<std::uint64_t>(i) * 8U + 4)});
+                }
+                if (geometry.value->texcoord_offsets.size() > 1) {
+                    lightmap_uvs.reserve(static_cast<std::size_t>(geometry.value->vertex_count));
+                    const auto offset = geometry.value->texcoord_offsets[1];
+                    for (std::int32_t i = 0; i < geometry.value->vertex_count; ++i)
+                        lightmap_uvs.push_back(
+                            {read_f32(actor_bytes, offset + static_cast<std::uint64_t>(i) * 8U),
+                             read_f32(actor_bytes,
+                                      offset + static_cast<std::uint64_t>(i) * 8U + 4)});
+                }
+                std::vector<rws::TriangleInfo> triangles;
+                triangles.reserve(static_cast<std::size_t>(geometry.value->triangle_count));
                 for (std::int32_t i = 0; i < geometry.value->triangle_count; ++i) {
                     const auto triangle = rws::decode_triangle(*geometry.value, i, actor_bytes);
                     if (!triangle || triangle.value->vertices[0] >= positions.size() ||
                         triangle.value->vertices[1] >= positions.size() ||
                         triangle.value->vertices[2] >= positions.size())
                         continue;
-                    const auto &a = positions[triangle.value->vertices[0]],
-                               &b = positions[triangle.value->vertices[1]],
-                               &c = positions[triangle.value->vertices[2]];
+                    triangles.push_back(*triangle.value);
+                }
+                std::stable_sort(triangles.begin(), triangles.end(), [](const auto& left,
+                                                                        const auto& right) {
+                    return left.material < right.material;
+                });
+                DrawBatch* batch{};
+                for (const auto& triangle : triangles) {
+                    const auto local_material = std::min<std::size_t>(
+                        triangle.material, geometry_materials->slots.size() - 1);
+                    const auto material = geometry_materials->slots[local_material];
+                    if (!batch || batch->material != material) {
+                        batches.push_back({material,
+                                           static_cast<std::uint32_t>(gpu_vertices_.size()), 0,
+                                           geometry_chunk.offset});
+                        batch = &batches.back();
+                    }
+                    const auto &a = positions[triangle.vertices[0]],
+                               &b = positions[triangle.vertices[1]],
+                               &c = positions[triangle.vertices[2]];
                     float nx = (b.y - a.y) * (c.z - a.z) - (b.z - a.z) * (c.y - a.y),
                           ny = (b.z - a.z) * (c.x - a.x) - (b.x - a.x) * (c.z - a.z),
                           nz = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
@@ -1712,55 +1914,71 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                         ny /= length;
                         nz /= length;
                     }
-                    for (const auto index : triangle.value->vertices) {
+                    for (const auto index : triangle.vertices) {
                         const auto& p = positions[index];
-                        gpu_vertices_.push_back(
-                            {p.x, p.y, p.z, 0, 0, 0, 0, 0, 0, nx, ny, nz, index});
+                        const auto normal =
+                            index < normals.size() ? normals[index] : rws::Vec3{nx, ny, nz};
+                        const auto base_uv = index < base_uvs.size() ? base_uvs[index] : Uv{};
+                        const auto lightmap_uv =
+                            index < lightmap_uvs.size() ? lightmap_uvs[index] : Uv{};
+                        gpu_vertices_.push_back({p.x, p.y, p.z, base_uv.u, base_uv.v,
+                                                 lightmap_uv.u, lightmap_uv.v, base_uv.u,
+                                                 base_uv.v, normal.x, normal.y, normal.z, index});
                     }
-                    batch.count += 3;
+                    batch->count += 3;
                 }
-                if (batch.count) batches.push_back(batch);
             }
         }
         return batches;
     };
-    const auto new_actor_material = [&]() {
-        const auto material = static_cast<std::uint16_t>(material_colors_.size());
-        material_colors_.push_back({190, 205, 190, 255});
-        material_textures_.push_back(0);
-        material_lightmap_textures_.push_back(0);
-        material_texture_names_.emplace_back();
-        material_lightmap_texture_names_.emplace_back();
-        return material;
-    };
     for (const auto& actor : mission_actor_models_) {
         if (!actor.prototype) continue;
-        const float cy = std::cos(actor.heading), sy = std::sin(actor.heading),
-                    cp = std::cos(actor.pitch), sp = std::sin(actor.pitch);
+        const float cy = std::cos(actor.heading_radians), sy = std::sin(actor.heading_radians),
+                    cp = std::cos(actor.pitch_radians), sp = std::sin(actor.pitch_radians);
         const AffineTransform placement{{{cy, sy * sp, sy * cp, 0, cp, -sp, -sy, cy * sp, cy * cp}},
                                         actor.position};
         std::vector<DrawBatch> batches;
         if (actor.animation) {
             // Animated actors own a stable vertex range so playback can re-skin only this
             // actor instead of rebuilding the whole scene.
-            const auto material = new_actor_material();
             const auto vertex_begin = gpu_vertices_.size();
-            batches = actor_geometry_builder_(*actor.prototype, actor, material);
+            batches = actor_geometry_builder_(*actor.prototype, actor);
             animated_actor_ranges_.push_back(
-                {actor.source_entry, vertex_begin, gpu_vertices_.size() - vertex_begin, material});
+                {actor.source_entry, vertex_begin, gpu_vertices_.size() - vertex_begin});
         } else {
             auto found = actor_prototypes.find(actor.prototype.get());
             if (found == actor_prototypes.end())
                 found = actor_prototypes
                             .emplace(actor.prototype.get(),
-                                     actor_geometry_builder_(*actor.prototype, actor,
-                                                             new_actor_material()))
+                                     actor_geometry_builder_(*actor.prototype, actor))
                             .first;
             batches = found->second;
         }
+        MissionActorModel attachment_actor = actor;
+        attachment_actor.animation.reset();
+        attachment_actor.attachments.clear();
+        for (const auto& attachment : actor.attachments) {
+            if (!attachment.model) continue;
+            auto found = actor_prototypes.find(attachment.model.get());
+            if (found == actor_prototypes.end())
+                found = actor_prototypes
+                            .emplace(attachment.model.get(),
+                                     actor_geometry_builder_(*attachment.model, attachment_actor))
+                            .first;
+            const auto insertion = batches.size();
+            batches.insert(batches.end(), found->second.begin(), found->second.end());
+            for (auto index = insertion; index < batches.size(); ++index)
+                batches[index].actor_attachment = true;
+        }
+        const auto hand_pose = actor_hand_poses_.find(actor.source_entry);
+        const auto attachment_placement =
+            hand_pose != actor_hand_poses_.end() && hand_pose->second.followed
+                ? compose(placement, draw_matrix_transform(hand_pose->second.transform))
+                : placement;
         for (auto batch : batches) {
             batch.owner_offset = 0x8000000000000000ULL | actor.source_entry;
-            batch.transform = draw_transform(placement);
+            batch.transform =
+                draw_transform(batch.actor_attachment ? attachment_placement : placement);
             for (std::uint32_t i = 0; i < batch.count; ++i) {
                 const auto& v = gpu_vertices_[static_cast<std::size_t>(batch.first) + i];
                 const auto p = transform_point(placement, {v.x, v.y, v.z});
@@ -1948,7 +2166,8 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                         const auto texture = rws::decode_texture(*texture_chunk, bytes);
                         if (texture && !texture.value->name.empty()) {
                             material_texture_names_[destination] = texture.value->name;
-                            material_textures_[destination] = load_texture(texture.value->name);
+                            material_textures_[destination] =
+                                load_texture(source_path, texture.value->name);
                         }
                     }
                     const auto* extension = rws::find_child(material_chunk, 0x03);
@@ -1962,7 +2181,7 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                             material_lightmap_texture_names_[destination] =
                                 effects.value->dual_texture.name;
                             material_lightmap_textures_[destination] =
-                                load_texture(effects.value->dual_texture.name);
+                                load_texture(source_path, effects.value->dual_texture.name);
                         }
                     }
                 }
@@ -2025,6 +2244,7 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                         draw_batches_.push_back({static_cast<std::uint16_t>(global_material),
                                                  static_cast<std::uint32_t>(gpu_vertices_.size()),
                                                  0, world_chunk->offset, floor_material,
+                                                 false,
                                                  PreviewLayer::visual_world});
                     }
                     const auto& a = sector_vertices[triangle.vertices[0]];
@@ -2220,7 +2440,8 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                         draw_batches_.push_back(
                             {static_cast<std::uint16_t>(global_material),
                              static_cast<std::uint32_t>(gpu_vertices_.size()), 0,
-                             sector.chunk_offset, false, PreviewLayer::collision_world, world_index,
+                             sector.chunk_offset, false, false, PreviewLayer::collision_world,
+                             world_index,
                              static_cast<std::size_t>(&sector - recovered.sectors.data())});
                     }
                     collision_triangle_mapping_.push_back(
@@ -2359,6 +2580,7 @@ uniform bool uUseDebugUv;
 uniform bool uApplyLighting;
 uniform bool uForceOpaque;
 uniform float uLightmapIntensity;
+uniform float uDim;
 uniform vec4 uBaseColor;
 uniform vec4 uClip0, uClip1, uClip2;
 out vec4 FragColor;
@@ -2379,7 +2601,7 @@ void main() {
     }
     if (uForceOpaque) color.a=1.0;
     if (color.a < 0.08) discard;
-    FragColor=vec4(color.rgb*(uApplyLighting ? light : 1.0),color.a);
+    FragColor=vec4(color.rgb*(uApplyLighting ? light : 1.0)*uDim,color.a);
 })GLSL";
     auto compile = [&](const GLenum type, const char* source) -> GLuint {
         const GLuint shader = gl.create_shader(type);
@@ -2528,6 +2750,22 @@ void GeometryPreview::render_gpu() {
     const GLint use_debug_uv_location = gl.get_uniform_location(shader_program_, "uUseDebugUv");
     const GLint base_color_location = gl.get_uniform_location(shader_program_, "uBaseColor");
     const GLint force_opaque_location = gl.get_uniform_location(shader_program_, "uForceOpaque");
+    const GLint dim_location = gl.get_uniform_location(shader_program_, "uDim");
+    const bool has_selected_actor =
+        selected_mission_entry_ &&
+        std::ranges::any_of(draw_batches_, [&](const auto& batch) {
+            return actor_owner(batch.owner_offset) == selected_mission_entry_;
+        });
+    const auto batch_visible = [&](const DrawBatch& batch) {
+        if (!isolate_selected_actor_ || !has_selected_actor) return true;
+        return batch.layer != PreviewLayer::collision_world &&
+               actor_owner(batch.owner_offset) == selected_mission_entry_;
+    };
+    const auto batch_dim = [&](const DrawBatch& batch) {
+        if (!dim_unselected_actors_ || !has_selected_actor || isolate_selected_actor_)
+            return 1.0F;
+        return actor_owner(batch.owner_offset) == selected_mission_entry_ ? 1.0F : 0.22F;
+    };
     const auto set_model = [&](const std::array<float, 12>& m) {
         gl.uniform_4f(gl.get_uniform_location(shader_program_, "uModel0"), m[0], m[1], m[2], m[3]);
         gl.uniform_4f(gl.get_uniform_location(shader_program_, "uModel1"), m[4], m[5], m[6], m[7]);
@@ -2572,50 +2810,63 @@ void GeometryPreview::render_gpu() {
 
     if (view_style_ != 7 || show_collision_) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        for (const auto& batch : draw_batches_) {
-            const bool collision = batch.layer == PreviewLayer::collision_world;
-            if ((!collision && !show_visual_) ||
-                (collision && (!show_collision_ || collision_style_ == 2)))
-                continue;
-            if (!collision && view_style_ == 7) continue;
-            if (collision) {
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                glDepthMask(GL_FALSE);
-                if (collision_style_ == 3)
-                    glDisable(GL_DEPTH_TEST);
-                else
+        // Opaque visual geometry establishes depth first. Fractional-alpha textures are then
+        // composited without writing depth, followed by the optional collision overlay.
+        for (int render_pass = 0; render_pass < 3; ++render_pass) {
+            for (const auto& batch : draw_batches_) {
+                if (!batch_visible(batch)) continue;
+                const bool collision = batch.layer == PreviewLayer::collision_world;
+                if ((!collision && !show_visual_) ||
+                    (collision && (!show_collision_ || collision_style_ == 2)))
+                    continue;
+                if (!collision && view_style_ == 7) continue;
+                const auto material = static_cast<std::size_t>(batch.material);
+                GLuint texture{}, lightmap{};
+                if (!collision && (view_style_ == 0 || view_style_ == 6) &&
+                    (scene_mode_ || !uv_sets_.empty()) && material < material_textures_.size())
+                    texture = material_textures_[material];
+                else if ((view_style_ == 3 || view_style_ == 4) &&
+                         selected_uv_set_ < uv_sets_.size())
+                    texture = checker_texture_;
+                if ((view_style_ == 5 || view_style_ == 6) &&
+                    (scene_mode_ || uv_sets_.size() > 1) &&
+                    material < material_lightmap_textures_.size())
+                    lightmap = material_lightmap_textures_[material];
+                const bool translucent = !collision && !batch.force_opaque && texture != 0 &&
+                                         translucent_texture_ids_.contains(texture);
+                const int wanted_pass = collision ? 2 : (translucent ? 1 : 0);
+                if (render_pass != wanted_pass) continue;
+                if (collision || translucent) {
+                    glEnable(GL_BLEND);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                    glDepthMask(GL_FALSE);
+                    if (collision && collision_style_ == 3)
+                        glDisable(GL_DEPTH_TEST);
+                    else
+                        glEnable(GL_DEPTH_TEST);
+                } else {
+                    glDisable(GL_BLEND);
+                    glDepthMask(GL_TRUE);
                     glEnable(GL_DEPTH_TEST);
-            } else {
-                glDisable(GL_BLEND);
-                glDepthMask(GL_TRUE);
-                glEnable(GL_DEPTH_TEST);
+                }
+                set_color(batch);
+                set_model(batch.transform);
+                gl.uniform_1f(dim_location, batch_dim(batch));
+                gl.uniform_1i(use_texture_location, texture != 0);
+                gl.uniform_1i(use_lightmap_location, lightmap != 0);
+                gl.uniform_1i(lightmap_only_location, view_style_ == 5);
+                gl.uniform_1i(force_opaque_location, !collision && batch.force_opaque);
+                gl.active_texture(gl_texture0);
+                glBindTexture(GL_TEXTURE_2D, texture);
+                gl.active_texture(gl_texture1);
+                glBindTexture(GL_TEXTURE_2D, lightmap);
+                glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first),
+                             static_cast<GLsizei>(batch.count));
             }
-            const auto material = static_cast<std::size_t>(batch.material);
-            GLuint texture{}, lightmap{};
-            if (!collision && (view_style_ == 0 || view_style_ == 6) &&
-                (scene_mode_ || !uv_sets_.empty()) && material < material_textures_.size())
-                texture = material_textures_[material];
-            else if ((view_style_ == 3 || view_style_ == 4) && selected_uv_set_ < uv_sets_.size())
-                texture = checker_texture_;
-            if ((view_style_ == 5 || view_style_ == 6) && (scene_mode_ || uv_sets_.size() > 1) &&
-                material < material_lightmap_textures_.size())
-                lightmap = material_lightmap_textures_[material];
-            set_color(batch);
-            set_model(batch.transform);
-            gl.uniform_1i(use_texture_location, texture != 0);
-            gl.uniform_1i(use_lightmap_location, lightmap != 0);
-            gl.uniform_1i(lightmap_only_location, view_style_ == 5);
-            gl.uniform_1i(force_opaque_location, !collision && batch.force_opaque);
-            gl.active_texture(gl_texture0);
-            glBindTexture(GL_TEXTURE_2D, texture);
-            gl.active_texture(gl_texture1);
-            glBindTexture(GL_TEXTURE_2D, lightmap);
-            glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first),
-                         static_cast<GLsizei>(batch.count));
         }
+        glDepthMask(GL_TRUE);
     }
-    if (view_style_ == 7 || wireframe_ ||
+    if (view_style_ == 7 || wireframe_ || (outline_selected_actor_ && has_selected_actor) ||
         (show_collision_ && (collision_style_ == 1 || collision_style_ == 2))) {
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
@@ -2623,6 +2874,7 @@ void GeometryPreview::render_gpu() {
         gl.uniform_1i(use_texture_location, 0);
         gl.uniform_1i(use_lightmap_location, 0);
         gl.uniform_1i(force_opaque_location, 1);
+        gl.uniform_1f(dim_location, 1.0F);
         const float color = view_style_ == 7 ? 0.84F : 0.09F;
         gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F,
                       view_style_ == 7 ? 0.95F : 0.13F, 1.0F);
@@ -2631,14 +2883,21 @@ void GeometryPreview::render_gpu() {
         glPolygonOffset(-1.0F, -1.0F);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         for (const auto& batch : draw_batches_) {
+            if (!batch_visible(batch)) continue;
             const bool collision = batch.layer == PreviewLayer::collision_world;
+            const bool selected_actor =
+                actor_owner(batch.owner_offset) == selected_mission_entry_;
             const bool draw_visual_wire =
-                !collision && show_visual_ && (view_style_ == 7 || wireframe_);
+                !collision && show_visual_ &&
+                (view_style_ == 7 || wireframe_ ||
+                 (outline_selected_actor_ && selected_actor));
             const bool draw_collision_wire =
                 collision && show_collision_ && (collision_style_ == 1 || collision_style_ == 2);
             if (!draw_visual_wire && !draw_collision_wire) continue;
             if (collision)
                 gl.uniform_4f(base_color_location, 0.1F, 0.95F, 0.95F, 1.0F);
+            else if (outline_selected_actor_ && selected_actor)
+                gl.uniform_4f(base_color_location, 1.0F, 0.72F, 0.12F, 1.0F);
             else
                 gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F,
                               view_style_ == 7 ? 0.95F : 0.13F, 1.0F);
@@ -2663,6 +2922,7 @@ void GeometryPreview::render_gpu() {
             gl.uniform_1i(use_texture_location, 0);
             gl.uniform_1i(use_lightmap_location, 0);
             gl.uniform_1i(force_opaque_location, 1);
+            gl.uniform_1f(dim_location, 1.0F);
             set_model({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0});
             gl.uniform_4f(base_color_location, 1.0F, 0.15F, 0.8F, 1.0F);
             glDepthFunc(GL_LEQUAL);
@@ -2870,7 +3130,8 @@ bool GeometryPreview::draw_scene(
         if (ImGui::BeginPopup("mission_overlays")) {
             constexpr const char* names[] = {"Actors",  "Navigation points", "Navigation links",
                                              "Dummies", "Cutscene cameras",  "Areas",
-                                             "Lights",  "Actor CMO",         "Actor Physics"};
+                                             "Lights",  "Effects",           "Actor CMO",
+                                             "Actor Physics"};
             for (std::size_t i = 0; i < std::size(names); ++i) {
                 std::unordered_set<std::uint32_t> identities;
                 ImU32 color = IM_COL32(180, 180, 180, 255);
@@ -2961,6 +3222,7 @@ bool GeometryPreview::draw_scene(
                 primitives.reserve(mission_points_.size() + mission_lines_.size());
                 for (const auto& point : mission_points_) {
                     if (!mission_layer_visible_[static_cast<std::size_t>(point.kind)]) continue;
+                    if (!mission_entry_visible(point.source_entry)) continue;
                     if (!rws::collision_point_visible(point.position, clips_)) continue;
                     if (const auto screen = project_point(point.position))
                         primitives.push_back({point.source_entry, csf::OverlayPrimitiveKind::point,
@@ -2969,6 +3231,7 @@ bool GeometryPreview::draw_scene(
                 }
                 for (const auto& line : mission_lines_) {
                     if (!mission_layer_visible_[static_cast<std::size_t>(line.kind)]) continue;
+                    if (!mission_entry_visible(line.source_entry)) continue;
                     if (!rws::collision_point_visible(line.first, clips_) ||
                         !rws::collision_point_visible(line.second, clips_))
                         continue;
@@ -3120,19 +3383,39 @@ bool GeometryPreview::draw_scene(
                                        label.c_str());
                 }
         }
-    if (show_physics_)
+    if (show_physics_ && !isolate_selected_actor_)
         for (const auto& line : physics_lines_)
             line3d(line.first, line.second, line.color, 1.8F);
     for (const auto& line : mission_lines_) {
+        if (isolate_selected_actor_ && selected_mission_entry_ != line.source_entry) continue;
         if (!mission_layer_visible_[static_cast<std::size_t>(line.kind)]) continue;
+        if (!mission_entry_visible(line.source_entry)) continue;
         if (!rws::collision_point_visible(line.first, clips_) ||
             !rws::collision_point_visible(line.second, clips_))
             continue;
-        line3d(line.first, line.second, line.color,
-               selected_mission_entry_ == line.source_entry ? 3.0F : 1.5F);
+        const float thickness = selected_mission_entry_ == line.source_entry ? 3.0F : 1.5F;
+        line3d(line.first, line.second, line.color, thickness);
+        if (line.directed) {
+            const auto a = project_point(line.first), b = project_point(line.second);
+            if (a && b) {
+                const float dx = b->x - a->x, dy = b->y - a->y;
+                const float length = std::sqrt(dx * dx + dy * dy);
+                if (length > 10.0F) {
+                    const float ux = dx / length, uy = dy / length;
+                    constexpr float size = 7.0F;
+                    const ImVec2 left{b->x - ux * size - uy * size * .55F,
+                                      b->y - uy * size + ux * size * .55F};
+                    const ImVec2 right{b->x - ux * size + uy * size * .55F,
+                                       b->y - uy * size - ux * size * .55F};
+                    draw_list->AddTriangleFilled(*b, left, right, line.color);
+                }
+            }
+        }
     }
     for (const auto& point : mission_points_) {
+        if (isolate_selected_actor_ && selected_mission_entry_ != point.source_entry) continue;
         if (!mission_layer_visible_[static_cast<std::size_t>(point.kind)]) continue;
+        if (!mission_entry_visible(point.source_entry)) continue;
         if (!rws::collision_point_visible(point.position, clips_)) continue;
         if (const auto screen = project_point(point.position)) {
             const bool selected = selected_mission_entry_ == point.source_entry;
@@ -3241,6 +3524,11 @@ void GeometryPreview::draw_scene_tools(const std::string_view collision_status) 
         std::any_of(draw_batches_.begin(), draw_batches_.end(), [](const DrawBatch& batch) {
             return batch.layer != PreviewLayer::collision_world;
         });
+    const bool selected_actor_available =
+        selected_mission_entry_ &&
+        std::ranges::any_of(draw_batches_, [&](const auto& batch) {
+            return actor_owner(batch.owner_offset) == selected_mission_entry_;
+        });
 
     ImGui::SeparatorText("Rendering");
     ImGui::BeginDisabled(!has_visual);
@@ -3248,6 +3536,57 @@ void GeometryPreview::draw_scene_tools(const std::string_view collision_status) 
     ImGui::EndDisabled();
     ImGui::BeginDisabled(!has_collision);
     ImGui::Checkbox("Show level collision", &show_collision_);
+    ImGui::EndDisabled();
+    ImGui::SeparatorText("Actor focus");
+    ImGui::BeginDisabled(!selected_actor_available);
+    if (ImGui::Button("Frame selected actor", {-1.0F, 0.0F})) {
+        rws::Vec3 minimum{std::numeric_limits<float>::max(),
+                          std::numeric_limits<float>::max(),
+                          std::numeric_limits<float>::max()};
+        rws::Vec3 maximum{-minimum.x, -minimum.y, -minimum.z};
+        bool found{};
+        for (const auto& batch : draw_batches_) {
+            if (actor_owner(batch.owner_offset) != selected_mission_entry_) continue;
+            const auto& m = batch.transform;
+            for (std::uint32_t i = 0; i < batch.count; ++i) {
+                const auto index = static_cast<std::size_t>(batch.first) + i;
+                if (index >= gpu_vertices_.size()) break;
+                const auto& vertex = gpu_vertices_[index];
+                const rws::Vec3 point{m[0] * vertex.x + m[1] * vertex.y + m[2] * vertex.z + m[3],
+                                      m[4] * vertex.x + m[5] * vertex.y + m[6] * vertex.z + m[7],
+                                      m[8] * vertex.x + m[9] * vertex.y + m[10] * vertex.z + m[11]};
+                minimum = {std::min(minimum.x, point.x), std::min(minimum.y, point.y),
+                           std::min(minimum.z, point.z)};
+                maximum = {std::max(maximum.x, point.x), std::max(maximum.y, point.y),
+                           std::max(maximum.z, point.z)};
+                found = true;
+            }
+        }
+        if (found) {
+            const rws::Vec3 actor_center{(minimum.x + maximum.x) * 0.5F,
+                                         (minimum.y + maximum.y) * 0.5F,
+                                         (minimum.z + maximum.z) * 0.5F};
+            const auto dx = maximum.x - minimum.x, dy = maximum.y - minimum.y,
+                       dz = maximum.z - minimum.z;
+            frame_bounds(actor_center, std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz),
+                                                0.001F));
+        }
+    }
+    ImGui::Checkbox("Isolate selected actor", &isolate_selected_actor_);
+    ImGui::Checkbox("Dim unselected scene", &dim_unselected_actors_);
+    ImGui::Checkbox("Outline selected actor", &outline_selected_actor_);
+    if (selected_mission_entry_) {
+        const auto hand = actor_hand_poses_.find(*selected_mission_entry_);
+        if (hand != actor_hand_poses_.end()) {
+            if (hand->second.followed)
+                ImGui::TextWrapped("Weapon follows %s", hand->second.frame_label.c_str());
+            else if (!hand->second.frame_label.empty())
+                ImGui::TextWrapped("Weapon uses authored pose; %s is ready when an animation is active",
+                                   hand->second.frame_label.c_str());
+            else
+                ImGui::TextWrapped("Weapon uses authored pose; no matching hand frame was found");
+        }
+    }
     ImGui::EndDisabled();
     if (view_style_ != 7) ImGui::Checkbox("Wire overlay", &wireframe_);
     ImGui::Checkbox("Cull backfaces", &cull_backfaces_);
@@ -3262,12 +3601,47 @@ void GeometryPreview::draw_scene_tools(const std::string_view collision_status) 
         ImGui::SetNextItemWidth(-1.0F);
         ImGui::SliderFloat("##lightmap_intensity", &lightmap_intensity_, 0.25F, 4.0F);
     }
-    ImGui::Text("DDS textures: %zu loaded", loaded_texture_count_);
+    const auto maximum_texture_variant = texture_catalog_.maximum_variant();
+    if (maximum_texture_variant != 0) {
+        const auto variant_label = texture_variant_ == 0
+                                       ? std::string("Base")
+                                       : "Alt " + [&] {
+                                             std::ostringstream value;
+                                             value << std::setw(3) << std::setfill('0')
+                                                   << texture_variant_;
+                                             return value.str();
+                                         }();
+        ImGui::TextDisabled("TXL texture variant");
+        ImGui::SetNextItemWidth(-1.0F);
+        if (ImGui::BeginCombo("##texture_variant", variant_label.c_str())) {
+            for (std::uint32_t variant = 0; variant <= maximum_texture_variant; ++variant) {
+                const auto label = variant == 0
+                                       ? std::string("Base")
+                                       : "Alt " + [&] {
+                                             std::ostringstream value;
+                                             value << std::setw(3) << std::setfill('0') << variant;
+                                             return value.str();
+                                         }();
+                if (ImGui::Selectable(label.c_str(), texture_variant_ == variant)) {
+                    texture_variant_ = variant;
+                    scene_mode_ = false;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("Falls back to Base for textures without this alternative");
+    }
+    ImGui::Text("Textures: %zu loaded", loaded_texture_count_);
     ImGui::Text("Unresolved slots: %zu", missing_texture_count_);
     if (!texture_status_.empty()) {
         ImGui::PushTextWrapPos(0.0F);
         ImGui::TextColored(ImVec4(1.0F, 0.68F, 0.28F, 1.0F), "%s", texture_status_.c_str());
         ImGui::PopTextWrapPos();
+    }
+    if (!texture_diagnostics_.empty() && ImGui::TreeNode("Texture diagnostics")) {
+        for (const auto& diagnostic : texture_diagnostics_)
+            ImGui::BulletText("%s", diagnostic.c_str());
+        ImGui::TreePop();
     }
 
     ImGui::SeparatorText("Collision");

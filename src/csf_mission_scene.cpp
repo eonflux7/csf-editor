@@ -237,6 +237,36 @@ void json_raw_fields(std::ostringstream& out, const std::vector<RawField>& field
 
 } // namespace
 
+float mission_actor_angle_radians(const float degrees) noexcept {
+    return degrees * 0.01745329251994329577F;
+}
+
+const NavPoint* MissionScene::navigation_point(const std::int32_t group_id,
+                                               const std::int32_t point_id) const noexcept {
+    const NavGroup* owner{};
+    for (const auto& group : navigation_)
+        if (group.id == group_id) {
+            if (owner) return nullptr;
+            owner = &group;
+        }
+    if (!owner) return nullptr;
+    const NavPoint* result{};
+    for (const auto& point : owner->points)
+        if (point.id == point_id) {
+            if (result) return nullptr;
+            result = &point;
+        }
+    return result;
+}
+
+std::optional<Vec3>
+MissionScene::actor_spawn_position(const MissionActor& actor) const noexcept {
+    if (actor.group && actor.cell && *actor.group >= 0 && *actor.cell >= 0)
+        if (const auto* point = navigation_point(*actor.group, *actor.cell); point && point->position)
+            return point->position;
+    return actor.position;
+}
+
 MissionScene MissionScene::project(const Document& document) {
     MissionScene scene;
     scene.source_path_ = document.source_path();
@@ -295,6 +325,21 @@ MissionScene MissionScene::project(const Document& document) {
             actor.collision = integer(child(document, record, ".COLISION"));
             if (const auto flags = integer(child(document, record, ".FLAGS")))
                 actor.flags = static_cast<std::uint32_t>(*flags);
+            actor.secondary_explosion =
+                integer(child(document, record, ".SEGUNDA_EXPLOSION"));
+            actor.faction = string_value(document, child(document, record, ".BANDO"));
+            actor.portrait = string_value(document, child(document, record, ".PORTRAIT"));
+            if (const auto* animations = child(document, record, ".ANIMACIONES"))
+                for (const auto& item : animations->children)
+                    actor.animations.push_back(
+                        {integer(child(document, item, ".ID")),
+                         string_value(document, child(document, item, ".TIPO"))});
+            if (const auto* box = child(document, record, ".DOOR_BOX");
+                box && box->children.size() >= 2) {
+                const auto first = vec3(&box->children[0]);
+                const auto second = vec3(&box->children[1]);
+                if (first && second) actor.door_box = std::array<Vec3, 2>{*first, *second};
+            }
             if (const auto* cell = child(document, record, ".CELDA")) {
                 actor.group = integer(child(document, *cell, ".GRUPO"));
                 actor.cell = integer(child(document, *cell, ".PUNTO"));
@@ -309,6 +354,11 @@ MissionScene MissionScene::project(const Document& document) {
                              {".SCRIPT", ExpectedField::string_or_container},
                              {".COLISION", ExpectedField::integer},
                              {".FLAGS", ExpectedField::integer},
+                             {".SEGUNDA_EXPLOSION", ExpectedField::integer},
+                             {".BANDO", ExpectedField::string},
+                             {".PORTRAIT", ExpectedField::string},
+                             {".ANIMACIONES", ExpectedField::container},
+                             {".DOOR_BOX", ExpectedField::container},
                              {".CELDA", ExpectedField::container}},
                             actor.unknown_fields, scene.diagnostics_);
             if (!actor.position)
@@ -316,6 +366,27 @@ MissionScene MissionScene::project(const Document& document) {
                                               "actor-position",
                                               "Actor has no finite three-real .POS value"});
             scene.actors_.push_back(std::move(actor));
+        }
+    }
+
+    if (const auto* effects = root_field(document, ".EFECTOS")) {
+        for (const auto& record : effects->children) {
+            MissionEffect effect{source(document, record)};
+            effect.id = integer(child(document, record, ".ID"));
+            effect.name = string_value(document, child(document, record, ".NOMBRE"));
+            effect.class_id = integer(child(document, record, ".CLASSID"));
+            effect.dummy_id = integer(child(document, record, ".DUMMY"));
+            effect.priority = integer(child(document, record, ".PRIORITY"));
+            effect.share_group = integer(child(document, record, ".SHARE_GROUP"));
+            validate_fields(document, record,
+                            {{".ID", ExpectedField::integer},
+                             {".NOMBRE", ExpectedField::string},
+                             {".CLASSID", ExpectedField::integer},
+                             {".DUMMY", ExpectedField::integer},
+                             {".PRIORITY", ExpectedField::integer},
+                             {".SHARE_GROUP", ExpectedField::integer}},
+                            effect.unknown_fields, scene.diagnostics_);
+            scene.effects_.push_back(std::move(effect));
         }
     }
 
@@ -400,6 +471,8 @@ MissionScene MissionScene::project(const Document& document) {
                 area.flags = integer(child(document, record, ".FLAGS"));
                 area.occlusion = integer(child(document, record, ".OCLUSION"));
                 area.height = real(child(document, record, ".HEIGHT"));
+                area.reverb = integer(child(document, record, ".REVERB"));
+                area.limit_reverb = integer(child(document, record, ".LIMITREVERB"));
                 if (const auto* points = child(document, record, ".PUNTOS"))
                     for (const auto& item : points->children)
                         if (const auto value = vec3(child(document, item, ".POS")))
@@ -410,6 +483,8 @@ MissionScene MissionScene::project(const Document& document) {
                                  {".FLAGS", ExpectedField::integer},
                                  {".OCLUSION", ExpectedField::integer},
                                  {".HEIGHT", ExpectedField::real},
+                                 {".REVERB", ExpectedField::integer},
+                                 {".LIMITREVERB", ExpectedField::integer},
                                  {".PUNTOS", ExpectedField::container}},
                                 area.unknown_fields, scene.diagnostics_);
                 scene.areas_.push_back(std::move(area));
@@ -512,6 +587,17 @@ MissionScene MissionScene::project(const Document& document) {
              "invalid-navigation-reference",
              std::to_string(stats.invalid_connections) +
                  " navigation connection(s) reference missing groups or points"});
+    std::map<std::int32_t, std::size_t> dummy_counts;
+    for (const auto& dummy : scene.dummies_)
+        if (dummy.id) ++dummy_counts[*dummy.id];
+    for (const auto& effect : scene.effects_)
+        if (!effect.dummy_id || dummy_counts[*effect.dummy_id] != 1)
+            scene.diagnostics_.push_back(
+                {Diagnostic::Severity::warning, effect.source, "invalid-effect-dummy",
+                 !effect.dummy_id
+                     ? "Effect has no dummy placement reference"
+                     : "Effect dummy ID " + std::to_string(*effect.dummy_id) +
+                           (dummy_counts[*effect.dummy_id] == 0 ? " is missing" : " is ambiguous")});
     auto non_finite = [&](const CsfSourceId& where, const std::string& field,
                           const std::optional<float> value) {
         if (value && !std::isfinite(*value))
@@ -572,6 +658,16 @@ void MissionSymbolIndex::add_scene(const MissionScene& scene) {
         add(value.name, SymbolCategory::area, value.source, ".NOMBRE");
     for (const auto& value : scene.lights())
         add(value.name, SymbolCategory::light, value.source, ".NOMBRE");
+    for (const auto& value : scene.effects()) {
+        add(value.name, SymbolCategory::effect, value.source, ".NOMBRE");
+        if (value.class_id)
+            sites_.push_back({"class:" + std::to_string(*value.class_id), SymbolCategory::effect,
+                              SymbolRole::typed_reference, value.source, ".CLASSID"});
+        if (value.dummy_id)
+            sites_.push_back({"dummy:" + std::to_string(*value.dummy_id),
+                              SymbolCategory::dummy, SymbolRole::typed_reference, value.source,
+                              ".DUMMY"});
+    }
 }
 
 void MissionSymbolIndex::add_document(const Document& document) {
@@ -687,6 +783,28 @@ std::string mission_scene_json(const MissionScene& scene) {
         json_optional_number(out, value.collision);
         out << ",\"flags\":";
         json_optional_number(out, value.flags);
+        out << ",\"secondary_explosion\":";
+        json_optional_number(out, value.secondary_explosion);
+        out << ",\"faction\":";
+        json_optional_string(out, value.faction);
+        out << ",\"portrait\":";
+        json_optional_string(out, value.portrait);
+        out << ",\"animations\":[";
+        for (std::size_t i = 0; i < value.animations.size(); ++i) {
+            if (i) out << ',';
+            out << "{\"id\":";
+            json_optional_number(out, value.animations[i].id);
+            out << ",\"type\":";
+            json_optional_string(out, value.animations[i].type);
+            out << '}';
+        }
+        out << "],\"door_box\":";
+        if (value.door_box) {
+            out << "[[" << (*value.door_box)[0].x << ',' << (*value.door_box)[0].y << ','
+                << (*value.door_box)[0].z << "],[" << (*value.door_box)[1].x << ','
+                << (*value.door_box)[1].y << ',' << (*value.door_box)[1].z << "]]";
+        } else
+            out << "null";
         out << ",\"unknown_fields\":";
         json_raw_fields(out, value.unknown_fields);
         out << '}';
@@ -814,6 +932,10 @@ std::string mission_scene_json(const MissionScene& scene) {
         json_optional_number(out, value.occlusion);
         out << ",\"height\":";
         json_optional_number(out, value.height);
+        out << ",\"reverb\":";
+        json_optional_number(out, value.reverb);
+        out << ",\"limit_reverb\":";
+        json_optional_number(out, value.limit_reverb);
         out << ",\"points\":[";
         for (std::size_t i = 0; i < value.points.size(); ++i) {
             if (i) out << ',';
@@ -848,6 +970,29 @@ std::string mission_scene_json(const MissionScene& scene) {
         json_optional_number(out, value.modulate);
         out << ",\"radius\":";
         json_optional_number(out, value.radius);
+        out << ",\"unknown_fields\":";
+        json_raw_fields(out, value.unknown_fields);
+        out << '}';
+    }
+    out << "],\"effects\":[";
+    comma = false;
+    for (const auto& value : scene.effects()) {
+        if (comma) out << ',';
+        comma = true;
+        out << "{\"source\":";
+        json_source(out, value.source);
+        out << ",\"id\":";
+        json_optional_number(out, value.id);
+        out << ",\"name\":";
+        json_optional_string(out, value.name);
+        out << ",\"class_id\":";
+        json_optional_number(out, value.class_id);
+        out << ",\"dummy_id\":";
+        json_optional_number(out, value.dummy_id);
+        out << ",\"priority\":";
+        json_optional_number(out, value.priority);
+        out << ",\"share_group\":";
+        json_optional_number(out, value.share_group);
         out << ",\"unknown_fields\":";
         json_raw_fields(out, value.unknown_fields);
         out << '}';
@@ -896,6 +1041,8 @@ const char* symbol_category_name(const SymbolCategory value) noexcept {
         return "area";
     case SymbolCategory::light:
         return "light";
+    case SymbolCategory::effect:
+        return "effect";
     case SymbolCategory::script:
         return "script";
     case SymbolCategory::database_record:

@@ -45,7 +45,10 @@ exports identify their schema as `csf-mission-graph-1`.
 - VIS begins with four unsigned 32-bit length-prefixed byte strings: visual map,
   collision map, texture directory, and sky model. Remaining bytes are retained.
 - TXL is line-oriented. Empty lines are ignored; duplicate non-empty paths and
-  their original line numbers remain separate edges.
+  their original line numbers remain separate edges. Resolved paths also form a
+  case-insensitive texture catalog keyed by filename stem. `_AltNNN` suffixes
+  define numbered alternatives of the unsuffixed family even when the image
+  extension changes between DDS and PNG.
 - M3D records currently validate as a 32-bit length, path bytes, and four raw
   bytes. A final four-byte terminator/tail is retained rather than named.
 - AND records currently validate as a 32-bit length, path bytes, and two raw

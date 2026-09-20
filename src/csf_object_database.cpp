@@ -53,7 +53,8 @@ std::optional<ObjectReference::Kind> reference_kind(const std::string& name) {
         key == "MODELFILE")
         return ObjectReference::Kind::physics_model;
     if (key.find("LOD") != std::string::npos) return ObjectReference::Kind::lod_model;
-    if (key == "MODELO" || key == "MODEL" || key == "MODELFILEVISUAL" || key == "DFF")
+    if (key == "MODELO" || key == "MODEL" || key == "MODELFILEVISUAL" || key == "DFF" ||
+        key == "MODELOTERCERA" || key == "THIRDPERSONMODEL")
         return ObjectReference::Kind::visual_model;
     return std::nullopt;
 }
@@ -117,17 +118,29 @@ ObjectDatabase ObjectDatabase::project(const Document& document) {
             definition.id = integer(*value);
         if (const auto* value = field(document, *record, {"NOMBRE", "NAME"}))
             definition.name = string_value(document, *value);
+        if (const auto* weapons = field(document, *record, {"ARMAS", "WEAPONS"})) {
+            if (const auto value = integer(*weapons)) definition.weapon_ids.push_back(*value);
+            for (const auto& item : weapons->children)
+                if (const auto value = integer(item)) definition.weapon_ids.push_back(*value);
+        }
+        const bool has_third_person_model =
+            field(document, *record, {"MODELOTERCERA", "THIRDPERSONMODEL"}) != nullptr;
         for (const auto& child : record->children) {
             const auto name = label(document, child);
+            const auto key = normalized(name);
             const auto value = string_value(document, child);
             const auto kind = value ? reference_kind(name, *value) : reference_kind(name);
             if (kind) {
+                // Player records carry a first-person hands model in MODELO and the full
+                // character in MODELO_TERCERA. The mission actor preview needs the latter.
+                if (has_third_person_model && (key == "MODELO" || key == "MODEL"))
+                    continue;
                 if (value && !value->empty())
                     definition.references.push_back({*kind, *value, source(document, child), name});
                 else
                     definition.unknown_fields.push_back({name, source(document, child)});
             } else if (!std::set<std::string>{"CLASSID", "IDCLASE", "ID", "OBJECTID", "NOMBRE",
-                                              "NAME"}
+                                              "NAME", "ARMAS", "WEAPONS"}
                             .contains(normalized(name)))
                 definition.unknown_fields.push_back({name, source(document, child)});
         }
@@ -143,6 +156,36 @@ ObjectDatabase ObjectDatabase::project(const Document& document) {
         result.definitions_.push_back(std::move(definition));
     }
     return result;
+}
+
+WeaponDatabase WeaponDatabase::project(const Document& document) {
+    WeaponDatabase result;
+    std::vector<const Node*> records;
+    for (const auto& root : document.roots())
+        collect_records(document, root, records);
+    for (const auto* record : records) {
+        const auto* id = field(document, *record, {"ID"});
+        const auto* file = field(document, *record, {"FILE"});
+        const auto* file2 = field(document, *record, {"FILE2"});
+        if (!id || (!file && !file2)) continue;
+        WeaponDefinition definition;
+        definition.source = source(document, *record);
+        definition.id = integer(*id);
+        if (const auto* value = field(document, *record, {"NOMBRE", "NAME"}))
+            definition.name = string_value(document, *value);
+        if (file) definition.first_person_model = string_value(document, *file);
+        if (file2) definition.third_person_model = string_value(document, *file2);
+        if (const auto* value = field(document, *record, {"MANO", "HAND"}))
+            definition.hand = string_value(document, *value);
+        if (definition.id) result.definitions_.push_back(std::move(definition));
+    }
+    return result;
+}
+
+const WeaponDefinition* WeaponDatabase::find_id(const std::int32_t id) const noexcept {
+    const auto found = std::ranges::find_if(definitions_,
+                                            [&](const auto& value) { return value.id == id; });
+    return found == definitions_.end() ? nullptr : &*found;
 }
 
 std::vector<const ObjectDefinition*> ObjectDatabase::find_class(const std::int32_t class_id) const {

@@ -7,14 +7,19 @@
   },
   "configurePresets": [
     {
-      "name": "base",
+      "name": "windows-base",
       "hidden": true,
-      "generator": "Visual Studio 18 2026"
+      "generator": "Visual Studio 18 2026",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
     },
     {
       "name": "default",
       "displayName": "Full Windows build",
-      "inherits": "base",
+      "inherits": "windows-base",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "FETCHCONTENT_UPDATES_DISCONNECTED": "ON",
@@ -24,12 +29,45 @@
     },
     {
       "name": "core",
-      "displayName": "Core, CLI, and tests only",
-      "inherits": "base",
+      "displayName": "Core, CLI, and tests only (Windows)",
+      "inherits": "windows-base",
       "binaryDir": "${sourceDir}/build-core",
       "cacheVariables": {
         "RWSMAN_BUILD_GUI": "OFF",
         "RWSMAN_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Ninja Multi-Config",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;Release",
+        "CMAKE_DEFAULT_BUILD_TYPE": "Release",
+        "RWSMAN_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "linux",
+      "displayName": "Full Linux build",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "RWSMAN_BUILD_GUI": "ON"
+      }
+    },
+    {
+      "name": "linux-core",
+      "displayName": "Core, CLI, and tests only (Linux)",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build-core",
+      "cacheVariables": {
+        "RWSMAN_BUILD_GUI": "OFF"
       }
     }
   ],
@@ -52,6 +90,26 @@
     {
       "name": "core-release",
       "configurePreset": "core",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux",
+      "configuration": "Release"
+    },
+    {
+      "name": "linux-core-debug",
+      "configurePreset": "linux-core",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux-core-release",
+      "configurePreset": "linux-core",
       "configuration": "Release"
     }
   ],
@@ -83,6 +141,38 @@
     {
       "name": "core-release",
       "configurePreset": "core",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-core-debug",
+      "configurePreset": "linux-core",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-core-release",
+      "configurePreset": "linux-core",
       "configuration": "Release",
       "output": {
         "outputOnFailure": true

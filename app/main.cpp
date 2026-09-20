@@ -48,11 +48,57 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace {
 
 std::optional<std::filesystem::path> dropped_file;
+
+std::string path_utf8(const std::filesystem::path& path) {
+    const auto value = path.generic_u8string();
+    return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+
+#ifndef NDEBUG
+std::filesystem::path mission_debug_log_path() {
+#ifdef _WIN32
+    std::array<wchar_t, 32768> executable{};
+    const auto length = GetModuleFileNameW(nullptr, executable.data(),
+                                           static_cast<DWORD>(executable.size()));
+    if (length > 0 && length < executable.size())
+        return std::filesystem::path(executable.data(), executable.data() + length).parent_path() /
+               "rws-man-debug.log";
+#endif
+    std::error_code error;
+    const auto directory = std::filesystem::current_path(error);
+    return (error ? std::filesystem::path{} : directory) / "rws-man-debug.log";
+}
+
+void begin_mission_debug_log(const std::filesystem::path& path) noexcept {
+    try {
+        std::ofstream output(mission_debug_log_path(), std::ios::trunc);
+        output << "rws-man Debug mission load\n  input (UTF-8): " << path_utf8(path)
+               << '\n';
+#ifdef _WIN32
+        output << "  Windows ANSI code page: " << GetACP()
+               << "\n  Windows OEM code page: " << GetOEMCP() << '\n';
+#endif
+    } catch (...) {
+    }
+}
+
+void log_mission_failure(const std::filesystem::path& path, const std::string_view stage,
+                         const std::string_view error) noexcept {
+    try {
+        std::ofstream output(mission_debug_log_path(), std::ios::app);
+        output << "mission load failed\n  stage: " << stage
+               << "\n  input (UTF-8): " << path_utf8(path) << "\n  error: " << error
+               << '\n';
+    } catch (...) {
+    }
+}
+#endif
 
 enum class Workspace {
     mission,
@@ -1082,19 +1128,43 @@ rws::Vec3 rws_point(const csf::Vec3 value) {
 MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
     using Kind = rwsman::GeometryPreview::MissionOverlayKind;
     MissionOverlays result;
+    const auto append_orientation = [&](const Kind kind, const std::uint32_t entry,
+                                        const csf::Vec3 position, const float heading,
+                                        const float pitch, const ImU32 color,
+                                        const float length = 120.0F) {
+        const auto origin = rws_point(position);
+        result.lines.push_back(
+            {kind, entry, origin,
+             {origin.x + std::sin(heading) * std::cos(pitch) * length,
+              origin.y - std::sin(pitch) * length,
+              origin.z + std::cos(heading) * std::cos(pitch) * length},
+             color, true});
+    };
     for (const auto& actor : scene.actors())
-        if (actor.position)
+        if (const auto spawn = scene.actor_spawn_position(actor)) {
+            const auto color = IM_COL32(255, 150, 60, 255);
             result.points.push_back({Kind::actor, actor.source.entry_index,
-                                     rws_point(*actor.position), actor.name.value_or("Actor"),
-                                     IM_COL32(255, 150, 60, 255)});
+                                     rws_point(*spawn), actor.name.value_or("Actor"), color});
+            append_orientation(
+                Kind::actor, actor.source.entry_index, *spawn,
+                csf::mission_actor_angle_radians(actor.heading.value_or(0)),
+                csf::mission_actor_angle_radians(actor.pitch.value_or(0)), color);
+        }
     std::map<std::pair<std::int32_t, std::int32_t>, csf::Vec3> nav_points;
     for (const auto& group : scene.navigation())
         for (const auto& point : group.points)
             if (point.position && point.group_id && point.id) {
                 nav_points[{*point.group_id, *point.id}] = *point.position;
-                result.points.push_back(
-                    {Kind::navigation_point, point.source.entry_index, rws_point(*point.position),
-                     point.name.value_or("Nav point"), IM_COL32(60, 205, 255, 255)});
+                const auto color = group.type.value_or(0) == 0
+                                       ? IM_COL32(60, 205, 255, 255)
+                                   : group.type == 1 ? IM_COL32(85, 235, 145, 255)
+                                                     : IM_COL32(245, 135, 245, 255);
+                result.points.push_back({Kind::navigation_point, point.source.entry_index,
+                                         rws_point(*point.position),
+                                         point.name.value_or("Nav point"), color});
+                append_orientation(Kind::navigation_point, point.source.entry_index,
+                                   *point.position, point.heading.value_or(0),
+                                   point.pitch.value_or(0), color, 70.0F);
             }
     auto add_connection = [&](const csf::NavConnection& connection) {
         if (!connection.valid) return;
@@ -1104,7 +1174,7 @@ MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
         if (origin != nav_points.end() && destination != nav_points.end())
             result.lines.push_back({Kind::navigation_connection, connection.source.entry_index,
                                     rws_point(origin->second), rws_point(destination->second),
-                                    IM_COL32(50, 175, 225, 180)});
+                                    IM_COL32(50, 175, 225, 180), true});
     };
     for (const auto& group : scene.navigation())
         for (const auto& connection : group.connections)
@@ -1112,22 +1182,38 @@ MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
     for (const auto& connection : scene.cross_group_connections())
         add_connection(connection);
     for (const auto& dummy : scene.dummies())
-        if (dummy.position)
+        if (dummy.position) {
+            const auto color = IM_COL32(190, 105, 255, 255);
             result.points.push_back({Kind::dummy, dummy.source.entry_index,
                                      rws_point(*dummy.position), dummy.name.value_or("Dummy"),
-                                     IM_COL32(190, 105, 255, 255)});
-    for (const auto& area : scene.areas())
+                                     color});
+            append_orientation(Kind::dummy, dummy.source.entry_index, *dummy.position,
+                               dummy.heading.value_or(0), dummy.pitch.value_or(0), color);
+        }
+    for (const auto& area : scene.areas()) {
         for (std::size_t i = 0; i < area.points.size(); ++i) {
             const auto& a = area.points[i];
             const auto& b = area.points[(i + 1) % area.points.size()];
             result.lines.push_back({Kind::area, area.source.entry_index, rws_point(a), rws_point(b),
                                     IM_COL32(255, 215, 70, 210)});
+            if (area.height && std::isfinite(*area.height) && *area.height != 0) {
+                const csf::Vec3 top_a{a.x, a.y + *area.height, a.z};
+                const csf::Vec3 top_b{b.x, b.y + *area.height, b.z};
+                result.lines.push_back({Kind::area, area.source.entry_index, rws_point(top_a),
+                                        rws_point(top_b), IM_COL32(255, 215, 70, 150)});
+                result.lines.push_back({Kind::area, area.source.entry_index, rws_point(a),
+                                        rws_point(top_a), IM_COL32(255, 215, 70, 110)});
+            }
         }
+    }
     for (const auto& light : scene.lights())
         if (light.position) {
+            const auto packed = light.color.value_or(0xFFF591U);
+            const auto color = IM_COL32((packed >> 16U) & 0xFFU, (packed >> 8U) & 0xFFU,
+                                        packed & 0xFFU, 255);
             result.points.push_back({Kind::light, light.source.entry_index,
                                      rws_point(*light.position), light.name.value_or("Light"),
-                                     IM_COL32(255, 245, 145, 255)});
+                                     color});
             if (light.radius && *light.radius > 0 && std::isfinite(*light.radius)) {
                 constexpr int segments = 24;
                 for (int i = 0; i < segments; ++i) {
@@ -1140,10 +1226,23 @@ MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
                                              center.z + std::sin(a) * *light.radius},
                                             {center.x + std::cos(b) * *light.radius, center.y,
                                              center.z + std::sin(b) * *light.radius},
-                                            IM_COL32(255, 235, 115, 120)});
+                                            (color & IM_COL32(255, 255, 255, 0)) |
+                                                IM_COL32(0, 0, 0, 120)});
                 }
             }
         }
+    for (const auto& effect : scene.effects()) {
+        if (!effect.dummy_id) continue;
+        const auto dummy = std::ranges::find_if(
+            scene.dummies(), [&](const auto& value) { return value.id == effect.dummy_id; });
+        if (dummy == scene.dummies().end() || !dummy->position) continue;
+        const auto color = IM_COL32(255, 95, 150, 255);
+        result.points.push_back({Kind::effect, effect.source.entry_index,
+                                 rws_point(*dummy->position), effect.name.value_or("Effect"),
+                                 color});
+        append_orientation(Kind::effect, effect.source.entry_index, *dummy->position,
+                           dummy->heading.value_or(0), dummy->pitch.value_or(0), color, 90.0F);
+    }
     return result;
 }
 
@@ -1164,11 +1263,8 @@ void append_cutscene_camera_overlays(
                 if (dummy == scene.dummies().end() || !dummy->position ||
                     !added.insert(dummy->source.entry_index).second)
                     continue;
-                const auto radians = [](const float value) {
-                    return std::abs(value) > 6.283185307F ? value * 0.01745329252F : value;
-                };
-                const float heading = radians(dummy->heading.value_or(0));
-                const float pitch = radians(dummy->pitch.value_or(0));
+                const float heading = dummy->heading.value_or(0);
+                const float pitch = dummy->pitch.value_or(0);
                 const auto origin = rws_point(*dummy->position);
                 const rws::Vec3 forward{std::sin(heading) * std::cos(pitch), -std::sin(pitch),
                                         std::cos(heading) * std::cos(pitch)};
@@ -1200,10 +1296,11 @@ void append_actor_collision_overlays(const csf::MissionScene& scene,
     using Kind = rwsman::GeometryPreview::MissionOverlayKind;
     std::unordered_map<std::string, std::shared_ptr<const csf::CmoDocument>> cmo_cache;
     std::unordered_map<std::string, std::shared_ptr<const rws::Document>> physics_cache;
-    const auto place = [](const csf::MissionActor& actor, const rws::Vec3 local) {
-        const float h = actor.heading.value_or(0), p = actor.pitch.value_or(0), cy = std::cos(h),
-                    sy = std::sin(h), cp = std::cos(p), sp = std::sin(p);
-        const auto origin = rws_point(*actor.position);
+    const auto place = [&](const csf::MissionActor& actor, const rws::Vec3 local) {
+        const float h = csf::mission_actor_angle_radians(actor.heading.value_or(0));
+        const float p = csf::mission_actor_angle_radians(actor.pitch.value_or(0));
+        const float cy = std::cos(h), sy = std::sin(h), cp = std::cos(p), sp = std::sin(p);
+        const auto origin = rws_point(*scene.actor_spawn_position(actor));
         return rws::Vec3{origin.x + cy * local.x + sy * sp * local.y + sy * cp * local.z,
                          origin.y + cp * local.y - sp * local.z,
                          origin.z - sy * local.x + cy * sp * local.y + cy * cp * local.z};
@@ -1240,11 +1337,11 @@ void append_actor_collision_overlays(const csf::MissionScene& scene,
          actor_index < scene.actors().size() && actor_index < associations.size(); ++actor_index) {
         const auto& actor = scene.actors()[actor_index];
         const auto& association = associations[actor_index];
-        if (!actor.position) continue;
+        if (!scene.actor_spawn_position(actor)) continue;
         if (association.collision_models.size() == 1 &&
             association.collision_models.front().resolved_path) {
             const auto path = *association.collision_models.front().resolved_path;
-            const auto key = csf::ResourceIndex::normalize(path.generic_string());
+            const auto key = csf::ResourceIndex::normalize_path(path);
             auto found = cmo_cache.find(key);
             if (found == cmo_cache.end()) try {
                     found = cmo_cache
@@ -1304,7 +1401,7 @@ void append_actor_collision_overlays(const csf::MissionScene& scene,
         if (association.physics_models.size() == 1 &&
             association.physics_models.front().resolved_path) {
             const auto path = *association.physics_models.front().resolved_path;
-            const auto key = csf::ResourceIndex::normalize(path.generic_string());
+            const auto key = csf::ResourceIndex::normalize_path(path);
             auto found = physics_cache.find(key);
             if (found == physics_cache.end()) try {
                     found = physics_cache
@@ -1393,6 +1490,18 @@ const csf::CsfSourceId* find_mission_source(const csf::MissionScene& scene,
             label = value.name.value_or("");
             return &value.source;
         }
+    for (const auto& value : scene.effects())
+        if (value.source.entry_index == entry) {
+            kind = "Effect";
+            label = value.name.value_or("");
+            return &value.source;
+        }
+    for (const auto& value : scene.folders())
+        if (value.source.entry_index == entry) {
+            kind = "Folder";
+            label = value.path;
+            return &value.source;
+        }
     return nullptr;
 }
 
@@ -1427,6 +1536,207 @@ void draw_csf_subtree(const csf::Document& document, const csf::Node& node) {
         ImGui::TreePop();
     }
     ImGui::PopID();
+}
+
+void draw_mission_typed_details(const csf::MissionScene& scene, const std::uint32_t entry,
+                                rwsman::GeometryPreview& preview) {
+    const auto position = [](const std::optional<csf::Vec3>& value) {
+        if (value)
+            ImGui::Text("Position: %.6g, %.6g, %.6g", value->x, value->y, value->z);
+        else
+            ImGui::TextDisabled("Position unavailable");
+    };
+    const auto unknown = [](const std::vector<csf::RawField>& fields) {
+        if (fields.empty()) return;
+        if (ImGui::TreeNode("Unsupported fields", "%zu unsupported field%s", fields.size(),
+                            fields.size() == 1 ? "" : "s")) {
+            for (const auto& field : fields)
+                ImGui::BulletText("%s [entry %u]", field.name.empty() ? "(anonymous)"
+                                                                     : field.name.c_str(),
+                                  field.source.entry_index);
+            ImGui::TreePop();
+        }
+    };
+    const auto select_point = [&](const std::optional<std::int32_t> group_id,
+                                  const std::optional<std::int32_t> point_id,
+                                  const char* label) {
+        if (!group_id || !point_id) return;
+        for (const auto& group : scene.navigation())
+            for (const auto& point : group.points)
+                if (point.group_id == group_id && point.id == point_id) {
+                    if (ImGui::SmallButton(label))
+                        preview.select_mission_entry(point.source.entry_index);
+                    return;
+                }
+    };
+    if (const auto found = std::ranges::find_if(
+            scene.actors(), [&](const auto& value) { return value.source.entry_index == entry; });
+        found != scene.actors().end()) {
+        ImGui::SeparatorText("Actor");
+        ImGui::Text("ID %d | class %d", found->id.value_or(-1), found->class_id.value_or(-1));
+        if (found->position)
+            ImGui::Text("Authored .POS: %.6g, %.6g, %.6g", found->position->x,
+                        found->position->y, found->position->z);
+        const auto spawn = scene.actor_spawn_position(*found);
+        if (spawn)
+            ImGui::Text("Effective spawn: %.6g, %.6g, %.6g%s", spawn->x, spawn->y, spawn->z,
+                        found->group && found->cell && *found->group >= 0 && *found->cell >= 0
+                            ? " (.CELDA)"
+                            : " (.POS fallback)");
+        ImGui::Text("Heading %.6g deg | pitch %.6g deg", found->heading.value_or(0),
+                    found->pitch.value_or(0));
+        ImGui::Text("Collision %d | flags 0x%08X | secondary explosion %d",
+                    found->collision.value_or(-1), found->flags.value_or(0),
+                    found->secondary_explosion.value_or(-1));
+        ImGui::Text("Navigation cell: %d:%d", found->group.value_or(-1),
+                    found->cell.value_or(-1));
+        select_point(found->group, found->cell, "Select navigation cell");
+        if (found->faction) ImGui::TextWrapped("Faction: %s", found->faction->c_str());
+        if (found->portrait) ImGui::TextWrapped("Portrait: %s", found->portrait->c_str());
+        if (!found->script_ids.empty()) {
+            std::string scripts;
+            for (const auto id : found->script_ids) {
+                if (!scripts.empty()) scripts += ", ";
+                scripts += std::to_string(id);
+            }
+            ImGui::TextWrapped("Scripts: %s", scripts.c_str());
+        } else if (found->script)
+            ImGui::TextWrapped("Script: %s", found->script->c_str());
+        for (const auto& animation : found->animations)
+            ImGui::BulletText("Animation %d: %s", animation.id.value_or(-1),
+                              animation.type.value_or("(unnamed)").c_str());
+        if (found->door_box)
+            ImGui::Text("Door box: [%.4g %.4g %.4g] to [%.4g %.4g %.4g]",
+                        (*found->door_box)[0].x, (*found->door_box)[0].y,
+                        (*found->door_box)[0].z, (*found->door_box)[1].x,
+                        (*found->door_box)[1].y, (*found->door_box)[1].z);
+        unknown(found->unknown_fields);
+        return;
+    }
+    for (const auto& group : scene.navigation()) {
+        if (group.source.entry_index == entry) {
+            ImGui::SeparatorText("Navigation group");
+            ImGui::Text("ID %d | type %d | %zu points | %zu local links",
+                        group.id.value_or(-1), group.type.value_or(-1), group.points.size(),
+                        group.connections.size());
+            unknown(group.unknown_fields);
+            return;
+        }
+        for (const auto& point : group.points)
+            if (point.source.entry_index == entry) {
+                ImGui::SeparatorText("Navigation point");
+                ImGui::Text("Identity %d:%d", point.group_id.value_or(-1),
+                            point.id.value_or(-1));
+                position(point.position);
+                ImGui::Text("Heading %.6g rad | pitch %.6g rad", point.heading.value_or(0),
+                            point.pitch.value_or(0));
+                std::size_t incoming{}, outgoing{};
+                const auto count = [&](const csf::NavConnection& link) {
+                    if (link.origin_group == point.group_id && link.origin_point == point.id)
+                        ++outgoing;
+                    if (link.destination_group == point.group_id &&
+                        link.destination_point == point.id)
+                        ++incoming;
+                };
+                for (const auto& owner : scene.navigation())
+                    for (const auto& link : owner.connections) count(link);
+                for (const auto& link : scene.cross_group_connections()) count(link);
+                ImGui::Text("Incoming %zu | outgoing %zu", incoming, outgoing);
+                unknown(point.unknown_fields);
+                return;
+            }
+        for (const auto& link : group.connections)
+            if (link.source.entry_index == entry) {
+                ImGui::SeparatorText("Navigation connection");
+                ImGui::Text("%d:%d -> %d:%d", link.origin_group.value_or(-1),
+                            link.origin_point.value_or(-1), link.destination_group.value_or(-1),
+                            link.destination_point.value_or(-1));
+                ImGui::Text("Status: %s", link.valid ? "valid" : link.invalid_reason.c_str());
+                select_point(link.origin_group, link.origin_point, "Select origin");
+                ImGui::SameLine();
+                select_point(link.destination_group, link.destination_point, "Select destination");
+                return;
+            }
+    }
+    for (const auto& link : scene.cross_group_connections())
+        if (link.source.entry_index == entry) {
+            ImGui::SeparatorText("Cross-group connection");
+            ImGui::Text("%d:%d -> %d:%d", link.origin_group.value_or(-1),
+                        link.origin_point.value_or(-1), link.destination_group.value_or(-1),
+                        link.destination_point.value_or(-1));
+            ImGui::Text("Status: %s", link.valid ? "valid" : link.invalid_reason.c_str());
+            select_point(link.origin_group, link.origin_point, "Select origin");
+            ImGui::SameLine();
+            select_point(link.destination_group, link.destination_point, "Select destination");
+            return;
+        }
+    if (const auto found = std::ranges::find_if(
+            scene.dummies(), [&](const auto& value) { return value.source.entry_index == entry; });
+        found != scene.dummies().end()) {
+        ImGui::SeparatorText("Dummy");
+        ImGui::Text("ID %d | heading %.6g rad | pitch %.6g rad", found->id.value_or(-1),
+                    found->heading.value_or(0), found->pitch.value_or(0));
+        position(found->position);
+        for (const auto& folder : scene.folders())
+            if (found->id && std::ranges::find(folder.element_ids, *found->id) !=
+                                 folder.element_ids.end())
+                ImGui::TextWrapped("Folder: %s", folder.path.c_str());
+        for (const auto& effect : scene.effects())
+            if (effect.dummy_id == found->id) {
+                ImGui::PushID(static_cast<int>(effect.source.entry_index));
+                if (ImGui::Selectable(("Effect: " + effect.name.value_or("(unnamed)")).c_str()))
+                    preview.select_mission_entry(effect.source.entry_index);
+                ImGui::PopID();
+            }
+        unknown(found->unknown_fields);
+        return;
+    }
+    if (const auto found = std::ranges::find_if(
+            scene.areas(), [&](const auto& value) { return value.source.entry_index == entry; });
+        found != scene.areas().end()) {
+        ImGui::SeparatorText("Area");
+        ImGui::Text("ID %d | %zu vertices | height %.6g", found->id.value_or(-1),
+                    found->points.size(), found->height.value_or(0));
+        ImGui::Text("Flags 0x%08X | occlusion %d | reverb %d | limit reverb %d",
+                    static_cast<unsigned>(found->flags.value_or(0)),
+                    found->occlusion.value_or(-1), found->reverb.value_or(-1),
+                    found->limit_reverb.value_or(-1));
+        unknown(found->unknown_fields);
+        return;
+    }
+    if (const auto found = std::ranges::find_if(
+            scene.lights(), [&](const auto& value) { return value.source.entry_index == entry; });
+        found != scene.lights().end()) {
+        ImGui::SeparatorText("Light");
+        ImGui::Text("ID %d | radius %.6g | modulation %d", found->id.value_or(-1),
+                    found->radius.value_or(0), found->modulate.value_or(-1));
+        position(found->position);
+        const auto color = found->color.value_or(0);
+        ImGui::ColorButton("SCN color",
+                           ImVec4(static_cast<float>((color >> 16U) & 0xFFU) / 255.0F,
+                                  static_cast<float>((color >> 8U) & 0xFFU) / 255.0F,
+                                  static_cast<float>(color & 0xFFU) / 255.0F, 1));
+        ImGui::SameLine();
+        ImGui::Text("#%06X", color & 0xFFFFFFU);
+        unknown(found->unknown_fields);
+        return;
+    }
+    if (const auto found = std::ranges::find_if(
+            scene.effects(), [&](const auto& value) { return value.source.entry_index == entry; });
+        found != scene.effects().end()) {
+        ImGui::SeparatorText("Effect");
+        ImGui::Text("ID %d | class %d | dummy %d", found->id.value_or(-1),
+                    found->class_id.value_or(-1), found->dummy_id.value_or(-1));
+        ImGui::Text("Priority %d | share group %d", found->priority.value_or(-1),
+                    found->share_group.value_or(-1));
+        if (found->dummy_id)
+            if (const auto dummy = std::ranges::find_if(
+                    scene.dummies(), [&](const auto& value) { return value.id == found->dummy_id; });
+                dummy != scene.dummies().end())
+                if (ImGui::SmallButton("Select placement dummy"))
+                    preview.select_mission_entry(dummy->source.entry_index);
+        unknown(found->unknown_fields);
+    }
 }
 
 } // namespace
@@ -1467,6 +1777,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
     std::optional<std::uint32_t> mission_animated_actor;
     std::string mission_active_animation;
     float mission_animation_time{}, mission_animation_speed{1.0F}, mission_animation_accumulator{};
+    int mission_animation_fps{30};
     bool mission_animation_playing{}, mission_animation_loop{true};
     auto recent_pairs = load_recent_pairs();
     std::string collision_status = "No document loaded";
@@ -1613,9 +1924,14 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
         }
     };
     auto load_mission = [&](const std::filesystem::path& path) {
+#ifndef NDEBUG
+        begin_mission_debug_log(path);
+#endif
+        const char* mission_stage = "building mission resource graph";
         try {
             auto candidate_graph = std::make_unique<csf::MissionGraph>(
                 csf::MissionGraph::load(csf::MissionOptions{path}));
+            mission_stage = "loading and projecting the mission scene";
             auto candidate_document =
                 std::make_unique<csf::Document>(csf::Document::load(candidate_graph->scene_path()));
             auto candidate_scene = std::make_unique<csf::MissionScene>(
@@ -1623,6 +1939,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             auto candidate_symbols = std::make_unique<csf::MissionSymbolIndex>();
             csf::ScriptAnimationIndex candidate_script_animations;
             candidate_symbols->add_scene(*candidate_scene);
+            mission_stage = "loading referenced scripts and databases";
             for (const auto& node : candidate_graph->nodes()) {
                 if (node.resolved_path.empty() ||
                     node.resolved_path == candidate_graph->scene_path() ||
@@ -1638,11 +1955,13 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 }
             }
             auto candidate_objects = std::make_unique<csf::ObjectDatabase>();
+            auto candidate_weapons = std::make_unique<csf::WeaponDatabase>();
             auto candidate_animations = std::make_unique<csf::AnimationCatalog>();
             std::vector<std::pair<std::filesystem::path, csf::CutsceneTimeline>>
                 candidate_cutscenes;
+            mission_stage = "projecting mission databases and cutscenes";
             for (const auto& node : candidate_graph->nodes()) {
-                auto name = node.resolved_path.filename().string();
+                auto name = path_utf8(node.resolved_path.filename());
                 std::ranges::transform(name, name.begin(), [](const unsigned char value) {
                     return static_cast<char>(std::tolower(value));
                 });
@@ -1650,6 +1969,9 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                     *candidate_objects =
                         csf::ObjectDatabase::project(csf::Document::load(node.resolved_path));
                 }
+                if (name == "armas.bdd" && node.state == csf::LoadState::available)
+                    *candidate_weapons =
+                        csf::WeaponDatabase::project(csf::Document::load(node.resolved_path));
                 if (name == "anims.bdd" && node.state == csf::LoadState::available)
                     *candidate_animations = csf::AnimationCatalog::project(
                         csf::Document::load(node.resolved_path), &candidate_graph->index());
@@ -1663,10 +1985,11 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             }
             auto candidate_associations = csf::associate_actors(
                 *candidate_scene, *candidate_objects, candidate_graph->index());
+            mission_stage = "loading mission actor models";
             std::vector<rwsman::GeometryPreview::MissionActorModel> candidate_actor_models;
             std::unordered_map<std::string, std::shared_ptr<const rws::Document>>
                 actor_prototype_cache;
-            constexpr std::size_t actor_budget = 512, prototype_budget = 32;
+            constexpr std::size_t actor_budget = 512, prototype_budget = 64;
             for (std::size_t i = 0;
                  i < candidate_associations.size() && candidate_actor_models.size() < actor_budget;
                  ++i) {
@@ -1674,8 +1997,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 if (association.visual_models.size() != 1 ||
                     !association.visual_models.front().resolved_path)
                     continue;
-                const auto key = csf::ResourceIndex::normalize(
-                    association.visual_models.front().resolved_path->generic_string());
+                const auto key = csf::ResourceIndex::normalize_path(
+                    *association.visual_models.front().resolved_path);
                 auto cached = actor_prototype_cache.find(key);
                 if (cached == actor_prototype_cache.end()) {
                     if (actor_prototype_cache.size() >= prototype_budget) continue;
@@ -1690,10 +2013,55 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                     }
                 }
                 const auto& actor = candidate_scene->actors()[i];
-                if (!actor.position) continue;
-                candidate_actor_models.push_back(
-                    {actor.source.entry_index, cached->second, rws_point(*actor.position),
-                     actor.heading.value_or(0), actor.pitch.value_or(0)});
+                const auto spawn = candidate_scene->actor_spawn_position(actor);
+                if (!spawn) continue;
+                rwsman::GeometryPreview::MissionActorModel actor_model{
+                    actor.source.entry_index, cached->second, rws_point(*spawn),
+                    csf::mission_actor_angle_radians(actor.heading.value_or(0)),
+                    csf::mission_actor_angle_radians(actor.pitch.value_or(0))};
+                if (association.definitions.size() == 1) {
+                    for (const auto weapon_id : association.definitions.front()->weapon_ids) {
+                        const auto* weapon = candidate_weapons->find_id(weapon_id);
+                        if (!weapon || !weapon->third_person_model) continue;
+                        const auto resolution = candidate_graph->index().resolve(
+                            *weapon->third_person_model);
+                        if (resolution.candidate_indices.size() != 1 ||
+                            resolution.status == csf::ResolutionStatus::ambiguous)
+                            continue;
+                        const auto& weapon_path = candidate_graph->index()
+                                                      .resources()[resolution.candidate_indices.front()]
+                                                      .path;
+                        const auto weapon_key = csf::ResourceIndex::normalize_path(weapon_path);
+                        auto weapon_cached = actor_prototype_cache.find(weapon_key);
+                        if (weapon_cached == actor_prototype_cache.end()) {
+                            if (actor_prototype_cache.size() >= prototype_budget) break;
+                            try {
+                                auto loaded =
+                                    std::make_shared<rws::Document>(rws::Document::load(weapon_path));
+                                if (loaded->chunks().empty() ||
+                                    loaded->chunks().front().type != 0x10U)
+                                    continue;
+                                weapon_cached =
+                                    actor_prototype_cache.emplace(weapon_key, std::move(loaded)).first;
+                            } catch (const std::exception&) {
+                                continue;
+                            }
+                        }
+                        auto hand = weapon->hand.value_or("");
+                        std::ranges::transform(hand, hand.begin(), [](const unsigned char value) {
+                            return static_cast<char>(std::toupper(value));
+                        });
+                        actor_model.attachments.push_back(
+                            {weapon_cached->second,
+                             weapon->name.value_or("Weapon " + std::to_string(weapon_id)),
+                             hand.find("IZQUIERDA") != std::string::npos ||
+                                 hand.find("LEFT") != std::string::npos});
+                        // Object definitions list inventory in preference order. Display the
+                        // first resolved third-person model as the default equipped item.
+                        break;
+                    }
+                }
+                candidate_actor_models.push_back(std::move(actor_model));
             }
             const auto resolved = [&](const csf::DependencyKind kind) -> std::filesystem::path {
                 for (const auto& edge : candidate_graph->edges()) {
@@ -1709,6 +2077,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             };
             const auto visual_path = resolved(csf::DependencyKind::visual_map);
             if (visual_path.empty()) throw std::runtime_error("Mission has no resolved visual map");
+            mission_stage = "loading resolved visual and collision maps";
             auto candidate_visual =
                 std::make_unique<rws::Document>(rws::Document::load(visual_path));
             std::unique_ptr<rws::Document> candidate_collision;
@@ -1720,6 +2089,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             append_cutscene_camera_overlays(*candidate_scene, candidate_cutscenes, overlays);
             append_actor_collision_overlays(*candidate_scene, candidate_associations, overlays);
 
+            mission_stage = "committing mission state and updating the UI";
             document = std::move(candidate_visual);
             collision_document = std::move(candidate_collision);
             mission_graph = std::move(candidate_graph);
@@ -1737,9 +2107,10 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             mission_animation_playing = false;
             main_is_collision = false;
             collision_status = collision_document
-                                   ? "Loaded mission collision map " + collision_path.string()
+                                   ? "Loaded mission collision map " + path_utf8(collision_path)
                                    : "Mission collision map is unresolved";
             geometry_preview.clear();
+            geometry_preview.set_texture_catalog(mission_graph->textures());
             geometry_preview.set_mission_overlays(overlays.points, overlays.lines);
             geometry_preview.set_mission_actor_models(std::move(candidate_actor_models));
             display_names = resolve_chunk_display_names(document->chunks(), document->bytes(),
@@ -1750,12 +2121,16 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             show_scene_tree = true;
             show_inspector = true;
             show_viewport_tools = false;
-            status = "Loaded mission " + mission_graph->scene_path().string();
+            status = "Loaded mission " + path_utf8(mission_graph->scene_path());
             const auto title =
-                mission_graph->scene_path().filename().string() + " - CSF Mission Explorer";
+                path_utf8(mission_graph->scene_path().filename()) + " - CSF Mission Explorer";
             glfwSetWindowTitle(window, title.c_str());
         } catch (const std::exception& error) {
             status = "Mission unchanged: " + std::string(error.what());
+#ifndef NDEBUG
+            log_mission_failure(path, mission_stage, error.what());
+            status += " (details: rws-man-debug.log beside rws-man.exe)";
+#endif
         }
     };
     if (initial_path) {
@@ -1851,8 +2226,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
         static std::string previous_window_title;
         const std::string window_title =
             mission_graph
-                ? mission_graph->scene_path().filename().string() + " - CSF Mission Explorer"
-            : document ? document->source_path().filename().string() +
+                ? path_utf8(mission_graph->scene_path().filename()) + " - CSF Mission Explorer"
+            : document ? path_utf8(document->source_path().filename()) +
                              (document->dirty() ? " *" : "") + " - CSF RWS Tools"
                        : "CSF RWS Tools - rws-man";
         if (window_title != previous_window_title) {
@@ -2077,9 +2452,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
             ImGui::SameLine();
             ImGui::TextDisabled(
                 "%s%s",
-                (mission_graph ? mission_graph->scene_path() : document->source_path())
-                    .filename()
-                    .string()
+                path_utf8((mission_graph ? mission_graph->scene_path() : document->source_path())
+                              .filename())
                     .c_str(),
                 document->dirty() ? " *" : "");
         }
@@ -2117,9 +2491,10 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                 ImGui::BeginChild("scene_tree", {panel_width, 0.0F}, ImGuiChildFlags_Borders);
                 if ((workspace == Workspace::mission || workspace == Workspace::animation) &&
                     mission_scene) {
-                    ImGui::Text("%zu actors | %zu nav points | %zu diagnostics",
+                    ImGui::Text("%zu actors | %zu nav points | %zu effects | %zu diagnostics",
                                 mission_scene->actors().size(),
                                 mission_scene->navigation_stats().points,
+                                mission_scene->effects().size(),
                                 mission_scene->diagnostics().size());
                     ImGui::SetNextItemWidth(-1.0F);
                     ImGui::InputTextWithHint("##mission_search", "Search name, class, ID...",
@@ -2263,6 +2638,79 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                         }
                         ImGui::TreePop();
                     }
+                    if (workspace == Workspace::mission && !mission_scene->effects().empty() &&
+                        ImGui::TreeNode("Effects")) {
+                        for (const auto& value : mission_scene->effects()) {
+                            const auto text = value.name.value_or("(unnamed)") + " [ID " +
+                                              std::to_string(value.id.value_or(-1)) + ", class " +
+                                              std::to_string(value.class_id.value_or(-1)) +
+                                              ", dummy " +
+                                              std::to_string(value.dummy_id.value_or(-1)) + "]";
+                            ImGui::PushID(static_cast<int>(value.source.entry_index));
+                            if (matches(text) &&
+                                ImGui::Selectable(text.c_str(),
+                                                  selected_entry == value.source.entry_index))
+                                geometry_preview.select_mission_entry(value.source.entry_index);
+                            ImGui::PopID();
+                        }
+                        ImGui::TreePop();
+                    }
+                    if (workspace == Workspace::mission && !mission_scene->folders().empty() &&
+                        ImGui::TreeNode("Folders")) {
+                        for (const auto& folder : mission_scene->folders()) {
+                            std::vector<std::uint32_t> entries;
+                            for (const auto id : folder.element_ids) {
+                                const auto dummy = std::ranges::find_if(
+                                    mission_scene->dummies(),
+                                    [&](const auto& value) { return value.id == id; });
+                                if (dummy != mission_scene->dummies().end())
+                                    entries.push_back(dummy->source.entry_index);
+                                const auto light = std::ranges::find_if(
+                                    mission_scene->lights(),
+                                    [&](const auto& value) { return value.id == id; });
+                                if (light != mission_scene->lights().end())
+                                    entries.push_back(light->source.entry_index);
+                            }
+                            bool visible = std::ranges::all_of(entries, [&](const auto entry) {
+                                return geometry_preview.mission_entry_visible(entry);
+                            });
+                            ImGui::PushID(static_cast<int>(folder.source.entry_index));
+                            if (ImGui::Checkbox("##visible", &visible))
+                                geometry_preview.set_mission_entries_visible(entries, visible);
+                            ImGui::SameLine();
+                            const auto label = (folder.path.empty() ? "(root)" : folder.path) +
+                                               " (" +
+                                               std::to_string(folder.element_ids.size()) + ")";
+                            if (ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+                                for (const auto id : folder.element_ids) {
+                                    const auto dummy = std::ranges::find_if(
+                                        mission_scene->dummies(),
+                                        [&](const auto& value) { return value.id == id; });
+                                    const auto light = std::ranges::find_if(
+                                        mission_scene->lights(),
+                                        [&](const auto& value) { return value.id == id; });
+                                    const csf::CsfSourceId* source = nullptr;
+                                    std::string text = "Missing element " + std::to_string(id);
+                                    if (dummy != mission_scene->dummies().end()) {
+                                        source = &dummy->source;
+                                        text = "Dummy: " + dummy->name.value_or("(unnamed)");
+                                    } else if (light != mission_scene->lights().end()) {
+                                        source = &light->source;
+                                        text = "Light: " + light->name.value_or("(unnamed)");
+                                    }
+                                    if (source && ImGui::Selectable(
+                                                      text.c_str(), selected_entry ==
+                                                                        source->entry_index))
+                                        geometry_preview.select_mission_entry(source->entry_index);
+                                    else if (!source)
+                                        ImGui::TextDisabled("%s", text.c_str());
+                                }
+                                ImGui::TreePop();
+                            }
+                            ImGui::PopID();
+                        }
+                        ImGui::TreePop();
+                    }
                     if (workspace == Workspace::mission && mission_animations &&
                         ImGui::TreeNode("Animation catalog")) {
                         ImGui::TextDisabled("%zu logical records",
@@ -2311,7 +2759,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                     }
                     if (!mission_cutscenes.empty() && ImGui::TreeNode("Cutscenes / control flow")) {
                         for (const auto& [path, timeline] : mission_cutscenes)
-                            if (ImGui::TreeNode(path.filename().string().c_str())) {
+                            if (ImGui::TreeNode(path_utf8(path.filename()).c_str())) {
                                 for (const auto& script : timeline.scripts())
                                     if (ImGui::TreeNode(&script, "%s [%zu blocks]",
                                                         script.name.c_str(),
@@ -2529,8 +2977,10 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                         ImGui::Text("Entry %u", mission_source->entry_index);
                         ImGui::Text("Offset 0x%llX",
                                     static_cast<unsigned long long>(mission_source->range.offset));
-                        ImGui::TextWrapped("%s", mission_source->file.string().c_str());
+                        ImGui::TextWrapped("%s", path_utf8(mission_source->file).c_str());
                         ImGui::TextDisabled("Stable identity is source file + entry index");
+                        draw_mission_typed_details(*mission_scene, mission_source->entry_index,
+                                                   geometry_preview);
                         if (const auto association = std::ranges::find_if(
                                 mission_actor_associations,
                                 [&](const auto& value) {
@@ -2541,6 +2991,17 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                             ImGui::Text("Class %d | definitions %zu",
                                         association->class_id.value_or(-1),
                                         association->definitions.size());
+                            if (association->definitions.size() == 1 &&
+                                !association->definitions.front()->weapon_ids.empty()) {
+                                std::string weapon_ids;
+                                for (const auto id : association->definitions.front()->weapon_ids) {
+                                    if (!weapon_ids.empty()) weapon_ids += ", ";
+                                    weapon_ids += std::to_string(id);
+                                }
+                                ImGui::TextWrapped("Default weapon IDs: %s", weapon_ids.c_str());
+                                ImGui::TextDisabled(
+                                    "The first resolved Armas.bdd FILE2 model is previewed.");
+                            }
                             const auto draw_associations =
                                 [](const char* label,
                                    const std::vector<csf::AssociationEvidence>& values) {
@@ -2701,16 +3162,26 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                                         mission_animation_time +=
                                             ImGui::GetIO().DeltaTime * mission_animation_speed;
                                         if (mission_animation_loop &&
-                                            mission_active_clip->duration > 0)
+                                            mission_active_clip->duration > 0) {
                                             mission_animation_time =
-                                                std::fmod(std::max(0.0F, mission_animation_time),
+                                                std::fmod(mission_animation_time,
                                                           mission_active_clip->duration);
-                                        else if (mission_animation_time >=
-                                                 mission_active_clip->duration) {
-                                            mission_animation_time = mission_active_clip->duration;
-                                            mission_animation_playing = false;
+                                            if (mission_animation_time < 0)
+                                                mission_animation_time +=
+                                                    mission_active_clip->duration;
+                                        } else {
+                                            if (mission_animation_time >=
+                                                mission_active_clip->duration) {
+                                                mission_animation_time =
+                                                    mission_active_clip->duration;
+                                                mission_animation_playing = false;
+                                            } else if (mission_animation_time <= 0) {
+                                                mission_animation_time = 0;
+                                                mission_animation_playing = false;
+                                            }
                                         }
-                                        if (mission_animation_accumulator >= 1.0F / 30.0F) {
+                                        if (mission_animation_accumulator >=
+                                            1.0F / static_cast<float>(mission_animation_fps)) {
                                             static_cast<void>(
                                                 geometry_preview.set_mission_actor_animation(
                                                     *mission_animated_actor, mission_active_clip,
@@ -2721,6 +3192,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                                     }
                                     ImGui::TextWrapped("Clip: %s",
                                                        mission_active_animation.c_str());
+                                    ImGui::Text("%.3f / %.3f s", mission_animation_time,
+                                                mission_active_clip->duration);
                                     if (ImGui::Button(mission_animation_playing
                                                           ? "Pause##actor_anim"
                                                           : "Play##actor_anim"))
@@ -2735,16 +3208,52 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                                                 mission_animation_loop));
                                     }
                                     ImGui::SameLine();
-                                    if (ImGui::Button("Step##actor_anim")) {
-                                        mission_animation_time =
-                                            std::min(mission_active_clip->duration,
-                                                     mission_animation_time + 1.0F / 30.0F);
+                                    if (ImGui::Button("Step -##actor_anim")) {
+                                        mission_animation_time = std::max(
+                                            0.0F, mission_animation_time -
+                                                      1.0F /
+                                                          static_cast<float>(mission_animation_fps));
                                         mission_animation_playing = false;
                                         static_cast<void>(
                                             geometry_preview.set_mission_actor_animation(
                                                 *mission_animated_actor, mission_active_clip,
                                                 mission_animation_time, mission_animation_loop));
                                     }
+                                    ImGui::SameLine();
+                                    if (ImGui::Button("Step +##actor_anim")) {
+                                        mission_animation_time =
+                                            std::min(mission_active_clip->duration,
+                                                     mission_animation_time +
+                                                         1.0F / static_cast<float>(
+                                                                    mission_animation_fps));
+                                        mission_animation_playing = false;
+                                        static_cast<void>(
+                                            geometry_preview.set_mission_actor_animation(
+                                                *mission_animated_actor, mission_active_clip,
+                                                mission_animation_time, mission_animation_loop));
+                                    }
+                                    const auto seek_key = [&](const bool next) {
+                                        std::optional<float> target;
+                                        for (const auto& key : mission_active_clip->keyframes) {
+                                            if (next && key.time > mission_animation_time + 1.0e-5F &&
+                                                (!target || key.time < *target))
+                                                target = key.time;
+                                            if (!next &&
+                                                key.time < mission_animation_time - 1.0e-5F &&
+                                                (!target || key.time > *target))
+                                                target = key.time;
+                                        }
+                                        if (!target) target = next ? mission_active_clip->duration : 0;
+                                        mission_animation_time = *target;
+                                        mission_animation_playing = false;
+                                        static_cast<void>(
+                                            geometry_preview.set_mission_actor_animation(
+                                                *mission_animated_actor, mission_active_clip,
+                                                mission_animation_time, mission_animation_loop));
+                                    };
+                                    if (ImGui::Button("Previous key##actor_anim")) seek_key(false);
+                                    ImGui::SameLine();
+                                    if (ImGui::Button("Next key##actor_anim")) seek_key(true);
                                     if (ImGui::Checkbox("Loop##actor_anim",
                                                         &mission_animation_loop))
                                         static_cast<void>(
@@ -2754,7 +3263,23 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                                     ImGui::SameLine();
                                     ImGui::SetNextItemWidth(100);
                                     ImGui::SliderFloat("Speed##actor_anim",
-                                                       &mission_animation_speed, .05F, 4, "%.2fx");
+                                                       &mission_animation_speed, -4, 4, "%.2fx");
+                                    constexpr const char* preview_rates[] = {"15 FPS", "24 FPS",
+                                                                            "25 FPS", "30 FPS",
+                                                                            "60 FPS"};
+                                    constexpr int preview_rate_values[] = {15, 24, 25, 30, 60};
+                                    int preview_rate_index{};
+                                    for (int i = 0; i < static_cast<int>(std::size(preview_rate_values));
+                                         ++i)
+                                        if (preview_rate_values[i] == mission_animation_fps)
+                                            preview_rate_index = i;
+                                    ImGui::SameLine();
+                                    ImGui::SetNextItemWidth(90);
+                                    if (ImGui::Combo("##actor_anim_fps", &preview_rate_index,
+                                                     preview_rates,
+                                                     static_cast<int>(std::size(preview_rates))))
+                                        mission_animation_fps =
+                                            preview_rate_values[preview_rate_index];
                                     if (ImGui::SliderFloat(
                                             "Time##actor_anim", &mission_animation_time, 0,
                                             std::max(.001F, mission_active_clip->duration),
@@ -2808,9 +3333,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                                         mission_animations->compatible(
                                             association->visual_models.size() == 1 &&
                                                     association->visual_models.front().resolved_path
-                                                ? association->visual_models.front()
-                                                      .resolved_path->filename()
-                                                      .string()
+                                                ? path_utf8(association->visual_models.front()
+                                                                .resolved_path->filename())
                                                 : std::string{});
                                     for (const auto* animation : compatible_animations) {
                                         if (traced.contains(animation)) continue;
@@ -2854,7 +3378,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                                 });
                             if (dummy != mission_scene->dummies().end()) {
                                 ImGui::SeparatorText("Cutscene camera references");
-                                ImGui::Text("Dummy ID %d | heading %.4g | pitch %.4g",
+                                ImGui::Text("Dummy ID %d | heading %.4g rad | pitch %.4g rad",
                                             dummy->id.value_or(-1), dummy->heading.value_or(0),
                                             dummy->pitch.value_or(0));
                                 std::size_t uses{};
@@ -2870,7 +3394,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                                                 continue;
                                             ++uses;
                                             ImGui::BulletText("%s / %s",
-                                                              path.filename().string().c_str(),
+                                                              path_utf8(path.filename()).c_str(),
                                                               script.name.c_str());
                                             ImGui::Indent();
                                             ImGui::TextDisabled("action %zu, %s, source entry %u",
@@ -2901,6 +3425,24 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                             if (actor != mission_scene->actors().end() && actor->class_id)
                                 sites = mission_symbols->exact("class:" +
                                                                std::to_string(*actor->class_id));
+                            const auto effect = std::ranges::find_if(
+                                mission_scene->effects(), [&](const auto& value) {
+                                    return value.source.entry_index == mission_source->entry_index;
+                                });
+                            if (effect != mission_scene->effects().end() && effect->class_id) {
+                                const auto typed = mission_symbols->exact(
+                                    "class:" + std::to_string(*effect->class_id));
+                                sites.insert(sites.end(), typed.begin(), typed.end());
+                            }
+                            const auto dummy = std::ranges::find_if(
+                                mission_scene->dummies(), [&](const auto& value) {
+                                    return value.source.entry_index == mission_source->entry_index;
+                                });
+                            if (dummy != mission_scene->dummies().end() && dummy->id) {
+                                const auto uses = mission_symbols->exact(
+                                    "dummy:" + std::to_string(*dummy->id));
+                                sites.insert(sites.end(), uses.begin(), uses.end());
+                            }
                             if (!mission_label.empty()) {
                                 const auto named = mission_symbols->exact(mission_label);
                                 sites.insert(sites.end(), named.begin(), named.end());
@@ -2915,7 +3457,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                                                        csf::symbol_category_name(site->category));
                                     ImGui::TextDisabled(
                                         "%s : entry %u",
-                                        site->source.file.filename().string().c_str(),
+                                        path_utf8(site->source.file.filename()).c_str(),
                                         site->source.entry_index);
                                 }
                             }
@@ -2944,7 +3486,8 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
                     if (ImGui::Button("Open full inspector", {-1.0F, 0.0F}))
                         workspace = Workspace::inspector;
                     ImGui::SeparatorText("Document");
-                    ImGui::TextWrapped("%s", document->source_path().filename().string().c_str());
+                    ImGui::TextWrapped("%s",
+                                       path_utf8(document->source_path().filename()).c_str());
                     ImGui::Text("%zu bytes", document->bytes().size());
                     ImGui::Text("%zu diagnostics", document->diagnostics().size());
                     ImGui::TextDisabled("Collision: %s", collision_status.c_str());
@@ -2958,7 +3501,7 @@ int run_app(const std::optional<std::filesystem::path>& initial_path) {
         ImGui::Separator();
         if (document)
             ImGui::TextDisabled("%s%s  |  %s  |  %zu chunks  |  %zu scene instances",
-                                document->source_path().filename().string().c_str(),
+                                path_utf8(document->source_path().filename()).c_str(),
                                 document->dirty() ? " *" : "", status.c_str(),
                                 document->chunks().size(), document->scene_instances().size());
         else

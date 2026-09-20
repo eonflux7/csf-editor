@@ -430,6 +430,13 @@ void print_spatial(const csf::MissionScene& scene) {
                       << value.position->z;
         std::cout << '\n';
     }
+    for (const auto& value : scene.effects())
+        std::cout << "EFFECT\tentry=" << value.source.entry_index
+                  << "\tid=" << value.id.value_or(-1) << "\tname=" << value.name.value_or("")
+                  << "\tclass=" << value.class_id.value_or(-1)
+                  << "\tdummy=" << value.dummy_id.value_or(-1)
+                  << "\tpriority=" << value.priority.value_or(-1)
+                  << "\tshare-group=" << value.share_group.value_or(-1) << '\n';
     for (const auto& value : scene.folders())
         std::cout << "FOLDER\tentry=" << value.source.entry_index << "\tpath=" << value.path
                   << "\telements=" << value.element_ids.size() << '\n';

@@ -54,6 +54,15 @@ struct MissionActor {
     std::optional<std::int32_t> cell;
     std::optional<std::int32_t> collision;
     std::optional<std::uint32_t> flags;
+    std::optional<std::int32_t> secondary_explosion;
+    std::optional<std::string> faction;
+    std::optional<std::string> portrait;
+    struct AnimationBinding {
+        std::optional<std::int32_t> id;
+        std::optional<std::string> type;
+    };
+    std::vector<AnimationBinding> animations;
+    std::optional<std::array<Vec3, 2>> door_box;
     std::vector<RawField> unknown_fields;
 };
 
@@ -117,7 +126,20 @@ struct MissionArea {
     std::optional<std::int32_t> flags;
     std::optional<std::int32_t> occlusion;
     std::optional<float> height;
+    std::optional<std::int32_t> reverb;
+    std::optional<std::int32_t> limit_reverb;
     std::vector<Vec3> points;
+    std::vector<RawField> unknown_fields;
+};
+
+struct MissionEffect {
+    CsfSourceId source;
+    std::optional<std::int32_t> id;
+    std::optional<std::string> name;
+    std::optional<std::int32_t> class_id;
+    std::optional<std::int32_t> dummy_id;
+    std::optional<std::int32_t> priority;
+    std::optional<std::int32_t> share_group;
     std::vector<RawField> unknown_fields;
 };
 
@@ -149,6 +171,10 @@ public:
     }
     [[nodiscard]] const std::vector<MissionActor>& actors() const noexcept { return actors_; }
     [[nodiscard]] const std::vector<NavGroup>& navigation() const noexcept { return navigation_; }
+    [[nodiscard]] const NavPoint* navigation_point(std::int32_t group_id,
+                                                   std::int32_t point_id) const noexcept;
+    [[nodiscard]] std::optional<Vec3>
+    actor_spawn_position(const MissionActor& actor) const noexcept;
     [[nodiscard]] const std::vector<NavConnection>& cross_group_connections() const noexcept {
         return cross_group_;
     }
@@ -158,6 +184,7 @@ public:
     [[nodiscard]] const std::vector<MissionDummy>& dummies() const noexcept { return dummies_; }
     [[nodiscard]] const std::vector<MissionArea>& areas() const noexcept { return areas_; }
     [[nodiscard]] const std::vector<MissionLight>& lights() const noexcept { return lights_; }
+    [[nodiscard]] const std::vector<MissionEffect>& effects() const noexcept { return effects_; }
     [[nodiscard]] const std::vector<FolderMembership>& folders() const noexcept { return folders_; }
     [[nodiscard]] const std::vector<TypedDiagnostic>& diagnostics() const noexcept {
         return diagnostics_;
@@ -174,6 +201,7 @@ private:
     std::vector<MissionDummy> dummies_;
     std::vector<MissionArea> areas_;
     std::vector<MissionLight> lights_;
+    std::vector<MissionEffect> effects_;
     std::vector<FolderMembership> folders_;
     std::vector<TypedDiagnostic> diagnostics_;
 };
@@ -185,6 +213,7 @@ enum class SymbolCategory {
     dummy,
     area,
     light,
+    effect,
     script,
     database_record,
     unknown
@@ -211,6 +240,7 @@ private:
 };
 
 [[nodiscard]] std::string mission_scene_json(const MissionScene& scene);
+[[nodiscard]] float mission_actor_angle_radians(float degrees) noexcept;
 [[nodiscard]] const char* symbol_category_name(SymbolCategory) noexcept;
 [[nodiscard]] const char* symbol_role_name(SymbolRole) noexcept;
 

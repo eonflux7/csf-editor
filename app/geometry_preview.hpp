@@ -1,5 +1,6 @@
 #pragma once
 
+#include "csf/mission.hpp"
 #include "rws/animation.hpp"
 #include "rws/document.hpp"
 #include "rws/world_recovery.hpp"
@@ -15,6 +16,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace rwsman {
@@ -29,6 +32,7 @@ public:
         cutscene_camera,
         area,
         light,
+        effect,
         actor_cmo,
         actor_physics,
         count
@@ -45,12 +49,19 @@ public:
         std::uint32_t source_entry{};
         rws::Vec3 first{}, second{};
         ImU32 color{};
+        bool directed{};
     };
     struct MissionActorModel {
+        struct Attachment {
+            std::shared_ptr<const rws::Document> model;
+            std::string label;
+            bool left_hand{};
+        };
         std::uint32_t source_entry{};
         std::shared_ptr<const rws::Document> prototype;
         rws::Vec3 position{};
-        float heading{}, pitch{};
+        float heading_radians{}, pitch_radians{};
+        std::vector<Attachment> attachments;
         std::shared_ptr<const rws::AnimationClip> animation;
         float animation_time{};
         bool animation_loop{true};
@@ -59,6 +70,7 @@ public:
     void set_mission_overlays(std::vector<MissionOverlayPoint> points,
                               std::vector<MissionOverlayLine> lines);
     void set_mission_actor_models(std::vector<MissionActorModel> models);
+    void set_texture_catalog(csf::TextureCatalog catalog);
     [[nodiscard]] bool set_mission_actor_animation(std::uint32_t source_entry,
                                                    std::shared_ptr<const rws::AnimationClip> clip,
                                                    float time, bool loop);
@@ -68,6 +80,8 @@ public:
     void select_mission_entry(const std::uint32_t entry) noexcept {
         selected_mission_entry_ = entry;
     }
+    void set_mission_entries_visible(std::span<const std::uint32_t> entries, bool visible);
+    [[nodiscard]] bool mission_entry_visible(std::uint32_t entry) const noexcept;
     void draw(const rws::Chunk& geometry_chunk, std::span<const std::byte> bytes,
               const std::filesystem::path& source_path);
     [[nodiscard]] bool draw_scene(const std::vector<rws::Chunk>& chunks,
@@ -100,6 +114,7 @@ private:
         std::uint32_t first{}, count{};
         std::uint64_t owner_offset{};
         bool force_opaque{};
+        bool actor_attachment{};
         PreviewLayer layer{PreviewLayer::visual_clump};
         std::size_t world_index{}, sector_index{};
         std::array<float, 12> transform{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
@@ -121,7 +136,19 @@ private:
         std::uint32_t source_entry{};
         std::size_t vertex_begin{};
         std::size_t vertex_count{};
-        std::uint16_t material{};
+    };
+    struct ActorGeometryMaterials {
+        std::uint64_t geometry_offset{};
+        std::vector<std::uint16_t> slots;
+    };
+    struct ActorPrototypeMaterials {
+        const rws::Document* prototype{};
+        std::vector<ActorGeometryMaterials> geometries;
+    };
+    struct ActorHandPose {
+        std::array<float, 12> transform{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+        std::string frame_label;
+        bool followed{};
     };
 
     bool load(const rws::Chunk& geometry_chunk, std::span<const std::byte> bytes,
@@ -131,10 +158,6 @@ private:
                     const std::filesystem::path& source_path,
                     const rws::Document* collision_document = nullptr,
                     bool main_is_collision = false);
-    [[nodiscard]] std::vector<DrawBatch> build_actor_geometry(const rws::Document& prototype,
-                                                              const MissionActorModel& actor,
-                                                              std::uint16_t material,
-                                                              std::vector<GpuVertex>& output);
     void refresh_mission_actor_animation();
     void select_uv_set(std::size_t index);
     void reset_view();
@@ -181,11 +204,15 @@ private:
     std::vector<std::string> material_texture_names_;
     std::vector<std::string> material_lightmap_texture_names_;
     std::vector<unsigned int> owned_texture_ids_;
+    std::unordered_set<unsigned int> translucent_texture_ids_;
     unsigned int checker_texture_{};
     unsigned int vertex_array_{}, vertex_buffer_{}, shader_program_{};
     std::size_t visual_material_slot_count_{};
     std::size_t loaded_texture_count_{}, missing_texture_count_{};
     std::string texture_status_;
+    std::vector<std::string> texture_diagnostics_;
+    csf::TextureCatalog texture_catalog_;
+    std::uint32_t texture_variant_{};
     rws::Vec3 center_{};
     float radius_{1.0F};
     rws::Vec3 visual_center_{}, collision_center_{};
@@ -226,13 +253,16 @@ private:
     std::array<bool, static_cast<std::size_t>(MissionOverlayKind::count)> mission_layer_visible_{
         {true, true, true, true, true, true, true, true, true}};
     std::optional<std::uint32_t> selected_mission_entry_;
+    std::unordered_set<std::uint32_t> hidden_mission_entries_;
     std::vector<SkeletonLine> skeleton_lines_;
     bool show_skeleton_{true}, show_skeleton_labels_{};
+    bool isolate_selected_actor_{}, dim_unselected_actors_{true}, outline_selected_actor_{true};
     std::vector<PhysicsLine> physics_lines_;
     bool show_physics_{true};
     std::vector<AnimatedActorRange> animated_actor_ranges_;
-    std::function<std::vector<DrawBatch>(const rws::Document&, const MissionActorModel&,
-                                         std::uint16_t)>
+    std::vector<ActorPrototypeMaterials> actor_material_layouts_;
+    std::unordered_map<std::uint32_t, ActorHandPose> actor_hand_poses_;
+    std::function<std::vector<DrawBatch>(const rws::Document&, const MissionActorModel&)>
         actor_geometry_builder_;
     bool animated_actor_dirty_{};
 };

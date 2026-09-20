@@ -43,6 +43,31 @@ else()
     target_compile_options(csf_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+include(FetchContent)
+
+# stb_image is a portable, single-header PNG decoder shared by the GUI and the
+# tests. The upstream repository publishes no release tags, so pin an exact
+# commit for reproducible fetches.
+FetchContent_Declare(stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG 2c980bb59875b0d32144a71867fbdebb2f77cd20
+)
+FetchContent_MakeAvailable(stb)
+
+add_library(stb_image STATIC src/stb_image_impl.cpp)
+target_include_directories(stb_image PUBLIC ${stb_SOURCE_DIR})
+
+add_library(rws_image STATIC src/texture_image.cpp)
+add_library(rws::image ALIAS rws_image)
+target_include_directories(rws_image PUBLIC include)
+target_compile_features(rws_image PUBLIC cxx_std_20)
+target_link_libraries(rws_image PUBLIC stb_image)
+if(MSVC)
+    target_compile_options(rws_image PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rws_image PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(rws-info app/rws_info.cpp)
 target_link_libraries(rws-info PRIVATE rws::core)
 
@@ -53,7 +78,6 @@ add_executable(csf-info app/csf_info.cpp)
 target_link_libraries(csf-info PRIVATE csf::core)
 
 if(RWSMAN_BUILD_GUI)
-    include(FetchContent)
     set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -87,7 +111,7 @@ if(RWSMAN_BUILD_GUI)
     target_compile_features(imgui_backend PUBLIC cxx_std_20)
 
     add_executable(rws-man WIN32 app/main.cpp app/geometry_preview.cpp)
-    target_link_libraries(rws-man PRIVATE rws::core csf::core imgui_backend)
+    target_link_libraries(rws-man PRIVATE rws::core csf::core rws::image imgui_backend)
     if(WIN32)
         target_link_libraries(rws-man PRIVATE Shell32 Comdlg32)
     endif()
@@ -96,6 +120,6 @@ endif()
 if(RWSMAN_BUILD_TESTS)
     enable_testing()
     add_executable(rws_core_tests tests/document_tests.cpp)
-    target_link_libraries(rws_core_tests PRIVATE rws::core csf::core)
+    target_link_libraries(rws_core_tests PRIVATE rws::core csf::core rws::image)
     add_test(NAME rws_core_tests COMMAND rws_core_tests)
 endif()

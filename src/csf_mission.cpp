@@ -2,6 +2,12 @@
 
 #include "csf/document.hpp"
 
+#if defined(_WIN32) && !defined(NDEBUG)
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -9,6 +15,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <ranges>
 #include <set>
@@ -18,6 +25,132 @@
 
 namespace csf {
 namespace {
+
+#ifndef NDEBUG
+std::filesystem::path mission_debug_log_path() {
+#ifdef _WIN32
+    std::array<wchar_t, 32768> executable{};
+    const auto length = GetModuleFileNameW(nullptr, executable.data(),
+                                           static_cast<DWORD>(executable.size()));
+    if (length > 0 && length < executable.size())
+        return std::filesystem::path(executable.data(), executable.data() + length).parent_path() /
+               "rws-man-debug.log";
+#endif
+    std::error_code error;
+    const auto directory = std::filesystem::current_path(error);
+    return (error ? std::filesystem::path{} : directory) / "rws-man-debug.log";
+}
+
+void debug_log_conversion_failure(const std::string_view context,
+                                  const std::filesystem::path& path,
+                                  const std::string_view error) noexcept {
+    try {
+        const auto utf8_path = path.generic_u8string();
+        std::ofstream output(mission_debug_log_path(), std::ios::app);
+        output << "path conversion failed\n  context: " << context
+               << "\n  path (UTF-8): ";
+        output.write(reinterpret_cast<const char*>(utf8_path.data()),
+                     static_cast<std::streamsize>(utf8_path.size()));
+        output << "\n  error: " << error
+               << '\n';
+    } catch (...) {
+    }
+}
+#endif
+
+std::string path_string(const std::filesystem::path& path, const std::string_view context) {
+    try {
+        const auto value = path.u8string();
+        return {reinterpret_cast<const char*>(value.data()), value.size()};
+    } catch (const std::exception& error) {
+#ifndef NDEBUG
+        debug_log_conversion_failure(context, path, error.what());
+#else
+        static_cast<void>(context);
+        static_cast<void>(error);
+#endif
+        throw;
+    }
+}
+
+std::string path_generic_string(const std::filesystem::path& path,
+                                const std::string_view context) {
+    try {
+        const auto value = path.generic_u8string();
+        return {reinterpret_cast<const char*>(value.data()), value.size()};
+    } catch (const std::exception& error) {
+#ifndef NDEBUG
+        debug_log_conversion_failure(context, path, error.what());
+#else
+        static_cast<void>(context);
+        static_cast<void>(error);
+#endif
+        throw;
+    }
+}
+
+void append_utf8(std::string& output, const std::uint32_t codepoint) {
+    if (codepoint < 0x80) {
+        output.push_back(static_cast<char>(codepoint));
+    } else if (codepoint < 0x800) {
+        output.push_back(static_cast<char>(0xC0U | (codepoint >> 6U)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
+    } else {
+        output.push_back(static_cast<char>(0xE0U | (codepoint >> 12U)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3FU)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
+    }
+}
+
+bool valid_utf8(const std::string_view value) {
+    std::size_t index{};
+    while (index < value.size()) {
+        const auto lead = static_cast<unsigned char>(value[index++]);
+        if (lead < 0x80) continue;
+        std::size_t trailing{};
+        std::uint32_t codepoint{};
+        if (lead >= 0xC2 && lead <= 0xDF) {
+            trailing = 1;
+            codepoint = lead & 0x1FU;
+        } else if (lead >= 0xE0 && lead <= 0xEF) {
+            trailing = 2;
+            codepoint = lead & 0x0FU;
+        } else if (lead >= 0xF0 && lead <= 0xF4) {
+            trailing = 3;
+            codepoint = lead & 0x07U;
+        } else {
+            return false;
+        }
+        if (value.size() - index < trailing) return false;
+        for (std::size_t i = 0; i < trailing; ++i) {
+            const auto byte = static_cast<unsigned char>(value[index++]);
+            if ((byte & 0xC0U) != 0x80U) return false;
+            codepoint = (codepoint << 6U) | (byte & 0x3FU);
+        }
+        if ((trailing == 2 && codepoint < 0x800) ||
+            (trailing == 3 && codepoint < 0x10000) || codepoint > 0x10FFFF ||
+            (codepoint >= 0xD800 && codepoint <= 0xDFFF))
+            return false;
+    }
+    return true;
+}
+
+std::string reference_utf8(const std::string_view value) {
+    if (valid_utf8(value)) return std::string(value);
+    constexpr std::array<std::uint16_t, 32> controls{
+        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+        0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+    };
+    std::string output;
+    output.reserve(value.size());
+    for (const unsigned char byte : value) {
+        const auto codepoint = byte >= 0x80 && byte <= 0x9F ? controls[byte - 0x80] : byte;
+        append_utf8(output, codepoint);
+    }
+    return output;
+}
 
 std::string slashes(std::string_view value) {
     std::string result(value);
@@ -43,7 +176,47 @@ std::string lower_ascii(std::string value) {
 }
 
 std::string extension_lower(std::string_view value) {
-    return lower_ascii(std::filesystem::path(value).extension().string());
+    const auto slash = value.find_last_of("/\\");
+    const auto dot = value.find_last_of('.');
+    if (dot == std::string_view::npos ||
+        (slash != std::string_view::npos && dot < slash))
+        return {};
+    return lower_ascii(std::string(value.substr(dot)));
+}
+
+struct TextureFamilyName {
+    std::string key;
+    std::uint32_t variant{};
+};
+
+TextureFamilyName texture_family_name(const std::string_view reference) {
+    const auto normalized = slashes(reference);
+    const auto slash = normalized.find_last_of('/');
+    const auto filename = normalized.substr(slash == std::string::npos ? 0 : slash + 1);
+    const auto dot = filename.find_last_of('.');
+    auto stem = lower_ascii(filename.substr(0, dot));
+    TextureFamilyName result{stem, 0};
+    const auto marker = stem.rfind("_alt");
+    if (marker == std::string::npos || marker + 4 == stem.size()) return result;
+    std::uint32_t variant{};
+    for (std::size_t index = marker + 4; index < stem.size(); ++index) {
+        const auto character = static_cast<unsigned char>(stem[index]);
+        if (!std::isdigit(character)) return result;
+        const auto digit = static_cast<std::uint32_t>(character - '0');
+        if (variant > (std::numeric_limits<std::uint32_t>::max() - digit) / 10U) return result;
+        variant = variant * 10U + digit;
+    }
+    result.key.resize(marker);
+    result.variant = variant;
+    return result;
+}
+
+std::string replace_extension(std::string value, const std::string_view extension) {
+    const auto slash = value.find_last_of("/\\");
+    const auto dot = value.find_last_of('.');
+    if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) value.resize(dot);
+    value += extension;
+    return value;
 }
 
 bool traversal_or_absolute(std::string_view reference) {
@@ -63,21 +236,22 @@ bool traversal_or_absolute(std::string_view reference) {
 
 std::vector<std::byte> read_file(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) throw std::runtime_error("Cannot open " + path.string());
+    if (!input) throw std::runtime_error("Cannot open " + path_string(path, "read failure path"));
     const auto end = input.tellg();
-    if (end < 0) throw std::runtime_error("Cannot size " + path.string());
+    if (end < 0) throw std::runtime_error("Cannot size " + path_string(path, "size failure path"));
     std::vector<std::byte> bytes(static_cast<std::size_t>(end));
     input.seekg(0);
     if (!bytes.empty())
         input.read(reinterpret_cast<char*>(bytes.data()),
                    static_cast<std::streamsize>(bytes.size()));
-    if (!input && !bytes.empty()) throw std::runtime_error("Cannot read " + path.string());
+    if (!input && !bytes.empty())
+        throw std::runtime_error("Cannot read " + path_string(path, "read failure path"));
     return bytes;
 }
 
 std::uint64_t content_hash(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot hash " + path.string());
+    if (!input) throw std::runtime_error("Cannot hash " + path_string(path, "hash failure path"));
     std::uint64_t hash = 14695981039346656037ULL;
     std::array<char, 64 * 1024> buffer{};
     while (input) {
@@ -183,7 +357,7 @@ const char* load_state_name(const LoadState state) noexcept {
     return "metadata-only";
 }
 
-ResourceKind kind_for_extension(const std::filesystem::path& path, const DependencyKind hint) {
+ResourceKind kind_for_reference(const std::string_view path, const DependencyKind hint) {
     if (hint == DependencyKind::visual_map) return ResourceKind::visual_map;
     if (hint == DependencyKind::collision_map) return ResourceKind::collision_map;
     if (hint == DependencyKind::texture_directory || hint == DependencyKind::texture)
@@ -192,7 +366,7 @@ ResourceKind kind_for_extension(const std::filesystem::path& path, const Depende
         return ResourceKind::render_model;
     if (hint == DependencyKind::physics_body) return ResourceKind::physics_body;
     if (hint == DependencyKind::animation) return ResourceKind::animation;
-    const auto extension = extension_lower(path.string());
+    const auto extension = extension_lower(path);
     if (extension == ".scn") return ResourceKind::mission_scene;
     if (extension == ".gsc") return ResourceKind::mission_script;
     if (extension == ".csc") return ResourceKind::cutscene_script;
@@ -217,6 +391,10 @@ ResourceKind kind_for_extension(const std::filesystem::path& path, const Depende
     return ResourceKind::unknown;
 }
 
+ResourceKind kind_for_extension(const std::filesystem::path& path, const DependencyKind hint) {
+    return kind_for_reference(path_string(path, "resource-kind extension"), hint);
+}
+
 std::filesystem::path infer_package_root(const std::filesystem::path& scene) {
     auto current = scene.parent_path();
     while (!current.empty()) {
@@ -234,18 +412,24 @@ std::filesystem::path choose_scene(const std::filesystem::path& input) {
     if (std::filesystem::is_regular_file(input))
         return std::filesystem::absolute(input).lexically_normal();
     if (!std::filesystem::is_directory(input))
-        throw std::runtime_error("Mission input does not exist: " + input.string());
+        throw std::runtime_error("Mission input does not exist: " +
+                                 path_string(input, "missing mission input"));
     std::vector<std::filesystem::path> scenes;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(
              input, std::filesystem::directory_options::skip_permission_denied)) {
-        if (entry.is_regular_file() && extension_lower(entry.path().string()) == ".scn")
+        if (entry.is_regular_file() &&
+            extension_lower(path_string(entry.path(), "mission-directory entry extension")) ==
+                ".scn")
             scenes.push_back(entry.path());
     }
     std::ranges::sort(scenes);
     if (scenes.empty()) throw std::runtime_error("Mission directory contains no SCN file");
-    const auto wanted = lower_ascii(input.filename().string());
+    const auto wanted =
+        lower_ascii(path_string(input.filename(), "mission-directory preferred name"));
     const auto match = std::ranges::find_if(
-        scenes, [&](const auto& path) { return lower_ascii(path.stem().string()) == wanted; });
+        scenes, [&](const auto& path) {
+            return lower_ascii(path_string(path.stem(), "mission candidate stem")) == wanted;
+        });
     if (match != scenes.end()) return std::filesystem::absolute(*match).lexically_normal();
     if (scenes.size() != 1)
         throw std::runtime_error(
@@ -258,7 +442,8 @@ std::filesystem::path choose_scene(const std::filesystem::path& input) {
 void ResourceIndex::add_root(const std::filesystem::path& root) {
     const auto absolute = std::filesystem::absolute(root).lexically_normal();
     if (!std::filesystem::is_directory(absolute))
-        throw std::runtime_error("Resource root is not a directory: " + absolute.string());
+        throw std::runtime_error("Resource root is not a directory: " +
+                                 path_string(absolute, "invalid resource root"));
     if (std::ranges::find(roots_, absolute) == roots_.end()) roots_.push_back(absolute);
 }
 
@@ -291,11 +476,13 @@ void ResourceIndex::build() {
                 paths.push_back(iterator->path());
             error.clear();
         }
-        std::ranges::sort(paths, {},
-                          [](const auto& path) { return slashes(path.generic_string()); });
+        std::ranges::sort(paths, {}, [](const auto& path) {
+            return slashes(path_generic_string(path, "resource-index sort key"));
+        });
         for (const auto& path : paths) {
             const auto relative = path.lexically_relative(roots_[root_index]);
-            const auto key = normalize(relative.generic_string());
+            const auto key =
+                normalize(path_generic_string(relative, "resource-index relative path"));
             const auto index = resources_.size();
             const auto size =
                 std::filesystem::is_regular_file(path, error)
@@ -321,16 +508,20 @@ std::string ResourceIndex::normalize(const std::string_view path) {
     return lower_ascii(slashes(path));
 }
 
+std::string ResourceIndex::normalize_path(const std::filesystem::path& path) {
+    return normalize(path_generic_string(path, "resource path normalization"));
+}
+
 Resolution ResourceIndex::resolve(const std::string_view reference,
                                   const std::optional<std::size_t> preferred_root) const {
     Resolution result;
-    result.original_reference = std::string(reference);
-    result.normalized_key = normalize(reference);
-    if (traversal_or_absolute(reference)) {
+    result.original_reference = reference_utf8(reference);
+    result.normalized_key = normalize(result.original_reference);
+    if (traversal_or_absolute(result.original_reference)) {
         result.status = ResolutionStatus::outside_root;
         return result;
     }
-    const auto exact_key = slashes(reference);
+    const auto exact_key = slashes(result.original_reference);
     auto candidates_for = [&](const std::string& key, const std::optional<std::size_t> root) {
         std::vector<std::size_t> candidates;
         if (const auto found = normalized_.find(key); found != normalized_.end()) {
@@ -342,7 +533,8 @@ Resolution ResourceIndex::resolve(const std::string_view reference,
     auto exact_candidates = [&](const std::optional<std::size_t> root, const std::string& wanted) {
         auto candidates = candidates_for(normalize(wanted), root);
         std::erase_if(candidates, [&](const auto index) {
-            return slashes(resources_[index].relative_path.generic_string()) != wanted;
+            return slashes(path_generic_string(resources_[index].relative_path,
+                                               "exact resource candidate")) != wanted;
         });
         return candidates;
     };
@@ -351,9 +543,9 @@ Resolution ResourceIndex::resolve(const std::string_view reference,
         if (candidates.empty()) return false;
         std::set<std::string> physical_paths;
         std::erase_if(candidates, [&](const auto index) {
-            const auto identity = normalize(std::filesystem::absolute(resources_[index].path)
-                                                .lexically_normal()
-                                                .generic_string());
+            const auto identity = normalize(path_generic_string(
+                std::filesystem::absolute(resources_[index].path).lexically_normal(),
+                "resource candidate identity"));
             return !physical_paths.insert(identity).second;
         });
         result.candidate_indices = std::move(candidates);
@@ -369,10 +561,8 @@ Resolution ResourceIndex::resolve(const std::string_view reference,
                    ResolutionStatus::case_mismatch))
             return result;
     }
-    if (extension_lower(reference) == ".dff") {
-        auto mapped = std::filesystem::path(exact_key);
-        mapped.replace_extension(".rpc");
-        const auto mapped_key = normalize(mapped.generic_string());
+    if (extension_lower(result.original_reference) == ".dff") {
+        const auto mapped_key = normalize(replace_extension(exact_key, ".rpc"));
         if (preferred_root &&
             decide(candidates_for(mapped_key, preferred_root), ResolutionStatus::mapped_dff_to_rpc))
             return result;
@@ -388,10 +578,9 @@ Resolution ResourceIndex::resolve(const std::string_view reference,
                    ResolutionStatus::shared_root_case_mismatch))
             return result;
     }
-    if (extension_lower(reference) == ".dff") {
-        auto mapped = std::filesystem::path(exact_key);
-        mapped.replace_extension(".rpc");
-        if (const auto found = logical_.find(normalize(mapped.generic_string()));
+    if (extension_lower(result.original_reference) == ".dff") {
+        if (const auto found =
+                logical_.find(normalize(replace_extension(exact_key, ".rpc")));
             found != logical_.end()) {
             decide(found->second, ResolutionStatus::mapped_dff_to_rpc);
             return result;
@@ -410,6 +599,76 @@ std::vector<std::size_t> ResourceIndex::find_path(const std::filesystem::path& p
     const auto absolute = std::filesystem::absolute(path).lexically_normal();
     for (std::size_t index = 0; index < resources_.size(); ++index)
         if (resources_[index].path.lexically_normal() == absolute) result.push_back(index);
+    return result;
+}
+
+void TextureCatalog::add(const AdapterResult& txl, const ResourceIndex& resources,
+                         const std::optional<std::size_t> preferred_root) {
+    for (const auto& reference : txl.references) {
+        if (reference.kind != DependencyKind::texture) continue;
+        const auto resolution = resources.resolve(reference.path, preferred_root);
+        if (resolution.candidate_indices.size() != 1 ||
+            resolution.status == ResolutionStatus::ambiguous ||
+            resolution.status == ResolutionStatus::missing ||
+            resolution.status == ResolutionStatus::outside_root)
+            continue;
+        const auto& resource = resources.resources()[resolution.candidate_indices.front()];
+        const auto family = texture_family_name(reference.path);
+        const auto identity = ResourceIndex::normalize_path(resource.path);
+        if (std::ranges::any_of(entries_, [&](const auto& entry) {
+                return entry.family_key == family.key && entry.variant == family.variant &&
+                       ResourceIndex::normalize_path(entry.resolved_path) == identity;
+            }))
+            continue;
+        entries_.push_back({reference.path, resource.path, family.key, family.variant,
+                            reference.source});
+    }
+}
+
+std::optional<std::filesystem::path>
+TextureCatalog::resolve(const std::string_view texture_name, const std::uint32_t variant) const {
+    auto family = texture_family_name(texture_name);
+    const auto requested_variant = variant == 0 && family.variant != 0 ? family.variant : variant;
+    const auto choose = [&](const std::uint32_t wanted) -> std::optional<std::filesystem::path> {
+        const auto normalized_reference = ResourceIndex::normalize(texture_name);
+        const TextureCatalogEntry* selected{};
+        std::string selected_identity;
+        for (const auto& entry : entries_) {
+            if (entry.family_key != family.key || entry.variant != wanted) continue;
+            const auto identity = ResourceIndex::normalize_path(entry.resolved_path);
+            if (ResourceIndex::normalize(entry.reference) == normalized_reference)
+                return entry.resolved_path;
+            if (!selected) {
+                selected = &entry;
+                selected_identity = identity;
+            } else if (identity != selected_identity) {
+                // A bare material name cannot safely choose between two distinct TXL paths.
+                return std::nullopt;
+            }
+        }
+        if (selected) return selected->resolved_path;
+        return std::nullopt;
+    };
+    if (const auto selected = choose(requested_variant)) return selected;
+    if (requested_variant != 0) return choose(0);
+    return std::nullopt;
+}
+
+std::vector<std::uint32_t> TextureCatalog::variants(const std::string_view texture_name) const {
+    const auto family = texture_family_name(texture_name);
+    std::vector<std::uint32_t> result;
+    for (const auto& entry : entries_)
+        if (entry.family_key == family.key &&
+            std::ranges::find(result, entry.variant) == result.end())
+            result.push_back(entry.variant);
+    std::ranges::sort(result);
+    return result;
+}
+
+std::uint32_t TextureCatalog::maximum_variant() const noexcept {
+    std::uint32_t result{};
+    for (const auto& entry : entries_)
+        result = std::max(result, entry.variant);
     return result;
 }
 
@@ -515,7 +774,7 @@ AdapterResult read_phd_candidates(const std::filesystem::path& path) {
 MissionGraph MissionGraph::load(const MissionOptions& options) {
     MissionGraph graph;
     graph.scene_path_ = choose_scene(options.input);
-    if (extension_lower(graph.scene_path_.string()) != ".scn")
+    if (extension_lower(path_string(graph.scene_path_, "selected mission extension")) != ".scn")
         throw std::runtime_error("Mission input is not an SCN file");
     graph.package_root_ = options.package_root
                               ? std::filesystem::absolute(*options.package_root).lexically_normal()
@@ -534,9 +793,11 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
         graph.index_.build();
     }
     std::optional<std::size_t> preferred_root;
-    const auto package_identity = ResourceIndex::normalize(graph.package_root_.generic_string());
+    const auto package_identity = ResourceIndex::normalize(
+        path_generic_string(graph.package_root_, "package-root identity"));
     for (std::size_t index = 0; index < graph.index_.roots().size(); ++index)
-        if (ResourceIndex::normalize(graph.index_.roots()[index].generic_string()) ==
+        if (ResourceIndex::normalize(path_generic_string(graph.index_.roots()[index],
+                                                         "resource-root identity")) ==
             package_identity) {
             preferred_root = index;
             break;
@@ -546,7 +807,9 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
     auto add_resolved_node = [&](const std::filesystem::path& path, const std::string& original,
                                  const DependencyKind hint) -> std::uint64_t {
         const auto absolute = std::filesystem::absolute(path).lexically_normal();
-        const auto key = lower_ascii(slashes(absolute.generic_string()));
+        const auto original_utf8 = reference_utf8(original);
+        const auto key = lower_ascii(
+            slashes(path_generic_string(absolute, "resolved-node identity")));
         if (const auto found = node_by_path.find(key); found != node_by_path.end()) {
             auto& existing = graph.nodes_[found->second];
             const auto refined = kind_for_extension(absolute, hint);
@@ -563,14 +826,15 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
         graph.nodes_.push_back({id,
                                 kind_for_extension(absolute, hint),
                                 absolute,
-                                original,
-                                ResourceIndex::normalize(original),
+                                original_utf8,
+                                ResourceIndex::normalize(original_utf8),
                                 size,
                                 LoadState::available,
                                 {},
                                 {}});
         auto& added = graph.nodes_.back();
-        const auto extension = extension_lower(absolute.string());
+        const auto extension =
+            extension_lower(path_string(absolute, "resolved-node extension"));
         if (extension == ".rws" || extension == ".rpc" || extension == ".anm") {
             std::ifstream input(absolute, std::ios::binary);
             std::array<std::byte, 4> root_bytes{};
@@ -593,7 +857,7 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                                 text << std::hex << *added.root_type;
                                 return text.str();
                             }() +
-                            " for " + absolute.string(),
+                            " for " + path_string(absolute, "unexpected root diagnostic"),
                         SourceLocation{absolute, 0, 4, std::nullopt, "root-sniff"}};
                     added.diagnostics.push_back(diagnostic);
                     graph.diagnostics_.push_back(std::move(diagnostic));
@@ -605,7 +869,8 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
     };
     const auto scene_id = add_resolved_node(
         graph.scene_path_,
-        graph.scene_path_.lexically_relative(graph.package_root_).generic_string(),
+        path_generic_string(graph.scene_path_.lexically_relative(graph.package_root_),
+                            "mission path relative to package"),
         DependencyKind::package_member);
     graph.nodes_[scene_id].content_hash = content_hash(graph.scene_path_);
     if (options.detect_duplicate_scenes) {
@@ -623,7 +888,8 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                 continue;
             }
             if (!scene_iterator->is_regular_file(scene_scan_error) || scene_scan_error ||
-                extension_lower(scene_iterator->path().string()) != ".scn" ||
+                extension_lower(path_string(scene_iterator->path(), "duplicate-scene extension")) !=
+                    ".scn" ||
                 scene_iterator->file_size(scene_scan_error) != graph.nodes_[scene_id].size) {
                 scene_scan_error.clear();
                 continue;
@@ -631,10 +897,14 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
             scene_candidates.push_back(scene_iterator->path());
         }
         std::ranges::sort(scene_candidates, {},
-                          [](const auto& path) { return slashes(path.generic_string()); });
+                          [](const auto& path) {
+                              return slashes(
+                                  path_generic_string(path, "duplicate-scene sort key"));
+                          });
         for (const auto& candidate : scene_candidates) {
             const auto candidate_key =
-                lower_ascii(slashes(std::filesystem::absolute(candidate).generic_string()));
+                lower_ascii(slashes(path_generic_string(std::filesystem::absolute(candidate),
+                                                        "duplicate-scene identity")));
             std::error_code equivalent_error;
             const auto same_file =
                 std::filesystem::equivalent(candidate, graph.scene_path_, equivalent_error);
@@ -646,7 +916,7 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                     graph.diagnostics_.push_back(
                         {MissionDiagnostic::Severity::note, "duplicate-content",
                          "Selected SCN has identical content at a distinct path: " +
-                             candidate.string(),
+                             path_string(candidate, "duplicate scene diagnostic"),
                          SourceLocation{candidate, 0, graph.nodes_[scene_id].size, std::nullopt,
                                         "content-signature"}});
                 }
@@ -666,7 +936,7 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                             reference.kind,
                             reference.source,
                             resolution.status,
-                            reference.path,
+                            resolution.original_reference,
                             resolution.normalized_key,
                             {}};
         for (const auto index : resolution.candidate_indices)
@@ -682,9 +952,10 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                 : resolution.status == ResolutionStatus::outside_root ? LoadState::rejected
                                                                       : LoadState::missing;
             graph.nodes_.push_back({unresolved_id,
-                                    kind_for_extension(reference.path, reference.kind),
+                                    kind_for_reference(resolution.original_reference,
+                                                       reference.kind),
                                     {},
-                                    reference.path,
+                                    resolution.original_reference,
                                     resolution.normalized_key,
                                     0,
                                     unresolved_state,
@@ -700,7 +971,7 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                                                                       : "missing-reference";
             graph.diagnostics_.push_back({severity, code,
                                           std::string(resolution_status_name(resolution.status)) +
-                                              " reference: " + reference.path,
+                                               " reference: " + resolution.original_reference,
                                           reference.source});
         }
         if (resolution.status == ResolutionStatus::case_mismatch ||
@@ -714,7 +985,8 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
     };
 
     auto package_reference = [&](const std::filesystem::path& path, const bool required) {
-        const auto relative = path.lexically_relative(graph.package_root_).generic_string();
+        const auto relative = path_generic_string(path.lexically_relative(graph.package_root_),
+                                                  "package reference relative path");
         AdapterReference reference{relative,
                                    DependencyKind::package_member,
                                    {graph.scene_path_, 0, 0, std::nullopt, "mission-discovery"}};
@@ -728,10 +1000,14 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
     };
 
     const auto sibling = graph.scene_path_.parent_path() / graph.scene_path_.stem();
-    for (const auto* extension : {".gsc", ".csc", ".vis"})
-        package_reference(sibling.string() + extension, true);
-    package_reference(
-        graph.package_root_ / "Maps" / "Secs" / (graph.scene_path_.stem().string() + ".sec"), true);
+    for (const auto* extension : {".gsc", ".csc", ".vis"}) {
+        auto sidecar = sibling;
+        sidecar += extension;
+        package_reference(sidecar, true);
+    }
+    auto security_filename = graph.scene_path_.filename();
+    security_filename.replace_extension(".sec");
+    package_reference(graph.package_root_ / "Maps" / "Secs" / security_filename, true);
     for (const auto* name :
          {"Anims.bdd", "Armas.bdd", "Efectos.bdd", "Materiales.bdd", "Objetos.bdd", "Sonidos.bdd"})
         package_reference(graph.package_root_ / "BDD" / name, true);
@@ -747,7 +1023,8 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                 continue;
             }
             if (iterator->is_regular_file(enumeration_error) && !enumeration_error &&
-                extension_lower(iterator->path().string()) == extension)
+                extension_lower(path_string(iterator->path(), "mission sidecar extension")) ==
+                    extension)
                 matches.push_back(iterator->path());
             enumeration_error.clear();
         }
@@ -769,6 +1046,7 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                 break;
             case ResourceKind::texture_index:
                 adapter = read_txl(node.resolved_path);
+                graph.textures_.add(adapter, graph.index_, preferred_root);
                 break;
             case ResourceKind::model_index:
                 adapter = read_m3d(node.resolved_path);
@@ -802,7 +1080,8 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                 if (document.state() == ParseState::non_csffbs) {
                     MissionDiagnostic diagnostic{
                         MissionDiagnostic::Severity::error, "unexpected-type",
-                        "Expected a CSFFBS document: " + node.resolved_path.string(),
+                        "Expected a CSFFBS document: " +
+                            path_string(node.resolved_path, "unexpected CSFFBS diagnostic"),
                         SourceLocation{node.resolved_path, 0, std::min<std::uint64_t>(6, node.size),
                                        std::nullopt, "csffbs-sniff"}};
                     graph.nodes_[node.id].diagnostics.push_back(diagnostic);
@@ -866,8 +1145,8 @@ std::vector<const DependencyEdge*> MissionGraph::uses(const std::filesystem::pat
         if (!edge.target) continue;
         const auto& node = nodes_[*edge.target];
         if (node.state == LoadState::available &&
-            ResourceIndex::normalize(node.resolved_path.lexically_normal().generic_string()) ==
-                ResourceIndex::normalize(absolute.generic_string()))
+            ResourceIndex::normalize_path(node.resolved_path.lexically_normal()) ==
+                ResourceIndex::normalize_path(absolute))
             result.push_back(&edge);
     }
     return result;
@@ -876,11 +1155,17 @@ std::vector<const DependencyEdge*> MissionGraph::uses(const std::filesystem::pat
 std::string mission_graph_json(const MissionGraph& graph) {
     std::ostringstream output;
     output << "{\n  \"schema\": \"csf-mission-graph-1\",\n  \"scene\": \""
-           << json_escape(graph.scene_path().generic_string()) << "\",\n  \"package_root\": \""
-           << json_escape(graph.package_root().generic_string()) << "\",\n  \"roots\": [";
+           << json_escape(path_generic_string(graph.scene_path(), "mission graph scene JSON"))
+           << "\",\n  \"package_root\": \""
+           << json_escape(
+                  path_generic_string(graph.package_root(), "mission graph package JSON"))
+           << "\",\n  \"roots\": [";
     for (std::size_t i = 0; i < graph.index().roots().size(); ++i) {
         if (i) output << ',';
-        output << "\n    \"" << json_escape(graph.index().roots()[i].generic_string()) << '"';
+        output << "\n    \""
+               << json_escape(path_generic_string(graph.index().roots()[i],
+                                                  "mission graph root JSON"))
+               << '"';
     }
     if (!graph.index().roots().empty()) output << '\n';
     output << "  ],\n  \"nodes\": [";
@@ -888,7 +1173,8 @@ std::string mission_graph_json(const MissionGraph& graph) {
         const auto& node = graph.nodes()[i];
         if (i) output << ',';
         output << "\n    {\"id\": " << node.id << ", \"kind\": \"" << resource_kind_name(node.kind)
-               << "\", \"path\": \"" << json_escape(node.resolved_path.generic_string())
+               << "\", \"path\": \""
+               << json_escape(path_generic_string(node.resolved_path, "mission graph node JSON"))
                << "\", \"original_reference\": \"" << json_escape(node.original_reference)
                << "\", \"state\": \"" << load_state_name(node.state)
                << "\", \"size\": " << node.size << ", \"root_type\": ";
@@ -905,7 +1191,10 @@ std::string mission_graph_json(const MissionGraph& graph) {
         output << ", \"candidates\": [";
         for (std::size_t candidate = 0; candidate < node.candidates.size(); ++candidate) {
             if (candidate) output << ", ";
-            output << '"' << json_escape(node.candidates[candidate].generic_string()) << '"';
+            output << '"'
+                   << json_escape(path_generic_string(node.candidates[candidate],
+                                                      "mission graph node candidate JSON"))
+                   << '"';
         }
         output << "]}";
     }
@@ -922,7 +1211,8 @@ std::string mission_graph_json(const MissionGraph& graph) {
         output << ", \"kind\": \"" << dependency_kind_name(edge.kind) << "\", \"status\": \""
                << resolution_status_name(edge.status) << "\", \"reference\": \""
                << json_escape(edge.original_reference) << "\", \"evidence\": {\"file\": \""
-               << json_escape(edge.evidence.file.generic_string())
+               << json_escape(path_generic_string(edge.evidence.file,
+                                                  "mission graph evidence JSON"))
                << "\", \"offset\": " << edge.evidence.offset << ", \"size\": " << edge.evidence.size
                << ", \"table_index\": ";
         if (edge.evidence.table_index)
@@ -933,7 +1223,10 @@ std::string mission_graph_json(const MissionGraph& graph) {
                << "\"}, \"candidates\": [";
         for (std::size_t candidate = 0; candidate < edge.candidates.size(); ++candidate) {
             if (candidate) output << ", ";
-            output << '"' << json_escape(edge.candidates[candidate].generic_string()) << '"';
+            output << '"'
+                   << json_escape(path_generic_string(edge.candidates[candidate],
+                                                      "mission graph edge candidate JSON"))
+                   << '"';
         }
         output << "]}";
     }
@@ -949,7 +1242,9 @@ std::string mission_graph_json(const MissionGraph& graph) {
                << "\", \"code\": \"" << json_escape(diagnostic.code) << "\", \"message\": \""
                << json_escape(diagnostic.message) << "\", \"source\": ";
         if (diagnostic.source) {
-            output << "{\"file\": \"" << json_escape(diagnostic.source->file.generic_string())
+            output << "{\"file\": \""
+                   << json_escape(path_generic_string(diagnostic.source->file,
+                                                      "mission graph diagnostic JSON"))
                    << "\", \"offset\": " << diagnostic.source->offset
                    << ", \"size\": " << diagnostic.source->size << ", \"table_index\": ";
             if (diagnostic.source->table_index)

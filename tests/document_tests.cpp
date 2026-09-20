@@ -12,6 +12,7 @@
 #include "rws/obj_export.hpp"
 #include "rws/physics_inspection.hpp"
 #include "rws/scene_export.hpp"
+#include "rws/texture_image.hpp"
 #include "rws/world_recovery.hpp"
 
 #include <algorithm>
@@ -258,18 +259,34 @@ struct SyntheticCsf {
 std::vector<std::byte> make_typed_scene(const bool with_unknown = false,
                                         const float actor_heading = 0.0F) {
     SyntheticCsf csf;
-    csf.container("", with_unknown ? 7U : 6U, 2);
+    csf.container("", with_unknown ? 8U : 7U, 2);
     csf.integer(".PLAYER", 0);
     csf.container(".BICHOS", 2);
-    csf.container("", 9, 2);
+    csf.container("", 14, 2);
     csf.string(".NOMBRE", "duplicate");
     csf.integer(".ID", 10);
     csf.integer(".CLASSID", 55);
-    csf.position(1, 2, 3);
+    csf.position(101, 202, 303);
     csf.real(".ANGULO", actor_heading);
     csf.integer(".FLAGS", 0);
     csf.string(".SCRIPT", "OnSpawn");
     csf.integer(".FUTURE", 99);
+    csf.integer(".SEGUNDA_EXPLOSION", 1);
+    csf.string(".BANDO", "ALLIES");
+    csf.string(".PORTRAIT", "portrait.fbs");
+    csf.container(".ANIMACIONES", 1);
+    csf.container("", 2, 2);
+    csf.integer(".ID", 77);
+    csf.string(".TIPO", "IDLE");
+    csf.container(".DOOR_BOX", 2);
+    csf.container("", 3);
+    csf.real("", -1);
+    csf.real("", -2);
+    csf.real("", -3);
+    csf.container("", 3);
+    csf.real("", 1);
+    csf.real("", 2);
+    csf.real("", 3);
     csf.container(".CELDA", 2, 2);
     csf.integer(".GRUPO", 7);
     csf.integer(".PUNTO", 8);
@@ -343,6 +360,14 @@ std::vector<std::byte> make_typed_scene(const bool with_unknown = false,
     csf.string(".NOMBRE", "targets");
     csf.container(".ELEMENTOS", 1);
     csf.integer("", 20);
+    csf.container(".EFECTOS", 1, 2);
+    csf.container("", 6, 2);
+    csf.integer(".ID", 40);
+    csf.string(".NOMBRE", "sparks");
+    csf.integer(".CLASSID", 140);
+    csf.integer(".DUMMY", 20);
+    csf.integer(".PRIORITY", -1);
+    csf.integer(".SHARE_GROUP", -1);
     csf.container(".MALLA_AREAS", 1, 2);
     csf.container(".AREAS", 1);
     csf.container("", 8, 2);
@@ -396,6 +421,19 @@ int main() {
         CHECK(scene.actors()[0].flags == 0 && !scene.actors()[1].flags);
         CHECK(scene.actors()[0].unknown_fields.size() == 1 &&
               scene.actors()[0].unknown_fields[0].name == ".FUTURE");
+        CHECK(scene.actors()[0].secondary_explosion == 1 &&
+              scene.actors()[0].faction == "ALLIES" &&
+              scene.actors()[0].portrait == "portrait.fbs");
+        CHECK(scene.actors()[0].animations.size() == 1 &&
+              scene.actors()[0].animations[0].id == 77 &&
+              scene.actors()[0].animations[0].type == "IDLE");
+        CHECK(scene.actors()[0].door_box && (*scene.actors()[0].door_box)[1].z == 3);
+        const auto spawn = scene.actor_spawn_position(scene.actors()[0]);
+        CHECK(scene.actors()[0].position && scene.actors()[0].position->x == 101 && spawn &&
+              spawn->x == 1 && spawn->y == 2 && spawn->z == 3);
+        const auto fallback = scene.actor_spawn_position(scene.actors()[1]);
+        CHECK(fallback && fallback->x == 4 && fallback->y == 5 && fallback->z == 6);
+        CHECK(std::abs(csf::mission_actor_angle_radians(180) - 3.14159265F) < 1.0e-6F);
         CHECK(scene.navigation_stats().groups == 1 && scene.navigation_stats().points == 3 &&
               scene.navigation_stats().connections == 3 &&
               scene.navigation_stats().connected_components == 1 &&
@@ -406,15 +444,21 @@ int main() {
         CHECK(scene.dummies().size() == 1 && scene.folders().size() == 1 &&
               scene.folders()[0].element_ids[0] == 20);
         CHECK(scene.areas().size() == 1 && scene.areas()[0].points.size() == 3 &&
-              scene.areas()[0].height == 100);
+              scene.areas()[0].height == 100 && scene.areas()[0].reverb == 0 &&
+              scene.areas()[0].limit_reverb == 0 && scene.areas()[0].unknown_fields.empty());
+        CHECK(scene.effects().size() == 1 && scene.effects()[0].name == "sparks" &&
+              scene.effects()[0].dummy_id == 20);
         csf::MissionSymbolIndex symbols;
         symbols.add_scene(scene);
         CHECK(symbols.exact("duplicate").size() == 2);
         CHECK(symbols.exact("OnSpawn").size() == 1 &&
               symbols.exact("OnSpawn")[0]->role == csf::SymbolRole::typed_reference);
+        CHECK(symbols.exact("sparks").size() == 1 && symbols.exact("dummy:20").size() == 1);
         const auto json = csf::mission_scene_json(scene);
         CHECK(json == csf::mission_scene_json(scene));
         CHECK(json.find("csf-mission-scene-1") != std::string::npos);
+        CHECK(json.find("\"effects\":[") != std::string::npos &&
+              json.find("\"secondary_explosion\":1") != std::string::npos);
     }
     {
         const auto document = csf::Document::from_bytes(make_typed_scene(true));
@@ -446,7 +490,8 @@ int main() {
         csf.integer(".SEGUNDA_EXPLOSION", 1);
         const auto scene = csf::MissionScene::project(csf::Document::from_bytes(csf.bytes()));
         CHECK(scene.actors().size() == 1 && !scene.actors()[0].id);
-        CHECK(scene.actors()[0].unknown_fields.size() == 3);
+        CHECK(scene.actors()[0].unknown_fields.size() == 2 &&
+              scene.actors()[0].secondary_explosion == 1);
         CHECK(std::ranges::any_of(scene.diagnostics(), [](const auto& diagnostic) {
             return diagnostic.code == "duplicate-typed-field";
         }));
@@ -477,6 +522,9 @@ int main() {
         const auto package = mission_test_root / "Package";
         write_bytes(package / "Models" / "Hero.rpc", {std::byte{1}});
         write_bytes(package / "Textures" / "MixedCase.DDS", {std::byte{2}});
+        write_bytes(package / std::filesystem::path(L"Models/caf\u00e9.rpc"), {std::byte{3}});
+        write_bytes(package / std::filesystem::path(L"gfx/ca\u00c3\u00b1onazoHU2.sp"),
+                    {std::byte{4}});
         csf::ResourceIndex index;
         index.add_root(package);
         index.build();
@@ -489,6 +537,12 @@ int main() {
         CHECK(index.resolve("Textures/", 0).status == csf::ResolutionStatus::exact);
         const auto mapped = index.resolve("Models/Hero.dff", 0);
         CHECK(mapped.status == csf::ResolutionStatus::mapped_dff_to_rpc);
+        CHECK(index.resolve(std::string("Models/caf\xE9.rpc"), 0).status ==
+              csf::ResolutionStatus::exact);
+        CHECK(index.resolve(std::string("Models/caf\xC3\xA9.rpc"), 0).status ==
+              csf::ResolutionStatus::exact);
+        CHECK(index.resolve(std::string("gfx/ca\xC3\x83\xC2\xB1onazoHU2.sp"), 0).status ==
+              csf::ResolutionStatus::exact);
         CHECK(index.resolve("../secret.dds", 0).status == csf::ResolutionStatus::outside_root);
         CHECK(index.resolve("missing.dds", 0).status == csf::ResolutionStatus::missing);
 
@@ -557,6 +611,48 @@ int main() {
         CHECK(parsed_txl.references.size() == 3);
         CHECK(parsed_txl.references[0].source.table_index == 0);
         CHECK(parsed_txl.references[1].source.table_index == 2);
+
+        const auto texture_package = adapters / "texture-package";
+        write_bytes(texture_package / "Models" / "Vehi" / "Textures" / "shared.dds",
+                    {std::byte{1}});
+        write_bytes(texture_package / "Models" / "Weap" / "Textures" / "shared.dds",
+                    {std::byte{2}});
+        write_bytes(texture_package / "Models" / "Char" / "Textures" / "Uniform.dds",
+                    {std::byte{3}});
+        write_bytes(texture_package / "Models" / "Char" / "Textures" /
+                        "Uniform_Alt001.png",
+                    {std::byte{4}});
+        write_bytes(texture_package / "Models" / "Char" / "Textures" /
+                        "Uniform_Alt002.dds",
+                    {std::byte{5}});
+        const std::string catalog_lines =
+            "Models\\Weap\\Textures/shared.dds\r\n"
+            "Models\\Char\\Textures/Uniform.dds\r\n"
+            "Models\\Char\\Textures\\Uniform_Alt001.png\r\n"
+            "Models\\Char\\Textures/Uniform_Alt002.dds\r\n";
+        std::vector<std::byte> catalog_bytes;
+        for (const auto character : catalog_lines)
+            catalog_bytes.push_back(static_cast<std::byte>(character));
+        const auto catalog_txl = texture_package / "Maps" / "Test" / "Test.txl";
+        write_bytes(catalog_txl, catalog_bytes);
+        csf::ResourceIndex texture_resources;
+        texture_resources.add_root(texture_package);
+        texture_resources.build();
+        csf::TextureCatalog catalog;
+        catalog.add(csf::read_txl(catalog_txl), texture_resources, 0);
+        CHECK(catalog.entries().size() == 4);
+        CHECK(catalog.resolve("shared") ==
+              texture_package / "Models" / "Weap" / "Textures" / "shared.dds");
+        CHECK(catalog.resolve("Uniform") ==
+              texture_package / "Models" / "Char" / "Textures" / "Uniform.dds");
+        CHECK(catalog.resolve("uniform.dds", 1) ==
+              texture_package / "Models" / "Char" / "Textures" / "Uniform_Alt001.png");
+        CHECK(catalog.resolve("Uniform", 2) ==
+              texture_package / "Models" / "Char" / "Textures" / "Uniform_Alt002.dds");
+        CHECK(catalog.resolve("Uniform", 3) ==
+              texture_package / "Models" / "Char" / "Textures" / "Uniform.dds");
+        CHECK(catalog.variants("Uniform") == std::vector<std::uint32_t>({0, 1, 2}));
+        CHECK(catalog.maximum_variant() == 2);
     }
     {
         const auto package = mission_test_root / "Mission";
@@ -576,6 +672,13 @@ int main() {
         write_bytes(package / "Maps" / "M1" / "world.rws", {std::byte{0}});
         write_bytes(package / "Maps" / "M1" / "world_col.rws", {std::byte{0}});
         write_bytes(package / std::filesystem::path(L"Models/caf\u00e9.rpc"), {std::byte{0x10}});
+        write_bytes(package / "Models" / "Weap" / "Textures" / "mission.dds",
+                    {std::byte{1}});
+        const std::string mission_txl_line = "Models\\Weap\\Textures/mission.dds\r\n";
+        std::vector<std::byte> mission_txl;
+        for (const auto character : mission_txl_line)
+            mission_txl.push_back(static_cast<std::byte>(character));
+        write_bytes(map / "Mission.txl", mission_txl);
         std::vector<std::byte> vis;
         append_length_string(vis, "Maps/M1/world.rws");
         append_length_string(vis, "Maps/M1/world_col.rws");
@@ -600,6 +703,8 @@ int main() {
         CHECK(first_json.find("\\u00c3") == std::string::npos);
         CHECK(graph.uses(map / "world.rws").size() == 1);
         CHECK(graph.uses(map / "WORLD.RWS").size() == 1);
+        CHECK(graph.textures().resolve("mission") ==
+              package / "Models" / "Weap" / "Textures" / "mission.dds");
     }
     std::filesystem::remove_all(mission_test_root);
     {
@@ -1968,6 +2073,74 @@ int main() {
         CHECK(projected.actors().size() == 1 && projected.actors()[0].script_ids.size() == 2);
         CHECK(projected.actors()[0].script_ids[0] == 99 &&
               projected.actors()[0].script_ids[1] == 100);
+    }
+    {
+        // The PNG decoder is portable and shared with the GUI preview.
+        const std::array<std::uint8_t, 77> png_bytes{
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+            0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xB6, 0x0D, 0x24, 0x00, 0x00, 0x00,
+            0x14, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0xF8, 0xCF, 0xC0, 0xF0,
+            0x1F, 0x0C, 0x81, 0x34, 0x10, 0x30, 0x34, 0x00, 0x00, 0x47, 0x4B, 0x08,
+            0x79, 0xC3, 0x25, 0x87, 0xEB, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E,
+            0x44, 0xAE, 0x42, 0x60, 0x82};
+        std::vector<std::byte> png(png_bytes.size());
+        std::ranges::transform(png_bytes, png.begin(), [](const std::uint8_t value) {
+            return static_cast<std::byte>(value);
+        });
+        int width = 0, height = 0;
+        std::vector<std::uint8_t> rgba;
+        std::string error;
+        CHECK(rws::decode_png(png, width, height, rgba, error));
+        CHECK(width == 2 && height == 2 && rgba.size() == 16);
+        CHECK(rgba[0] == 255 && rgba[1] == 0 && rgba[2] == 0 && rgba[3] == 255);
+        CHECK(rgba[4] == 0 && rgba[5] == 255 && rgba[6] == 0 && rgba[7] == 255);
+        CHECK(rgba[8] == 0 && rgba[9] == 0 && rgba[10] == 255 && rgba[11] == 255);
+        CHECK(rgba[12] == 255 && rgba[13] == 255 && rgba[14] == 0 && rgba[15] == 128);
+        // Truncated data must fail cleanly and report an error.
+        CHECK(!rws::decode_png(std::span(png).first(20), width, height, rgba, error));
+        CHECK(!error.empty());
+    }
+    {
+        // A byte-oriented uncompressed 32-bit DDS exercises the moved decoder.
+        std::vector<std::byte> dds;
+        const auto put_u32 = [&dds](const std::uint32_t value) { append_u32(dds, value); };
+        put_u32(0x20534444);  // "DDS " magic
+        put_u32(124);         // header size
+        put_u32(0);           // flags
+        put_u32(2);           // height
+        put_u32(2);           // width
+        put_u32(0);           // pitch/linear size
+        put_u32(0);           // depth
+        put_u32(0);           // mipmap count
+        for (int i = 0; i < 11; ++i) put_u32(0);  // reserved
+        put_u32(32);          // pixel format size
+        put_u32(0x41);        // DDPF_RGB | DDPF_ALPHAPIXELS
+        put_u32(0);           // fourcc (empty for uncompressed)
+        put_u32(32);          // rgb bit count
+        put_u32(0x00FF0000);  // red mask
+        put_u32(0x0000FF00);  // green mask
+        put_u32(0x000000FF);  // blue mask
+        put_u32(0xFF000000);  // alpha mask
+        put_u32(0x1000);      // caps
+        for (int i = 0; i < 4; ++i) put_u32(0);  // caps2..4 and reserved2
+        put_u32(0xFFFF0000);  // red
+        put_u32(0xFF00FF00);  // green
+        put_u32(0xFF0000FF);  // blue
+        put_u32(0x80FFFF00);  // translucent yellow
+        const auto path =
+            std::filesystem::temp_directory_path() / "rws-man-texture-tests" / "sample.dds";
+        write_bytes(path, dds);
+        int width = 0, height = 0;
+        std::vector<std::uint8_t> rgba;
+        std::string error;
+        CHECK(rws::decode_texture_image(path, width, height, rgba, error));
+        CHECK(width == 2 && height == 2 && rgba.size() == 16);
+        CHECK(rgba[0] == 255 && rgba[1] == 0 && rgba[2] == 0 && rgba[3] == 255);
+        CHECK(rgba[4] == 0 && rgba[5] == 255 && rgba[6] == 0 && rgba[7] == 255);
+        CHECK(rgba[8] == 0 && rgba[9] == 0 && rgba[10] == 255 && rgba[11] == 255);
+        CHECK(rgba[12] == 255 && rgba[13] == 255 && rgba[14] == 0 && rgba[15] == 128);
+        std::filesystem::remove(path);
     }
     return 0;
 }

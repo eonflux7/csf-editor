@@ -22,8 +22,30 @@ struct ObjectDefinition {
     std::optional<std::int32_t> class_id;
     std::optional<std::int32_t> id;
     std::optional<std::string> name;
+    std::vector<std::int32_t> weapon_ids;
     std::vector<ObjectReference> references;
     std::vector<RawField> unknown_fields;
+};
+
+struct WeaponDefinition {
+    CsfSourceId source;
+    std::optional<std::int32_t> id;
+    std::optional<std::string> name;
+    std::optional<std::string> first_person_model;
+    std::optional<std::string> third_person_model;
+    std::optional<std::string> hand;
+};
+
+class WeaponDatabase {
+public:
+    [[nodiscard]] static WeaponDatabase project(const Document& document);
+    [[nodiscard]] const std::vector<WeaponDefinition>& definitions() const noexcept {
+        return definitions_;
+    }
+    [[nodiscard]] const WeaponDefinition* find_id(std::int32_t id) const noexcept;
+
+private:
+    std::vector<WeaponDefinition> definitions_;
 };
 
 class ObjectDatabase {
