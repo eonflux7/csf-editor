@@ -12,10 +12,7 @@
 
 namespace rwsman {
 
-struct MissionOverlays {
-    std::vector<GeometryPreview::MissionOverlayPoint> points;
-    std::vector<GeometryPreview::MissionOverlayLine> lines;
-};
+using MissionOverlays = GeometryPreview::MissionOverlaySet;
 
 [[nodiscard]] rws::Vec3 rws_point(csf::Vec3 value);
 [[nodiscard]] MissionOverlays make_mission_overlays(const csf::MissionScene& scene);

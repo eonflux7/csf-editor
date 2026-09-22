@@ -11,6 +11,8 @@
 #include "csf/animation_catalog.hpp"
 #include "csf/cmo.hpp"
 #include "csf/document.hpp"
+#include "csf/mission_edit.hpp"
+#include "csf/mod_project.hpp"
 #include "csf/mission.hpp"
 #include "csf/mission_scene.hpp"
 #include "csf/object_database.hpp"
@@ -27,6 +29,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -39,6 +42,11 @@ namespace rwsman {
 class MissionLoader;
 struct PendingDialog;
 
+// Loaded actor and weapon model prototypes by normalized resource path.
+struct ActorModelCache {
+    std::unordered_map<std::string, std::shared_ptr<const rws::Document>> models;
+};
+
 enum class Workspace {
     mission,
     script,
@@ -49,6 +57,15 @@ enum class Workspace {
 };
 
 [[nodiscard]] const char* workspace_name(Workspace workspace);
+
+// Stable identity of a scene record. Entry indices shift when records are added
+// or removed, so selections are carried across edits by gameplay ID.
+struct MissionRecordKey {
+    enum class Kind : std::uint8_t { none, actor, dummy, light, area, effect, nav_group, nav_point };
+    Kind kind{Kind::none};
+    std::int32_t id{}, sub_id{};
+    friend bool operator==(const MissionRecordKey&, const MissionRecordKey&) = default;
+};
 
 // Everything that exists only while a CSF mission is open. Resetting the
 // struct closes the mission.
@@ -65,6 +82,24 @@ struct MissionState {
     std::vector<csf::Document> program_documents;
     csf::ProgramReferenceIndex program_references;
     std::vector<csf::ActorAssociation> actor_associations;
+    std::unique_ptr<csf::WeaponDatabase> weapons;
+    // Actor and weapon models by normalized path, shared by loads and edits.
+    std::shared_ptr<ActorModelCache> model_cache;
+
+    // Mission editing. The editor owns the authoritative scene, programs and
+    // databases; the projections above are rebuilt from it after every change
+    // (editor->revision() != applied_revision). `project` is the mod project the
+    // edits are saved into, once there is one.
+    std::unique_ptr<csf::MissionEditor> editor;
+    std::unique_ptr<csf::ModProject> project;
+    std::uint64_t applied_revision{};
+    std::filesystem::path original_archive; // shipped maps/<Mission>.pak for export
+    // Applied by the next refresh, once the views show the edit that created
+    // the target: a scene record to select, and a script (program, ID).
+    std::optional<MissionRecordKey> pending_selection;
+    std::optional<std::pair<std::size_t, std::int32_t>> pending_script;
+    // Revision of the editor's visual map the loaded map document reflects.
+    std::uint64_t map_revision{};
 
     // Selected-actor animation playback.
     std::shared_ptr<const rws::AnimationClip> active_clip;
@@ -128,10 +163,36 @@ struct UiState {
     // Hex view: byte range to highlight, and whether to scroll to it once.
     std::optional<std::pair<std::uint64_t, std::uint64_t>> hex_highlight; // [begin, end)
     bool hex_scroll_to_highlight{};
+
+    // An action (loading another mission, exiting) waiting for the user to save
+    // or discard unsaved mission edits.
+    std::function<void()> pending_discard;
+    std::string pending_discard_label;
+
+    // Mission export dialog.
+    bool show_export_dialog{};
+    std::array<char, 1024> export_original{}, export_output{};
+    bool export_overwrite{}, export_install{};
+    // Mission editing pickers in the Changes panel.
+    std::array<char, 64> class_filter{};
+    std::array<char, 1024> import_donor{};
+    int import_class_id{-1};
+
+    // Set during a frame by anything that changes on screen without input (a
+    // playing animation); the frame loop then keeps drawing instead of idling.
+    bool animating{};
+};
+
+// Measured by the frame loop, shown in the status bar and the viewport HUD.
+struct FrameStats {
+    double fps{};    // Average over recent frames that were drawn back to back.
+    double cpu_ms{}; // CPU time of the latest frame, event handling to buffer swap.
+    bool idle{};     // The loop is waiting for input between frames.
 };
 
 // A short-lived message for the result of a user-initiated action.
 struct Toast {
+    std::uint64_t id{}; // Stable ImGui window identity while older toasts expire.
     LogLevel level{LogLevel::info};
     std::string message;
     std::filesystem::path folder; // Shown as an "Open folder" action when set.
@@ -194,6 +255,7 @@ struct AppState {
     Settings settings;
     bool settings_dirty{};
     UiState ui;
+    FrameStats frame_stats;
     LogBuffer log;
 
     // Native file dialog in flight (see file_dialogs.hpp).
@@ -216,11 +278,14 @@ struct AppState {
     // Content signature of the loaded document (camera bookmarks are keyed by it).
     std::string content_signature;
     std::vector<Toast> toasts;
+    std::uint64_t next_toast_id{1};
 
-    // Latest message, mirrored in the status bar; the full history lives in `log`.
-    std::string status =
-        "Drop an .scn, .rpc, or .rws file on this window, or pass one on the command line.";
-
+    // Warnings and errors in the merged diagnostics table (notes excluded).
+    [[nodiscard]] std::size_t diagnostic_problem_count() const {
+        return static_cast<std::size_t>(std::ranges::count_if(diagnostics, [](const DiagnosticRow& row) {
+            return row.severity != DiagnosticSeverity::note;
+        }));
+    }
     [[nodiscard]] bool has_diagnostic(const SelectionRef& ref) const {
         return diagnostic_targets.contains(ref);
     }
@@ -244,13 +309,11 @@ struct AppState {
         }
     }
 
-    void report(const LogLevel level, std::string message) {
-        status = message;
-        log.push(level, std::move(message));
-    }
+    // Logs `message`; the status bar shows the newest log line.
+    void report(const LogLevel level, std::string message) { log.push(level, std::move(message)); }
     // Logs `message` and shows a toast, with an optional folder to open.
     void notify(const LogLevel level, std::string message, std::filesystem::path folder = {}) {
-        toasts.push_back({level, message, std::move(folder), 0.0});
+        toasts.push_back({next_toast_id++, level, message, std::move(folder), 0.0});
         if (toasts.size() > 4) toasts.erase(toasts.begin());
         report(level, std::move(message));
     }

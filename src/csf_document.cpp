@@ -112,6 +112,14 @@ Document Document::from_bytes(std::vector<std::byte> bytes) {
     return result;
 }
 
+Document Document::from_bytes(std::vector<std::byte> bytes, std::filesystem::path source_path) {
+    Document result;
+    result.source_path_ = std::move(source_path);
+    result.bytes_ = std::move(bytes);
+    result.parse();
+    return result;
+}
+
 bool Document::sniff(const std::span<const std::byte> bytes) noexcept {
     return bytes.size() >= magic_bytes.size() &&
            std::equal(magic_bytes.begin(), magic_bytes.end(), bytes.begin());

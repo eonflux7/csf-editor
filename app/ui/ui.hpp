@@ -36,7 +36,15 @@ void draw_palette(AppState& state);
 void draw_console(AppState& state);
 void draw_diagnostics(AppState& state);
 void draw_references(AppState& state);
+// Mission editing hub: project, history, modified files, mission properties,
+// adding actors and importing from other missions (or session byte edits).
 void draw_changes(AppState& state);
+// The Inspector's Edit section for the scene record at `entry`.
+void draw_mission_edit_section(AppState& state, std::uint32_t entry);
+// The Inspector's Edit section for a static map prop (scene instance).
+void draw_map_instance_edit_section(AppState& state, const rws::SceneInstance& instance);
+// Export and unsaved-edits dialogs.
+void draw_mission_dialogs(AppState& state);
 void draw_render_settings(AppState& state);
 void draw_shortcuts_window(AppState& state);
 void draw_about_window(AppState& state);

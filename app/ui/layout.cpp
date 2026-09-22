@@ -120,13 +120,13 @@ void ensure_layout(const Workspace workspace, const ImGuiID dockspace, const ImV
 
     // The script listing needs width more than the viewport does.
     // Sizes are chosen in logical pixels so the panels stay readable at any
-    // display scale: about 18% / 22% of a 1600 px window at 100%.
+    // display scale: about 21% / 25% of a 1600 px window at 100%.
     const bool script = workspace == Workspace::script;
     const float scale = ui_scale();
     const float left_fraction =
-        std::clamp((script ? 320.0F : 290.0F) * scale / std::max(size.x, 1.0F), 0.14F, 0.30F);
+        std::clamp((script ? 360.0F : 340.0F) * scale / std::max(size.x, 1.0F), 0.16F, 0.32F);
     const float right_fraction =
-        std::clamp((script ? 400.0F : 360.0F) * scale / std::max(size.x, 1.0F), 0.18F, 0.34F);
+        std::clamp((script ? 440.0F : 400.0F) * scale / std::max(size.x, 1.0F), 0.20F, 0.36F);
     constexpr float bottom_fraction = 0.22F;
 
     ImGuiID top{}, bottom{}, left{}, remaining{}, right{}, center{};

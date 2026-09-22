@@ -533,6 +533,7 @@ void draw_mission_record(AppState& state, const std::uint32_t entry) {
     if (!source || !state.mission.document) return;
     const auto& document = *state.mission.document;
     RecordContext context{state, document, find_csf_node(document.roots(), entry), *source};
+    draw_mission_edit_section(state, entry);
 
     if (const auto found = std::ranges::find_if(scene.scene_objects(), [&](const auto& value) { return value.source.entry_index == entry; });
         found != scene.scene_objects().end()) {

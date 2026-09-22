@@ -111,6 +111,17 @@ constexpr std::array<ImU32, static_cast<std::size_t>(Viewport::count)> viewport_
     IM_COL32(80, 220, 255, 235),  // physics_body
     IM_COL32(255, 120, 190, 235), // physics_ragdoll
     IM_COL32(255, 220, 95, 245),  // physics_joint
+    IM_COL32(255, 215, 70, 34),   // area_fill
+    IM_COL32(10, 12, 16, 230),    // marker_outline
+    IM_COL32(255, 255, 255, 255), // hover
+    IM_COL32(120, 230, 255, 255), // related
+    IM_COL32(52, 58, 70, 235),    // cluster
+    IM_COL32(235, 238, 245, 255), // cluster_text
+    IM_COL32(12, 14, 18, 205),    // label_background
+    IM_COL32(232, 163, 61, 240),  // offscreen
+    IM_COL32(12, 14, 18, 210),    // minimap_background
+    IM_COL32(232, 163, 61, 200),  // minimap_view
+    IM_COL32(120, 230, 255, 170), // slice_band
 };
 
 } // namespace
@@ -238,14 +249,14 @@ void apply_theme(const float scale) {
     ImGuiStyle style;
     style.Alpha = 1.0F;
     style.DisabledAlpha = 0.45F;
-    style.WindowPadding = {8.0F, 6.0F};
-    style.FramePadding = {6.0F, 3.0F};
-    style.CellPadding = {6.0F, 2.0F};
-    style.ItemSpacing = {6.0F, 4.0F};
-    style.ItemInnerSpacing = {4.0F, 4.0F};
-    style.IndentSpacing = 14.0F;
-    style.ScrollbarSize = 11.0F;
-    style.GrabMinSize = 9.0F;
+    style.WindowPadding = {10.0F, 8.0F};
+    style.FramePadding = {8.0F, 4.0F};
+    style.CellPadding = {7.0F, 3.0F};
+    style.ItemSpacing = {8.0F, 5.0F};
+    style.ItemInnerSpacing = {5.0F, 4.0F};
+    style.IndentSpacing = 16.0F;
+    style.ScrollbarSize = 12.0F;
+    style.GrabMinSize = 10.0F;
     style.WindowBorderSize = 1.0F;
     style.ChildBorderSize = 1.0F;
     style.PopupBorderSize = 1.0F;

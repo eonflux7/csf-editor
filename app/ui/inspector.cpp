@@ -283,14 +283,17 @@ void draw_script(AppState& state, const SelectionRef& ref) {
     }
 }
 
-void draw_operand_rows(AppState& state, PropertyGrid& grid, const csf::ProgramOperand& operand,
-                       const std::string& prefix, const std::vector<const csf::ProgramReference*>& references) {
+// `document` is the index of the program the instruction belongs to.
+void draw_operand_rows(AppState& state, PropertyGrid& grid, const std::size_t document,
+                       const csf::ProgramOperand& operand, const std::string& prefix,
+                       const std::vector<const csf::ProgramReference*>& references) {
     const std::string key = prefix + (operand.tag.empty() ? "(value)" : operand.tag);
     const auto match = std::ranges::find_if(references, [&](const csf::ProgramReference* reference) {
         return reference->source.entry_index == operand.source.entry_index;
     });
     Options options = derived(Provenance::proven, "Operand of the instruction");
-    options.raw = raw_slice_for_entry(*static_cast<const csf::Document*>(state.mission.program_documents.empty() ? nullptr : &state.mission.program_documents[state.selection.a]), operand.source.entry_index);
+    if (document < state.mission.program_documents.size())
+        options.raw = raw_slice_for_entry(state.mission.program_documents[document], operand.source.entry_index);
     SelectionRef target;
     if (match != references.end()) {
         options = derived(provenance_of((*match)->status), std::string("Resolver: ") + csf::program_reference_status_name((*match)->status) + ((*match)->detail.empty() ? "" : " - " + (*match)->detail));
@@ -305,7 +308,8 @@ void draw_operand_rows(AppState& state, PropertyGrid& grid, const csf::ProgramOp
         grid.link(key.c_str(), value, target, options);
     else
         grid.text(key.c_str(), value, options);
-    for (const auto& child : operand.children) draw_operand_rows(state, grid, child, prefix + "  ", references);
+    for (const auto& child : operand.children)
+        draw_operand_rows(state, grid, document, child, prefix + "  ", references);
 }
 
 void draw_instruction(AppState& state, const SelectionRef& ref) {
@@ -333,7 +337,8 @@ void draw_instruction(AppState& state, const SelectionRef& ref) {
             if (reference.source.file == state.mission.programs[ref.a].first && reference.owner_script == script.id)
                 references.push_back(&reference);
         if (PropertyGrid grid(state, "##operands"); grid)
-            for (const auto& operand : instruction->operands) draw_operand_rows(state, grid, operand, "", references);
+            for (const auto& operand : instruction->operands)
+                draw_operand_rows(state, grid, ref.a, operand, "", references);
         end_section();
     }
     if (ref.a < state.mission.program_documents.size()) {
@@ -554,7 +559,10 @@ void draw_body(AppState& state, const SelectionRef& ref, const bool primary) {
         break;
     case Kind::scene_instance:
         if (state.document)
-            if (const auto* instance = find_instance(state.document->scene_instances(), ref.a)) draw_instance(state, *instance);
+            if (const auto* instance = find_instance(state.document->scene_instances(), ref.a)) {
+                draw_map_instance_edit_section(state, *instance);
+                draw_instance(state, *instance);
+            }
         break;
     case Kind::program_script:
         if (ref.a < state.mission.programs.size() && ref.b < state.mission.programs[ref.a].second.scripts().size())
@@ -602,7 +610,7 @@ void draw_extra_inspectors(AppState& state) {
     // The duplicate button appends to extra_inspectors, so work on copies by index: a
     // reference into the vector would dangle once it reallocates. New windows draw next frame.
     const auto count = state.ui.extra_inspectors.size();
-    for (std::size_t i = 0; i < count; ++i) {
+    for (std::size_t i = 0; i < count && i < state.ui.extra_inspectors.size(); ++i) {
         const auto extra = state.ui.extra_inspectors[i];
         if (!extra.open) continue;
         const auto title = selection_title(state, extra.ref);
@@ -615,7 +623,8 @@ void draw_extra_inspectors(AppState& state) {
             draw_body(state, extra.ref, false);
         }
         ImGui::End();
-        if (!open) state.ui.extra_inspectors[i].open = false;
+        // A link may have loaded another document, which clears the list.
+        if (!open && i < state.ui.extra_inspectors.size()) state.ui.extra_inspectors[i].open = false;
     }
     std::erase_if(state.ui.extra_inspectors, [](const auto& extra) { return !extra.open; });
 }

@@ -97,7 +97,7 @@ PropertyGrid::PropertyGrid(AppState& state, const char* id) : state_(state), id_
                               ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoSavedSettings |
                                   ImGuiTableFlags_PadOuterX);
     if (open_) {
-        ImGui::TableSetupColumn("key", ImGuiTableColumnFlags_WidthFixed, 84.0F * ui_scale());
+        ImGui::TableSetupColumn("key", ImGuiTableColumnFlags_WidthFixed, 116.0F * ui_scale());
         ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn("meta", ImGuiTableColumnFlags_WidthFixed, 42.0F * ui_scale());
     }
@@ -114,8 +114,10 @@ void PropertyGrid::begin_row(const char* key) {
     ImGui::TableSetColumnIndex(0);
     row_min_ = ImGui::GetCursorScreenPos();
     ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
-    ImGui::TextUnformatted(key);
+    const std::string shown = elide(key, ImGui::GetContentRegionAvail().x);
+    ImGui::TextUnformatted(shown.c_str());
     ImGui::PopStyleColor();
+    if (shown != key && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", key);
     ImGui::TableSetColumnIndex(1);
 }
 
@@ -154,7 +156,6 @@ void PropertyGrid::end_row(const Options& options) {
         if (raw.offset < bytes.size()) {
             const auto size = std::min<std::uint64_t>(raw.size, bytes.size() - raw.offset);
             ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
-            const auto file = raw.csf ? raw.csf->source_path() : raw.rws->source_path();
             ImGui::PushFont(font(Font::mono));
             if (raw.entry)
                 ImGui::Text("entry %u @0x%llX, %llu bytes", *raw.entry,
@@ -165,7 +166,6 @@ void PropertyGrid::end_row(const Options& options) {
                             static_cast<unsigned long long>(size));
             ImGui::PopFont();
             ImGui::PopStyleColor();
-            (void)file;
             draw_hex_dump(bytes.subspan(static_cast<std::size_t>(raw.offset), static_cast<std::size_t>(size)),
                           raw.offset, 64);
         }

@@ -2,10 +2,15 @@
 
 #include "app_actions.hpp"
 #include "app_util.hpp"
+#include "file_dialogs.hpp"
+#include "mission_editing.hpp"
 #include "navigation.hpp"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
+
+#include <cmath>
+#include <cstdio>
 
 namespace rwsman {
 namespace {
@@ -45,6 +50,22 @@ void copy_selection_identity(AppState& state) {
     if (!identity.empty()) copy_to_clipboard(state, identity, "identity");
 }
 
+void change_ui_scale(AppState& state, const float step) {
+    // Steps land on whole 10% values (1.0, 1.1, ...) whatever the starting scale.
+    const float scaled = state.settings.ui_scale * 10.0F;
+    const float next = step > 0.0F ? std::floor(scaled + 0.001F) + 1.0F
+                     : step < 0.0F ? std::ceil(scaled - 0.001F) - 1.0F
+                                   : 10.0F;
+    const float before = state.settings.ui_scale;
+    state.settings.ui_scale = next / 10.0F;
+    state.settings.clamp();
+    if (state.settings.ui_scale == before) return;
+    state.settings_dirty = true;
+    char text[48];
+    std::snprintf(text, sizeof(text), "UI scale %.0f%%", static_cast<double>(state.settings.ui_scale * 100.0F));
+    state.info(text);
+}
+
 void toggle_bottom_panel(AppState& state, bool UiState::*panel) {
     // Opening a specific bottom tab also reveals the dock.
     state.ui.*panel = true;
@@ -80,7 +101,31 @@ void register_commands(AppState& state) {
               s.info("Collision companion cleared");
           },
           [&s] { return s.collision_document != nullptr; });
-    b.add("file.save_copy", "Save copy", "File", "Ctrl+S", [&s] { save_copy(s); },
+    b.add("file.open_project", "Open mission project...", "File", "",
+          [&s] { request_file_dialog(s, DialogKind::open_project, s.settings.projects_root); })
+        .keywords = "mod edit workspace";
+    // Ctrl+S saves what is being edited: the mission project while a mission is
+    // open, otherwise a copy of the RenderWare document.
+    b.add("file.save", "Save", "File", "Ctrl+S",
+          [&s] {
+              if (mission_editable(s)) save_mission_project(s);
+              else save_copy(s);
+          },
+          [&s] { return mission_editable(s) || has_document(s); })
+        .separator_before = true;
+    b.add("file.save_mission", "Save mission project", "File", "",
+          [&s] { save_mission_project(s); }, [&s] { return mission_editable(s); });
+    b.add("file.save_mission_as", "Save mission project as...", "File", "",
+          [&s] {
+              // A new folder becomes the project; the edits are written there in full.
+              s.mission.project.reset();
+              request_file_dialog(s, DialogKind::save_project, s.settings.projects_root);
+          },
+          [&s] { return mission_editable(s); });
+    b.add("file.export_mission", "Export mission archive (.pak)...", "File", "Ctrl+E",
+          [&s] { s.ui.show_export_dialog = true; }, [&s] { return mission_editable(s); })
+        .keywords = "pak package mod build install";
+    b.add("file.save_copy", "Save copy of the RenderWare document", "File", "", [&s] { save_copy(s); },
           [&s] { return has_document(s); })
         .separator_before = true;
     b.add("file.exit", "Exit", "File", "Ctrl+Q", [&s] { glfwSetWindowShouldClose(s.window, GLFW_TRUE); })
@@ -95,6 +140,23 @@ void register_commands(AppState& state) {
         s.ui.palette = UiState::PaletteMode::go_to;
         s.ui.palette_just_opened = true;
     });
+    // Text fields keep Ctrl+Z / Ctrl+Y for their own undo.
+    const auto mission_undo_ready = [&s] {
+        return mission_editable(s) && s.mission.editor->can_undo() && !ImGui::GetIO().WantTextInput;
+    };
+    const auto mission_redo_ready = [&s] {
+        return mission_editable(s) && s.mission.editor->can_redo() && !ImGui::GetIO().WantTextInput;
+    };
+    b.add("edit.undo", "Undo mission edit", "Edit", "Ctrl+Z", [&s] { mission_undo(s); }, mission_undo_ready)
+        .separator_before = true;
+    b.add("edit.redo", "Redo mission edit", "Edit", "Ctrl+Y", [&s] { mission_redo(s); }, mission_redo_ready);
+    {
+        auto& redo = b.add("edit.redo_alternate", "Redo mission edit", "Edit", "Ctrl+Shift+Z",
+                           [&s] { mission_redo(s); }, mission_redo_ready);
+        redo.in_menu = false;
+        redo.in_palette = false;
+        redo.in_help = false;
+    }
     b.add("edit.back", "Back", "Edit", "Alt+Left", [&s] { go_back(s); },
           [&s] { return s.history.can_back(); })
         .separator_before = true;
@@ -224,6 +286,15 @@ void register_commands(AppState& state) {
     b.add("view.reset_layout", "Reset layout", "View", "",
           [&s] { s.ui.reset_layout = true; s.ui.maximize_viewport = false; })
         .separator_before = true;
+    b.add("view.zoom_in", "Zoom in (UI scale)", "View", "Ctrl+=", [&s] { change_ui_scale(s, 1.0F); },
+          [&s] { return s.settings.ui_scale < 2.0F; })
+        .keywords = "bigger larger font size text";
+    b.add("view.zoom_out", "Zoom out (UI scale)", "View", "Ctrl+-", [&s] { change_ui_scale(s, -1.0F); },
+          [&s] { return s.settings.ui_scale > 0.8F; })
+        .keywords = "smaller font size text";
+    b.add("view.zoom_reset", "Reset zoom (100%)", "View", "Ctrl+0", [&s] { change_ui_scale(s, 0.0F); },
+          [&s] { return s.settings.ui_scale != 1.0F; })
+        .keywords = "font size text default";
 
     // ---- View: viewport -----------------------------------------------------
     {
@@ -257,6 +328,58 @@ void register_commands(AppState& state) {
               s.settings_dirty = true;
           },
           [&s] { return has_document(s); }, [&s] { return s.preview.show_hud(); });
+    // ---- View: mission markers ---------------------------------------------
+    {
+        const auto markers = [&s] { return s.mission.scene != nullptr && s.preview.has_mission_overlays(); };
+        auto& focus = b.add("view.markers_focus", "Focus mode (dim unrelated markers)", "View", "Z",
+                            [&s] { s.preview.set_focus_mode(!s.preview.focus_mode()); }, markers,
+                            [&s] { return s.preview.focus_mode(); });
+        focus.scope = ShortcutScope::viewport;
+        focus.separator_before = true;
+        focus.submenu = "Markers";
+        focus.keywords = "overlay related selection declutter";
+        auto& slice = b.add("view.markers_slice", "Height slice: current floor", "View", "Y",
+                            [&s] { s.preview.toggle_floor_slice(); }, markers,
+                            [&s] { return s.preview.slice_enabled(); });
+        slice.scope = ShortcutScope::viewport;
+        slice.submenu = "Markers";
+        slice.keywords = "storey level vertical band clip overlay";
+        auto& filter = b.add("view.markers_filter", "Filter markers", "View", "/",
+                             [&s] { s.preview.focus_overlay_filter(); }, markers);
+        filter.scope = ShortcutScope::viewport;
+        filter.submenu = "Markers";
+        filter.keywords = "search overlay find";
+        auto& minimap = b.add("view.markers_minimap", "Minimap", "View", "M",
+                              [&s] { s.preview.toggle_minimap(); }, markers,
+                              [&s] { return s.preview.overlay_options().show_minimap; });
+        minimap.scope = ShortcutScope::viewport;
+        minimap.submenu = "Markers";
+        minimap.keywords = "overview density heatmap map";
+        auto& labels = b.add("view.markers_labels", "Cycle marker labels", "View", "",
+                             [&s] { s.preview.cycle_label_mode(); }, markers);
+        labels.submenu = "Markers";
+        labels.keywords = "names text overlay";
+        auto& legend = b.add("view.markers_legend", "Marker legend", "View", "",
+                             [&s] {
+                                 auto options = s.preview.overlay_options();
+                                 options.show_legend = !options.show_legend;
+                                 s.preview.set_overlay_options(std::move(options));
+                             },
+                             markers, [&s] { return s.preview.overlay_options().show_legend; });
+        legend.submenu = "Markers";
+        legend.keywords = "counts overlay key";
+        for (const auto& preset : builtin_overlay_presets()) {
+            auto& command = b.add("view.markers_preset." + preset.name, "Marker preset: " + preset.name, "View", "",
+                                  [&s, hidden = preset.hidden_layers] {
+                                      auto options = s.preview.overlay_options();
+                                      options.hidden_layers = hidden;
+                                      s.preview.set_overlay_options(std::move(options));
+                                  },
+                                  markers);
+            command.submenu = "Markers";
+            command.keywords = "layers overlay preset";
+        }
+    }
     b.add("view.screenshot", "Save screenshot (PNG)", "View", "F12",
           [&s] { s.ui.screenshot_requested = true; })
         .separator_before = true;
@@ -297,11 +420,57 @@ void register_commands(AppState& state) {
     // ---- Mission ------------------------------------------------------------
     b.add("mission.reload", "Reload mission", "Mission", "",
           [&s] {
-              if (s.mission.graph) start_mission_load(s, s.mission.graph->scene_path());
+              if (!s.mission.graph) return;
+              std::optional<std::filesystem::path> project;
+              if (s.mission.project) project = s.mission.project->workspace_root;
+              start_mission_load(s, s.mission.graph->scene_path(), project);
           },
           [&s] { return s.mission.graph != nullptr && !mission_load_active(s); });
     b.add("mission.cancel_load", "Cancel mission load", "Mission", "Escape",
           [&s] { cancel_mission_load(s); }, [&s] { return mission_load_active(s); });
+    {
+        const auto editable = [&s] { return mission_editable(s); };
+        const auto record = [&s] {
+            return mission_editable(s) && selected_mission_record(s).kind != MissionRecordKey::Kind::none;
+        };
+        auto& move = b.add("mission.tool_move", "Move tool", "Mission", "G",
+                           [&s] {
+                               const auto tool = s.preview.edit_tool() == GeometryPreview::EditTool::move
+                                                     ? GeometryPreview::EditTool::select
+                                                     : GeometryPreview::EditTool::move;
+                               s.preview.set_edit_tool(tool);
+                           },
+                           editable, [&s] { return s.preview.edit_tool() == GeometryPreview::EditTool::move; });
+        move.scope = ShortcutScope::viewport;
+        move.separator_before = true;
+        move.keywords = "gizmo translate drag position";
+        auto& rotate = b.add("mission.tool_rotate", "Rotate tool", "Mission", "R",
+                             [&s] {
+                                 const auto tool = s.preview.edit_tool() == GeometryPreview::EditTool::rotate
+                                                       ? GeometryPreview::EditTool::select
+                                                       : GeometryPreview::EditTool::rotate;
+                                 s.preview.set_edit_tool(tool);
+                             },
+                             editable, [&s] { return s.preview.edit_tool() == GeometryPreview::EditTool::rotate; });
+        rotate.scope = ShortcutScope::viewport;
+        rotate.keywords = "gizmo heading turn angle";
+        b.add("mission.snap_surface", "Snap moves to the collision surface", "Mission", "",
+              [&s] { s.preview.set_snap_to_surface(!s.preview.snap_to_surface()); }, editable,
+              [&s] { return s.preview.snap_to_surface(); })
+            .keywords = "ground floor drop";
+        b.add("mission.duplicate", "Duplicate selected record", "Mission", "Ctrl+D",
+              [&s] { duplicate_selected_record(s); }, record)
+            .separator_before = true;
+        auto& remove = b.add("mission.delete", "Delete selected record", "Mission", "Delete",
+                             [&s] { delete_selected_record(s, false); }, record);
+        remove.scope = ShortcutScope::viewport;
+        auto& force = b.add("mission.delete_force", "Delete selected record, leaving references", "Mission",
+                            "Shift+Delete", [&s] { delete_selected_record(s, true); }, record);
+        force.scope = ShortcutScope::viewport;
+        b.add("mission.edit_panel", "Mission editing panel", "Mission", "",
+              [&s] { toggle_bottom_panel(s, &UiState::show_changes); })
+            .keywords = "changes history project export properties";
+    }
     b.add("mission.references", "Show references of selection", "Mission", "",
           [&s] { toggle_bottom_panel(s, &UiState::show_references); },
           [&s] { return !s.selection.empty(); })

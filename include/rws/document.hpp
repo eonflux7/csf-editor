@@ -64,6 +64,10 @@ public:
 
     void save_as(const std::filesystem::path& path) const;
     void set_byte(std::uint64_t offset, std::byte value);
+    // Replaces the content with a newer version of the same file (for example
+    // after a mission edit) and reparses it; the source path is kept and the
+    // document is not marked dirty.
+    void replace_bytes(std::vector<std::byte> bytes);
 
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return source_path_; }
     [[nodiscard]] std::span<const std::byte> bytes() const noexcept { return bytes_; }

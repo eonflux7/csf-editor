@@ -22,6 +22,14 @@
   `draw_*(AppState&)` function in `app/ui/`. Menus, shortcuts, the command palette, and
   the Help cheat sheet all read the one registry in `app/commands.cpp`; add commands
   there. Write ImGui colors only in `app/ui/theme.cpp` (tokens and viewport palette).
+- Mission editing: `csf::MissionEditor` (`src/csf_mission_edit.cpp`) owns the
+  edited files as canonical `csf::Tree`s and is the only writer; the GUI calls it
+  through `app/mission_editing.cpp`, which rebuilds the mission views at the start
+  of the next frame (never mid-frame). Edit widgets live in
+  `app/ui/mission_editor.cpp`, the viewport gizmo in `app/geometry_preview_editing.cpp`.
+  `csf-mod audit` must keep every corpus file byte-identical through the tree
+  writer and the source text; regenerate `src/csf_script_signatures.cpp` with
+  `tools/generate_script_signatures.py` instead of editing it.
 - GUI-free helpers (settings, command registry, fuzzy matcher, navigation history,
   operation log, search index, diagnostics table, mission discovery) live in the
   `rwsman_ui_model` library (`include/rwsman/`, `src/ui_model_*.cpp`). It must not

@@ -46,7 +46,7 @@ void draw_status_bar(AppState& state) {
     auto* viewport = ImGui::GetMainViewport();
     const float height = ImGui::GetFrameHeight();
     ImGui::PushStyleColor(ImGuiCol_WindowBg, color(Token::bg0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {10.0F * ui_scale(), 2.0F});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {10.0F * ui_scale(), 2.0F * ui_scale()});
     if (ImGui::BeginViewportSideBar("##status_bar", viewport, ImGuiDir_Down, height,
                                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
                                         ImGuiWindowFlags_NoDecoration)) {
@@ -57,10 +57,13 @@ void draw_status_bar(AppState& state) {
             name = path_utf8(state.mission.graph->scene_path().filename());
         else if (document)
             name = path_utf8(document->source_path().filename());
-        const bool dirty = document && document->dirty();
+        const bool mission_dirty = state.mission.editor && state.mission.editor->dirty();
+        const bool dirty = (document && document->dirty()) || mission_dirty;
         if (segment(std::string(icons::LC_CIRCLE_DOT) + " " + name,
                     dirty ? Token::dirty : (document ? Token::ok : Token::text_dim),
-                    dirty ? "Unsaved byte edits" : "Toggle Explorer"))
+                    mission_dirty ? "Unsaved mission edits (Ctrl+S saves the project)"
+                    : dirty       ? "Unsaved byte edits"
+                                  : "Toggle Explorer"))
             state.commands.run("view.toggle_explorer");
         separator();
         segment(workspace_name(state.workspace), Token::text_dim);
@@ -79,24 +82,28 @@ void draw_status_bar(AppState& state) {
             }
         }
         separator();
-        if (segment(std::to_string(dirty ? 1 : 0) + " dirty", dirty ? Token::dirty : Token::text_dim,
-                    "Open the Changes panel"))
+        std::size_t changed = document && document->dirty() ? 1 : 0;
+        if (state.mission.editor) changed += state.mission.editor->modified_files().size();
+        if (segment(std::to_string(changed) + (mission_dirty ? " changed *" : " changed"),
+                    changed || mission_dirty ? Token::dirty : Token::text_dim,
+                    "Files that differ from the source; open the Changes panel"))
             state.commands.run("view.changes");
         separator();
         const auto root = state.settings.resource_root.empty() ? std::string("unset") : path_utf8(state.settings.resource_root);
         if (segment("root " + root, Token::text_dim, "Open Preferences to set the resource root"))
             state.ui.show_preferences = true;
-        const auto warnings = std::ranges::count_if(state.diagnostics, [](const auto& row) {
-            return row.severity != DiagnosticSeverity::note;
-        });
-        if (warnings > 0) {
+        if (const auto warnings = state.diagnostic_problem_count(); warnings > 0) {
             separator();
             if (segment(std::string(icons::LC_TRIANGLE_ALERT) + " " + std::to_string(warnings), Token::warn, "Open Diagnostics"))
                 state.commands.run("view.diagnostics");
         }
         // Latest log line fills the remaining width; frame rate sits at the right edge.
         char fps[24];
-        std::snprintf(fps, sizeof(fps), "%.0f fps", static_cast<double>(ImGui::GetIO().Framerate));
+        // Between idle frames the rate means nothing; say the loop is waiting instead.
+        if (state.frame_stats.idle)
+            std::snprintf(fps, sizeof(fps), "idle");
+        else
+            std::snprintf(fps, sizeof(fps), "%.0f fps", state.frame_stats.fps);
         const float fps_width = ImGui::CalcTextSize(fps).x;
         const auto latest = state.log.latest();
         if (latest) {

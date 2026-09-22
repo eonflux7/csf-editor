@@ -2,7 +2,9 @@
 #include "ui/ui.hpp"
 
 #include "app_util.hpp"
+#include "mission_editing.hpp"
 #include "navigation.hpp"
+#include "csf/source_text.hpp"
 #include "ui/fonts.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -11,6 +13,7 @@
 
 #include <imgui.h>
 
+#include <string>
 #include <type_traits>
 #include <variant>
 
@@ -75,6 +78,139 @@ void draw_program_instruction_list(AppState& state, const std::size_t document, 
     }
 }
 
+// Editable source of one script, kept while the user types. It reloads when
+// another script is selected or the editor changes underneath it.
+struct ScriptSource {
+    std::filesystem::path file;
+    std::int32_t script{};
+    std::uint64_t revision{~std::uint64_t{}};
+    std::string text;
+    bool modified{};
+    std::vector<std::string> messages;
+    bool error{};
+};
+
+int resize_callback(ImGuiInputTextCallbackData* data) {
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+        auto* text = static_cast<std::string*>(data->UserData);
+        text->resize(static_cast<std::size_t>(data->BufTextLen));
+        data->Buf = text->data();
+    }
+    return 0;
+}
+
+std::optional<std::size_t> editor_file(const AppState& state, const std::filesystem::path& path) {
+    const auto& editor = *state.mission.editor;
+    return editor.find_file(path.lexically_relative(editor.package_root()));
+}
+
+// Keeps the script with `id` selected once the views include the edit.
+void reselect_script(AppState& state, const std::size_t document, const std::int32_t id) {
+    state.mission.pending_script = std::pair{document, id};
+}
+
+void report(ScriptSource& source, const csf::EditResult& result) {
+    source.messages = result.warnings;
+    source.error = !result.applied && !result.message.starts_with("No change");
+    if (source.error) source.messages.insert(source.messages.begin(), result.message);
+}
+
+void draw_script_source_editor(AppState& state, const std::size_t document, const csf::ProgramScript& script,
+                               const std::filesystem::path& path) {
+    static ScriptSource source;
+    if (!mission_editable(state)) return;
+    auto& editor = *state.mission.editor;
+    const auto file = editor_file(state, path);
+    if (!file) return;
+    ImGui::PushStyleColor(ImGuiCol_Header, transparent());
+    const bool open = ImGui::CollapsingHeader("Edit script source", ImGuiTreeNodeFlags_DefaultOpen);
+    ImGui::PopStyleColor();
+    if (!open) return;
+    const bool other = source.file != path || source.script != script.id;
+    if (other || (!source.modified && source.revision != editor.revision())) {
+        source.file = path;
+        source.script = script.id;
+        source.revision = editor.revision();
+        source.text = editor.script_text(*file, script.id).value_or("");
+        source.modified = false;
+        if (other) source.messages.clear();
+    }
+    dim_text("Recompilable CSFFBS text: one instruction per line inside { }; (TAG value) operands; "
+             "2.0 is a real, 2 an integer. Apply checks it against every shipped script and this mission.");
+    // Flags are edited through the text so that everything goes through one path.
+    const auto set_flag = [&](const char* flag, const bool value) {
+        try {
+            auto tree = csf::parse_source_value(source.text);
+            if (auto* flags = tree.child(".FLAGS"))
+                if (auto* node = flags->child(flag)) node->set_int(value ? 1 : 0);
+            const auto result = editor.set_script_text(*file, script.id, csf::to_source_text(tree) + "\n");
+            report(source, result);
+            if (result.applied) {
+                apply_mission_edit(state, result);
+                reselect_script(state, document, script.id);
+            }
+        } catch (const std::exception& error) {
+            source.messages = {error.what()};
+            source.error = true;
+        }
+    };
+    bool enabled = script.flags.enabled.value_or(false), trigger = script.flags.trigger.value_or(false);
+    ImGui::BeginDisabled(source.modified);
+    if (ImGui::Checkbox("Enabled", &enabled)) set_flag(".ENABLED", enabled);
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Trigger (global, started by events)", &trigger)) set_flag(".TRIGGER", trigger);
+    ImGui::EndDisabled();
+    const float height = std::max(ImGui::GetContentRegionAvail().y * 0.55F, 240.0F * ui_scale());
+    if (ImGui::InputTextMultiline("##script_source", source.text.data(), source.text.capacity() + 1,
+                                  {-FLT_MIN, height},
+                                  ImGuiInputTextFlags_CallbackResize | ImGuiInputTextFlags_AllowTabInput,
+                                  resize_callback, &source.text))
+        source.modified = true;
+    const bool apply_key = ImGui::IsItemFocused() && ImGui::GetIO().KeyCtrl &&
+                           ImGui::IsKeyPressed(ImGuiKey_Enter, false);
+    ImGui::BeginDisabled(!source.modified);
+    if (ImGui::Button("Apply (Ctrl+Enter)") || (apply_key && source.modified)) {
+        const auto result = editor.set_script_text(*file, script.id, source.text);
+        report(source, result);
+        if (result.applied) {
+            source.modified = false;
+            std::int32_t id = script.id;
+            try {
+                if (const auto* value = csf::parse_source_value(source.text).child(".ID"))
+                    id = value->as_int().value_or(id);
+            } catch (...) {
+            }
+            apply_mission_edit(state, result);
+            reselect_script(state, document, id);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Revert")) {
+        source.revision = ~std::uint64_t{};
+        source.modified = false;
+        source.messages.clear();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("New script")) {
+        std::int32_t id{};
+        const auto result =
+            editor.add_script(*file, csf::MissionEditor::script_template(editor.next_script_id(*file), "NEW_SCRIPT"), &id);
+        report(source, result);
+        if (apply_mission_edit(state, result)) reselect_script(state, document, id);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete script")) {
+        const auto result = editor.delete_script(*file, script.id, ImGui::GetIO().KeyShift);
+        report(source, result);
+        if (apply_mission_edit(state, result)) state.mission.pending_script = std::pair{document, std::int32_t{-1}};
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Refuses while actors run it or operands name it; hold Shift to force");
+    for (const auto& message : source.messages)
+        token_text(source.error ? Token::error : Token::warn, "%s", message.c_str());
+}
+
 } // namespace
 
 void draw_script_view(AppState& state) {
@@ -106,6 +242,7 @@ void draw_script_view(AppState& state) {
                                                   program_operand_text(variable.initial_value).c_str());
                         }
                     }
+                    draw_script_source_editor(state, selected_program_document, script, path);
                     ImGui::Text("%s", script.name.c_str());
                     ImGui::SameLine();
                     ImGui::TextDisabled("ID %d | %s", script.id,

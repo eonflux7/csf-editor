@@ -114,6 +114,10 @@ void reset_navigation(AppState& state) {
     state.tracker = {};
     state.selection = {};
     state.ui.script_focus_entry.reset();
+    state.ui.script_scroll_pending = false;
+    // Pinned and duplicated inspectors refer to records of the previous document.
+    state.ui.inspector_pin.reset();
+    state.ui.extra_inspectors.clear();
 }
 
 void track_selection(AppState& state) {

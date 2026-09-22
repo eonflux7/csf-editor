@@ -2,6 +2,7 @@
 
 #include "app_actions.hpp"
 #include "app_state.hpp"
+#include "mission_editing.hpp"
 #include "app_util.hpp"
 #include "navigation.hpp"
 #include "ui/fonts.hpp"
@@ -25,7 +26,11 @@ void update_window_title(AppState& state) {
     static std::string previous_window_title;
     const std::string window_title =
         state.mission.graph
-            ? path_utf8(state.mission.graph->scene_path().filename()) + " - CSF Mission Explorer"
+            ? path_utf8(state.mission.graph->scene_path().filename()) +
+                  (state.mission.editor && state.mission.editor->dirty() ? " *" : "") +
+                  (state.mission.project ? " [" + path_utf8(state.mission.project->workspace_root.filename()) + "]"
+                                         : std::string{}) +
+                  " - CSF Mission Editor"
         : document ? path_utf8(document->source_path().filename()) +
                          (document->dirty() ? " *" : "") + " - CSF RWS Tools"
                    : "CSF RWS Tools - rws-man";
@@ -42,6 +47,11 @@ void panel(const Workspace workspace, const Panel which, bool* open, const ImGui
            Body&& body, const bool focus = false) {
     const auto name = panel_window_name(workspace, which);
     if (focus) ImGui::SetNextWindowFocus();
+    // Each tab has its own close button; the dock node's extra one at the right
+    // end of the tab bar only duplicated it.
+    ImGuiWindowClass panel_class;
+    panel_class.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags_NoCloseButton;
+    ImGui::SetNextWindowClass(&panel_class);
     if (ImGui::Begin(name.c_str(), open, flags)) body();
     ImGui::End();
 }
@@ -143,11 +153,18 @@ void draw_panels(AppState& state, const Workspace workspace) {
 
 void draw_frame(AppState& state) {
     dispatch_shortcuts(state);
+    refresh_mission_from_editor(state);
     track_selection(state);
+    update_mission_gizmo(state);
     if (state.preview.take_screenshot_request()) state.ui.screenshot_requested = true;
     // The HUD toggle lives in the viewport menu; mirror it into the settings.
     if (state.preview.show_hud() != state.settings.show_hud) {
         state.settings.show_hud = state.preview.show_hud();
+        state.settings_dirty = true;
+    }
+    // Marker display options live in the viewport toolbar; mirror them too.
+    if (state.preview.overlay_options() != state.settings.overlays) {
+        state.settings.overlays = state.preview.overlay_options();
         state.settings_dirty = true;
     }
     update_window_title(state);
@@ -175,6 +192,7 @@ void draw_frame(AppState& state) {
     draw_load_overlay(state);
     draw_preferences(state);
     draw_overwrite_dialog(state);
+    draw_mission_dialogs(state);
     draw_toasts(state);
 }
 

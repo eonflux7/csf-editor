@@ -179,8 +179,10 @@ bool chip(const char* label, bool& value, const char* tooltip) {
     return clicked;
 }
 
+// `dirty_filter` offers the "dirty" chip; only chunk trees carry byte edits.
 Frame draw_frame_header(AppState& state, const char* hint, const std::string& counts,
-                        const std::vector<std::pair<const char*, SymbolKind>>& kinds) {
+                        const std::vector<std::pair<const char*, SymbolKind>>& kinds,
+                        const bool dirty_filter = false) {
     auto& ui = state.ui;
     auto& query = ui.explorer_query[static_cast<std::size_t>(state.workspace)];
     search_input("##explorer_search", hint, query.data(), query.size());
@@ -201,17 +203,17 @@ Frame draw_frame_header(AppState& state, const char* hint, const std::string& co
     }
     chip((std::string(icons::LC_TRIANGLE_ALERT) + " diagnostics").c_str(), ui.explorer_diagnostics_only,
          "Only rows that carry a diagnostic");
-    ImGui::SameLine();
-    chip((std::string(icons::LC_CIRCLE_DOT) + " dirty").c_str(), ui.explorer_dirty_only,
-         "Only rows with unsaved byte edits");
-    ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
-    ImGui::TextUnformatted(counts.c_str());
-    ImGui::PopStyleColor();
+    if (dirty_filter) {
+        ImGui::SameLine();
+        chip((std::string(icons::LC_CIRCLE_DOT) + " dirty").c_str(), ui.explorer_dirty_only,
+             "Only rows with unsaved byte edits");
+    }
+    dim_text("%s", counts.c_str());
     ImGui::Separator();
     Frame frame;
     frame.needle = lower_ascii(query.data());
     frame.diagnostics_only = ui.explorer_diagnostics_only;
-    frame.dirty_only = ui.explorer_dirty_only;
+    frame.dirty_only = dirty_filter && ui.explorer_dirty_only;
     return frame;
 }
 
@@ -375,8 +377,7 @@ bool chunk_path_offsets(const std::vector<rws::Chunk>& chunks, const std::uint64
 }
 
 void draw_legend(AppState& state) {
-    ImGui::Checkbox("size colors", &state.settings.show_clump_colors);
-    if (ImGui::IsItemDeactivatedAfterEdit()) state.settings_dirty = true;
+    if (ImGui::Checkbox("size colors", &state.settings.show_clump_colors)) state.settings_dirty = true;
     if (!state.settings.show_clump_colors) return;
     ImGui::SameLine();
     // Gradient bar: small clump -> large clump.
@@ -527,7 +528,7 @@ void draw_navigation_group(AppState& state, const Frame& frame, const bool revea
         }
     }
     if (visible.empty() && frame.active()) return;
-    if (!group("Navigation", visible.size(), false || frame.active())) return;
+    if (!group("Navigation", visible.size(), frame.active())) return;
     ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
     ImGui::Text("%zu groups, %zu points", groups.size(), point_total);
     ImGui::PopStyleColor();
@@ -587,7 +588,8 @@ void draw_resources(AppState& state, const Frame& frame) {
         switch (nodes[i].state) {
         case csf::LoadState::available:
         case csf::LoadState::metadata_only:
-            buckets[0].rows.push_back(i);
+            // Resolved rows carry no diagnostic marker.
+            if (!frame.diagnostics_only) buckets[0].rows.push_back(i);
             break;
         case csf::LoadState::ambiguous:
             buckets[1].rows.push_back(i);
@@ -601,7 +603,7 @@ void draw_resources(AppState& state, const Frame& frame) {
     std::size_t total = 0;
     for (const auto& bucket : buckets) total += bucket.rows.size();
     if (total == 0 && frame.active()) return;
-    if (!group("Resources", total, false || frame.active())) return;
+    if (!group("Resources", total, frame.active())) return;
     for (const auto& bucket : buckets) {
         if (bucket.rows.empty()) continue;
         ImGui::PushStyleColor(ImGuiCol_Text, color(provenance_token(bucket.provenance)));
@@ -620,7 +622,7 @@ void draw_resources(AppState& state, const Frame& frame) {
     ImGui::TreePop();
 }
 
-void draw_folders(AppState& state, const bool reveal);
+void draw_folders(AppState& state);
 void draw_animation_catalog(AppState& state, const Frame& frame);
 void draw_cutscenes(AppState& state);
 void draw_cutscene_cameras(AppState& state);
@@ -632,7 +634,7 @@ void draw_mission_explorer(AppState& state, const Frame& frame) {
     last_reveal = state.selection;
 
     draw_simple_group(state, "Actors", {SymbolKind::actor}, frame, reveal);
-    if (animation) draw_cutscene_cameras(state);
+    if (animation && !frame.active()) draw_cutscene_cameras(state);
     if (!animation) {
         draw_navigation_group(state, frame, reveal);
         draw_simple_group(state, "Spatial", {SymbolKind::dummy, SymbolKind::area, SymbolKind::light}, frame,
@@ -640,12 +642,14 @@ void draw_mission_explorer(AppState& state, const Frame& frame) {
         draw_simple_group(state, "Effects", {SymbolKind::effect}, frame, reveal, false);
     }
     draw_simple_group(state, "Scene-object animations", {SymbolKind::scene_object}, frame, reveal, false);
+    // Folders and cutscenes are structured subtrees that the search and filter chips
+    // do not apply to; they stay out of the way while filtering.
     if (!animation) {
-        draw_folders(state, reveal);
+        if (!frame.active()) draw_folders(state);
         draw_simple_group(state, "Classes", {SymbolKind::class_record}, frame, reveal, false);
-        draw_animation_catalog(state, frame);
+        if (!frame.diagnostics_only) draw_animation_catalog(state, frame);
     }
-    draw_cutscenes(state);
+    if (!frame.active()) draw_cutscenes(state);
     if (!animation) draw_resources(state, frame);
 }
 
@@ -723,107 +727,91 @@ void draw_script_explorer(AppState& state, const Frame& frame) {
 void draw_cutscene_cameras(AppState& state) {
     auto& mission = state.mission;
     auto& geometry_preview = state.preview;
-    auto& workspace = state.workspace;
     const auto selected_entry = geometry_preview.selected_mission_entry();
-    auto matches = [](const std::string&) { return true; };
-    (void)matches;
-                    if (workspace == Workspace::animation &&
-                        ImGui::TreeNodeEx("Cutscene camera dummies",
-                                          ImGuiTreeNodeFlags_DefaultOpen)) {
-                        std::set<std::uint32_t> shown;
-                        for (const auto& [path, timeline] : mission.cutscenes)
-                            for (const auto& script : timeline.scripts())
-                                for (const auto& action : script.actions) {
-                                    if (action.kind != csf::CutsceneActionKind::camera ||
-                                        !action.numeric_value)
-                                        continue;
-                                    const auto dummy = std::ranges::find_if(
-                                        mission.scene->dummies(), [&](const auto& value) {
-                                            return value.id ==
-                                                   static_cast<std::int32_t>(*action.numeric_value);
-                                        });
-                                    if (dummy == mission.scene->dummies().end() ||
-                                        !shown.insert(dummy->source.entry_index).second)
-                                        continue;
-                                    const auto text = dummy->name.value_or("(unnamed camera)") +
-                                                      " [dummy " +
-                                                      std::to_string(dummy->id.value_or(-1)) +
-                                                      ", " + script.name + "]";
-                                    ImGui::PushID(static_cast<int>(dummy->source.entry_index));
-                                    if (ImGui::Selectable(text.c_str(),
-                                                          selected_entry ==
-                                                              dummy->source.entry_index))
-                                        geometry_preview.select_mission_entry(
-                                            dummy->source.entry_index);
-                                    ImGui::PopID();
-                                }
-                        if (shown.empty())
-                            ImGui::TextDisabled("No camera actions resolve to SCN dummies");
-                        ImGui::TreePop();
-                    }
+    if (ImGui::TreeNodeEx("Cutscene camera dummies", ImGuiTreeNodeFlags_DefaultOpen)) {
+        std::set<std::uint32_t> shown;
+        for (const auto& [path, timeline] : mission.cutscenes)
+            for (const auto& script : timeline.scripts())
+                for (const auto& action : script.actions) {
+                    if (action.kind != csf::CutsceneActionKind::camera || !action.numeric_value)
+                        continue;
+                    const auto dummy =
+                        std::ranges::find_if(mission.scene->dummies(), [&](const auto& value) {
+                            return value.id == static_cast<std::int32_t>(*action.numeric_value);
+                        });
+                    if (dummy == mission.scene->dummies().end() ||
+                        !shown.insert(dummy->source.entry_index).second)
+                        continue;
+                    const auto text = dummy->name.value_or("(unnamed camera)") + " [dummy " +
+                                      std::to_string(dummy->id.value_or(-1)) + ", " + script.name +
+                                      "]";
+                    ImGui::PushID(static_cast<int>(dummy->source.entry_index));
+                    if (ImGui::Selectable(text.c_str(),
+                                          selected_entry == dummy->source.entry_index))
+                        geometry_preview.select_mission_entry(dummy->source.entry_index);
+                    ImGui::PopID();
+                }
+        if (shown.empty()) ImGui::TextDisabled("No camera actions resolve to SCN dummies");
+        ImGui::TreePop();
+    }
 }
 
-void draw_folders(AppState& state, const bool) {
+void draw_folders(AppState& state) {
     auto& mission = state.mission;
     auto& geometry_preview = state.preview;
     auto& workspace = state.workspace;
     const auto selected_entry = geometry_preview.selected_mission_entry();
-                    if (workspace == Workspace::mission && !mission.scene->folders().empty() &&
-                        ImGui::TreeNode("Folders")) {
-                        for (const auto& folder : mission.scene->folders()) {
-                            std::vector<std::uint32_t> entries;
-                            for (const auto id : folder.element_ids) {
-                                const auto dummy = std::ranges::find_if(
-                                    mission.scene->dummies(),
-                                    [&](const auto& value) { return value.id == id; });
-                                if (dummy != mission.scene->dummies().end())
-                                    entries.push_back(dummy->source.entry_index);
-                                const auto light = std::ranges::find_if(
-                                    mission.scene->lights(),
-                                    [&](const auto& value) { return value.id == id; });
-                                if (light != mission.scene->lights().end())
-                                    entries.push_back(light->source.entry_index);
-                            }
-                            bool visible = std::ranges::all_of(entries, [&](const auto entry) {
-                                return geometry_preview.mission_entry_visible(entry);
-                            });
-                            ImGui::PushID(static_cast<int>(folder.source.entry_index));
-                            if (ImGui::Checkbox("##visible", &visible))
-                                geometry_preview.set_mission_entries_visible(entries, visible);
-                            ImGui::SameLine();
-                            const auto label = (folder.path.empty() ? "(root)" : folder.path) +
-                                               " (" +
-                                               std::to_string(folder.element_ids.size()) + ")";
-                            if (ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
-                                for (const auto id : folder.element_ids) {
-                                    const auto dummy = std::ranges::find_if(
-                                        mission.scene->dummies(),
-                                        [&](const auto& value) { return value.id == id; });
-                                    const auto light = std::ranges::find_if(
-                                        mission.scene->lights(),
-                                        [&](const auto& value) { return value.id == id; });
-                                    const csf::CsfSourceId* source = nullptr;
-                                    std::string text = "Missing element " + std::to_string(id);
-                                    if (dummy != mission.scene->dummies().end()) {
-                                        source = &dummy->source;
-                                        text = "Dummy: " + dummy->name.value_or("(unnamed)");
-                                    } else if (light != mission.scene->lights().end()) {
-                                        source = &light->source;
-                                        text = "Light: " + light->name.value_or("(unnamed)");
-                                    }
-                                    if (source && ImGui::Selectable(
-                                                      text.c_str(), selected_entry ==
-                                                                        source->entry_index))
-                                        geometry_preview.select_mission_entry(source->entry_index);
-                                    else if (!source)
-                                        ImGui::TextDisabled("%s", text.c_str());
-                                }
-                                ImGui::TreePop();
-                            }
-                            ImGui::PopID();
-                        }
-                        ImGui::TreePop();
+    if (workspace == Workspace::mission && !mission.scene->folders().empty() &&
+        ImGui::TreeNode("Folders")) {
+        for (const auto& folder : mission.scene->folders()) {
+            std::vector<std::uint32_t> entries;
+            for (const auto id : folder.element_ids) {
+                const auto dummy = std::ranges::find_if(
+                    mission.scene->dummies(), [&](const auto& value) { return value.id == id; });
+                if (dummy != mission.scene->dummies().end())
+                    entries.push_back(dummy->source.entry_index);
+                const auto light = std::ranges::find_if(
+                    mission.scene->lights(), [&](const auto& value) { return value.id == id; });
+                if (light != mission.scene->lights().end())
+                    entries.push_back(light->source.entry_index);
+            }
+            bool visible = std::ranges::all_of(entries, [&](const auto entry) {
+                return geometry_preview.mission_entry_visible(entry);
+            });
+            ImGui::PushID(static_cast<int>(folder.source.entry_index));
+            if (ImGui::Checkbox("##visible", &visible))
+                geometry_preview.set_mission_entries_visible(entries, visible);
+            ImGui::SameLine();
+            const auto label = (folder.path.empty() ? "(root)" : folder.path) + " (" +
+                               std::to_string(folder.element_ids.size()) + ")";
+            if (ImGui::TreeNodeEx(label.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth)) {
+                for (const auto id : folder.element_ids) {
+                    const auto dummy =
+                        std::ranges::find_if(mission.scene->dummies(),
+                                             [&](const auto& value) { return value.id == id; });
+                    const auto light = std::ranges::find_if(
+                        mission.scene->lights(), [&](const auto& value) { return value.id == id; });
+                    const csf::CsfSourceId* source = nullptr;
+                    std::string text = "Missing element " + std::to_string(id);
+                    if (dummy != mission.scene->dummies().end()) {
+                        source = &dummy->source;
+                        text = "Dummy: " + dummy->name.value_or("(unnamed)");
+                    } else if (light != mission.scene->lights().end()) {
+                        source = &light->source;
+                        text = "Light: " + light->name.value_or("(unnamed)");
                     }
+                    if (source &&
+                        ImGui::Selectable(text.c_str(), selected_entry == source->entry_index))
+                        geometry_preview.select_mission_entry(source->entry_index);
+                    else if (!source)
+                        ImGui::TextDisabled("%s", text.c_str());
+                }
+                ImGui::TreePop();
+            }
+            ImGui::PopID();
+        }
+        ImGui::TreePop();
+    }
 }
 
 void draw_animation_catalog(AppState& state, const Frame& frame) {
@@ -832,156 +820,129 @@ void draw_animation_catalog(AppState& state, const Frame& frame) {
     const auto matches = [&](const std::string& text) {
         return frame.needle.empty() || lower_ascii(text).find(frame.needle) != std::string::npos;
     };
-                    if (workspace == Workspace::mission && mission.animations &&
-                        ImGui::TreeNode("Animation catalog")) {
-                        ImGui::TextDisabled("%zu logical records",
-                                            mission.animations->records().size());
-                        for (const auto& animation : mission.animations->records())
-                            if (matches(animation.logical_name)) {
-                                ImGui::PushID(static_cast<int>(animation.source.entry_index));
-                                if (ImGui::TreeNode(animation.logical_name.c_str())) {
-                                    ImGui::TextDisabled("source entry %u | %zu variant%s",
-                                                        animation.source.entry_index,
-                                                        animation.variants.size(),
-                                                        animation.variants.size() == 1 ? "" : "s");
-                                    if (animation.loop)
-                                        ImGui::Text("Loop: %s", *animation.loop ? "yes" : "no");
-                                    if (animation.blend_in)
-                                        ImGui::Text("Blend in: %.6g", *animation.blend_in);
-                                    if (animation.velocity_scalar)
-                                        ImGui::Text("Velocity: %.6g", *animation.velocity_scalar);
-                                    if (animation.translation_scalar)
-                                        ImGui::Text("Translation: %.6g",
-                                                    *animation.translation_scalar);
-                                    if (animation.rotation_scalar)
-                                        ImGui::Text("Rotation: %.6g", *animation.rotation_scalar);
-                                    for (const auto& variant : animation.variants) {
-                                        ImGui::BulletText("%s", variant.reference.c_str());
-                                        if (variant.resolution) {
-                                            ImGui::Indent();
-                                            ImGui::TextDisabled("%s",
-                                                                csf::resolution_status_name(
-                                                                    variant.resolution->status));
-                                            ImGui::Unindent();
-                                        }
-                                    }
-                                    for (const auto& sound : animation.sounds)
-                                        ImGui::BulletText(
-                                            "Sound %s%s", sound.logical_id.c_str(),
-                                            sound.time
-                                                ? (" @ " + std::to_string(*sound.time) + " s")
-                                                      .c_str()
-                                                : "");
-                                    ImGui::TreePop();
-                                }
-                                ImGui::PopID();
-                            }
-                        ImGui::TreePop();
+    if (workspace == Workspace::mission && mission.animations &&
+        ImGui::TreeNode("Animation catalog")) {
+        ImGui::TextDisabled("%zu logical records", mission.animations->records().size());
+        for (const auto& animation : mission.animations->records())
+            if (matches(animation.logical_name)) {
+                ImGui::PushID(static_cast<int>(animation.source.entry_index));
+                if (ImGui::TreeNode(animation.logical_name.c_str())) {
+                    ImGui::TextDisabled("source entry %u | %zu variant%s",
+                                        animation.source.entry_index, animation.variants.size(),
+                                        animation.variants.size() == 1 ? "" : "s");
+                    if (animation.loop) ImGui::Text("Loop: %s", *animation.loop ? "yes" : "no");
+                    if (animation.blend_in) ImGui::Text("Blend in: %.6g", *animation.blend_in);
+                    if (animation.velocity_scalar)
+                        ImGui::Text("Velocity: %.6g", *animation.velocity_scalar);
+                    if (animation.translation_scalar)
+                        ImGui::Text("Translation: %.6g", *animation.translation_scalar);
+                    if (animation.rotation_scalar)
+                        ImGui::Text("Rotation: %.6g", *animation.rotation_scalar);
+                    for (const auto& variant : animation.variants) {
+                        ImGui::BulletText("%s", variant.reference.c_str());
+                        if (variant.resolution) {
+                            ImGui::Indent();
+                            ImGui::TextDisabled(
+                                "%s", csf::resolution_status_name(variant.resolution->status));
+                            ImGui::Unindent();
+                        }
                     }
+                    for (const auto& sound : animation.sounds)
+                        ImGui::BulletText(
+                            "Sound %s%s", sound.logical_id.c_str(),
+                            sound.time ? (" @ " + std::to_string(*sound.time) + " s").c_str() : "");
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+        ImGui::TreePop();
+    }
 }
 
 void draw_cutscenes(AppState& state) {
     auto& mission = state.mission;
     auto& geometry_preview = state.preview;
-                    if (!mission.cutscenes.empty() && ImGui::TreeNode("Cutscenes / control flow")) {
-                        for (const auto& [path, timeline] : mission.cutscenes)
-                            if (ImGui::TreeNode(path_utf8(path.filename()).c_str())) {
-                                for (const auto& script : timeline.scripts())
-                                    if (ImGui::TreeNode(&script, "%s [%zu blocks]",
-                                                        script.name.c_str(),
-                                                        script.blocks.size())) {
-                                        for (const auto& block : script.blocks) {
-                                            ImGui::Text("Block %u%s%s", block.index,
-                                                        block.conditional ? " | branch" : "",
-                                                        block.runtime_wait ? " | runtime wait"
-                                                                           : "");
-                                            ImGui::Indent();
-                                            for (auto index : block.action_indices) {
-                                                const auto& action = script.actions[index];
-                                                ImGui::BulletText(
-                                                    "%s: %s",
-                                                    csf::cutscene_action_kind_name(action.kind),
-                                                    action.opcode.c_str());
-                                                if (!action.reference.empty()) {
-                                                    ImGui::SameLine();
-                                                    ImGui::TextDisabled("%s",
-                                                                        action.reference.c_str());
-                                                }
-                                                ImGui::Indent();
-                                                ImGui::TextDisabled("source entry %u",
-                                                                    action.source.entry_index);
-                                                ImGui::Unindent();
-                                                if (action.kind ==
-                                                        csf::CutsceneActionKind::camera &&
-                                                    action.numeric_value) {
-                                                    const auto dummy = std::ranges::find_if(
-                                                        mission.scene->dummies(),
-                                                        [&](const auto& value) {
-                                                            return value.id &&
-                                                                   *value.id ==
-                                                                       static_cast<std::int32_t>(
-                                                                           *action.numeric_value);
-                                                        });
-                                                    if (dummy != mission.scene->dummies().end()) {
-                                                        ImGui::SameLine();
-                                                        ImGui::PushID(&action);
-                                                        if (ImGui::SmallButton("Preview dummy"))
-                                                            geometry_preview.select_mission_entry(
-                                                                dummy->source.entry_index);
-                                                        ImGui::PopID();
-                                                    }
-                                                }
-                                                if (action.kind == csf::CutsceneActionKind::fov &&
-                                                    action.numeric_value) {
-                                                    ImGui::SameLine();
-                                                    ImGui::Text("FOV %.4g", *action.numeric_value);
-                                                }
-                                                if (action.kind ==
-                                                        csf::CutsceneActionKind::animation &&
-                                                    mission.animations) {
-                                                    auto reference = action.reference;
-                                                    std::ranges::transform(
-                                                        reference, reference.begin(),
-                                                        [](unsigned char c) {
-                                                            return static_cast<char>(
-                                                                std::toupper(c));
-                                                        });
-                                                    const auto logical = std::ranges::find_if(
-                                                        mission.animations->records(),
-                                                        [&](const auto& record) {
-                                                            auto name = record.logical_name;
-                                                            std::ranges::transform(
-                                                                name, name.begin(),
-                                                                [](unsigned char c) {
-                                                                    return static_cast<char>(
-                                                                        std::toupper(c));
-                                                                });
-                                                            return !name.empty() &&
-                                                                   reference.find(name) !=
-                                                                       std::string::npos;
-                                                        });
-                                                    if (logical !=
-                                                        mission.animations->records().end()) {
-                                                        ImGui::Indent();
-                                                        ImGui::Text("Catalog: %s [entry %u]",
-                                                                    logical->logical_name.c_str(),
-                                                                    logical->source.entry_index);
-                                                        for (const auto& variant :
-                                                             logical->variants)
-                                                            ImGui::TextDisabled(
-                                                                "%s", variant.reference.c_str());
-                                                        ImGui::Unindent();
-                                                    }
-                                                }
-                                            }
-                                            ImGui::Unindent();
-                                        }
-                                        ImGui::TreePop();
+    if (!mission.cutscenes.empty() && ImGui::TreeNode("Cutscenes / control flow")) {
+        for (const auto& [path, timeline] : mission.cutscenes)
+            if (ImGui::TreeNode(path_utf8(path.filename()).c_str())) {
+                for (const auto& script : timeline.scripts())
+                    if (ImGui::TreeNode(&script, "%s [%zu blocks]", script.name.c_str(),
+                                        script.blocks.size())) {
+                        for (const auto& block : script.blocks) {
+                            ImGui::Text("Block %u%s%s", block.index,
+                                        block.conditional ? " | branch" : "",
+                                        block.runtime_wait ? " | runtime wait" : "");
+                            ImGui::Indent();
+                            for (auto index : block.action_indices) {
+                                const auto& action = script.actions[index];
+                                ImGui::BulletText("%s: %s",
+                                                  csf::cutscene_action_kind_name(action.kind),
+                                                  action.opcode.c_str());
+                                if (!action.reference.empty()) {
+                                    ImGui::SameLine();
+                                    ImGui::TextDisabled("%s", action.reference.c_str());
+                                }
+                                ImGui::Indent();
+                                ImGui::TextDisabled("source entry %u", action.source.entry_index);
+                                ImGui::Unindent();
+                                if (action.kind == csf::CutsceneActionKind::camera &&
+                                    action.numeric_value) {
+                                    const auto dummy = std::ranges::find_if(
+                                        mission.scene->dummies(), [&](const auto& value) {
+                                            return value.id &&
+                                                   *value.id == static_cast<std::int32_t>(
+                                                                    *action.numeric_value);
+                                        });
+                                    if (dummy != mission.scene->dummies().end()) {
+                                        ImGui::SameLine();
+                                        ImGui::PushID(&action);
+                                        if (ImGui::SmallButton("Preview dummy"))
+                                            geometry_preview.select_mission_entry(
+                                                dummy->source.entry_index);
+                                        ImGui::PopID();
                                     }
-                                ImGui::TreePop();
+                                }
+                                if (action.kind == csf::CutsceneActionKind::fov &&
+                                    action.numeric_value) {
+                                    ImGui::SameLine();
+                                    ImGui::Text("FOV %.4g", *action.numeric_value);
+                                }
+                                if (action.kind == csf::CutsceneActionKind::animation &&
+                                    mission.animations) {
+                                    auto reference = action.reference;
+                                    std::ranges::transform(
+                                        reference, reference.begin(), [](unsigned char c) {
+                                            return static_cast<char>(std::toupper(c));
+                                        });
+                                    const auto logical = std::ranges::find_if(
+                                        mission.animations->records(), [&](const auto& record) {
+                                            auto name = record.logical_name;
+                                            std::ranges::transform(
+                                                name, name.begin(), [](unsigned char c) {
+                                                    return static_cast<char>(std::toupper(c));
+                                                });
+                                            return !name.empty() &&
+                                                   reference.find(name) != std::string::npos;
+                                        });
+                                    if (logical != mission.animations->records().end()) {
+                                        ImGui::Indent();
+                                        ImGui::Text("Catalog: %s [entry %u]",
+                                                    logical->logical_name.c_str(),
+                                                    logical->source.entry_index);
+                                        for (const auto& variant : logical->variants)
+                                            ImGui::TextDisabled("%s", variant.reference.c_str());
+                                        ImGui::Unindent();
+                                    }
+                                }
                             }
+                            ImGui::Unindent();
+                        }
                         ImGui::TreePop();
                     }
+                ImGui::TreePop();
+            }
+        ImGui::TreePop();
+    }
 }
 
 } // namespace
@@ -1005,7 +966,7 @@ void draw_explorer(AppState& state) {
         char counts[160];
         std::snprintf(counts, sizeof(counts), "%zu actors | %zu nav points | %zu effects | %zu diagnostics",
                       scene.actors().size(), scene.navigation_stats().points, scene.effects().size(),
-                      scene.diagnostics().size());
+                      state.diagnostic_problem_count());
         const auto frame = draw_frame_header(
             state, "name, class, 0xID...", counts,
             {{"Actors", SymbolKind::actor},
@@ -1021,8 +982,8 @@ void draw_explorer(AppState& state) {
         char counts[128];
         std::snprintf(counts, sizeof(counts), "%zu chunks | %zu instances | %zu diagnostics",
                       state.document->chunks().size(), state.document->scene_instances().size(),
-                      state.document->diagnostics().size());
-        const auto frame = draw_frame_header(state, "chunk, name, 0xOFFSET...", counts, {});
+                      state.diagnostic_problem_count());
+        const auto frame = draw_frame_header(state, "chunk, name, 0xOFFSET...", counts, {}, true);
         draw_chunk_explorer(state, frame);
     }
 }

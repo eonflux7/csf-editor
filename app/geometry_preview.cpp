@@ -8,15 +8,16 @@
 #endif
 
 #include "geometry_preview.hpp"
+#include "gl_api.hpp"
 
 #include "ui/fonts.hpp"
 #include "ui/icons.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
-#include "csf/overlay.hpp"
 #include "rws/physics_inspection.hpp"
 #include "rws/texture_image.hpp"
 #include "rws/world_recovery.hpp"
+#include "rwsman/frame_pacing.hpp"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -37,129 +39,12 @@
 namespace rwsman {
 namespace {
 
-using GlSizePtr = std::ptrdiff_t;
-using CreateShaderProc = GLuint(APIENTRY*)(GLenum);
-using ShaderSourceProc = void(APIENTRY*)(GLuint, GLsizei, const char* const*, const GLint*);
-using CompileShaderProc = void(APIENTRY*)(GLuint);
-using GetShaderIvProc = void(APIENTRY*)(GLuint, GLenum, GLint*);
-using GetShaderInfoLogProc = void(APIENTRY*)(GLuint, GLsizei, GLsizei*, char*);
-using DeleteShaderProc = void(APIENTRY*)(GLuint);
-using CreateProgramProc = GLuint(APIENTRY*)();
-using AttachShaderProc = void(APIENTRY*)(GLuint, GLuint);
-using LinkProgramProc = void(APIENTRY*)(GLuint);
-using GetProgramIvProc = void(APIENTRY*)(GLuint, GLenum, GLint*);
-using GetProgramInfoLogProc = void(APIENTRY*)(GLuint, GLsizei, GLsizei*, char*);
-using DeleteProgramProc = void(APIENTRY*)(GLuint);
-using UseProgramProc = void(APIENTRY*)(GLuint);
-using GenVertexArraysProc = void(APIENTRY*)(GLsizei, GLuint*);
-using BindVertexArrayProc = void(APIENTRY*)(GLuint);
-using DeleteVertexArraysProc = void(APIENTRY*)(GLsizei, const GLuint*);
-using GenBuffersProc = void(APIENTRY*)(GLsizei, GLuint*);
-using BindBufferProc = void(APIENTRY*)(GLenum, GLuint);
-using BufferDataProc = void(APIENTRY*)(GLenum, GlSizePtr, const void*, GLenum);
-using BufferSubDataProc = void(APIENTRY*)(GLenum, GlSizePtr, GlSizePtr, const void*);
-using DeleteBuffersProc = void(APIENTRY*)(GLsizei, const GLuint*);
-using EnableVertexAttribArrayProc = void(APIENTRY*)(GLuint);
-using VertexAttribPointerProc = void(APIENTRY*)(GLuint, GLint, GLenum, GLboolean, GLsizei,
-                                                const void*);
-using GetUniformLocationProc = GLint(APIENTRY*)(GLuint, const char*);
-using Uniform1iProc = void(APIENTRY*)(GLint, GLint);
-using Uniform1fProc = void(APIENTRY*)(GLint, GLfloat);
-using Uniform2fProc = void(APIENTRY*)(GLint, GLfloat, GLfloat);
-using Uniform3fProc = void(APIENTRY*)(GLint, GLfloat, GLfloat, GLfloat);
-using Uniform4fProc = void(APIENTRY*)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
-using ActiveTextureProc = void(APIENTRY*)(GLenum);
-using GenerateMipmapProc = void(APIENTRY*)(GLenum);
-
-constexpr GLenum gl_vertex_shader = 0x8B31;
-constexpr GLenum gl_fragment_shader = 0x8B30;
-constexpr GLenum gl_compile_status = 0x8B81;
-constexpr GLenum gl_link_status = 0x8B82;
-constexpr GLenum gl_array_buffer = 0x8892;
-constexpr GLenum gl_static_draw = 0x88E4;
-constexpr GLenum gl_texture0 = 0x84C0;
-constexpr GLenum gl_texture1 = gl_texture0 + 1;
-constexpr GLenum gl_texture_max_anisotropy = 0x84FE;
-constexpr GLenum gl_max_texture_max_anisotropy = 0x84FF;
 constexpr std::uint64_t actor_owner_mask = 0x8000000000000000ULL;
 
 std::optional<std::uint32_t> actor_owner(const std::uint64_t owner_offset) {
     if ((owner_offset & actor_owner_mask) == 0) return std::nullopt;
     return static_cast<std::uint32_t>(owner_offset & ~actor_owner_mask);
 }
-
-struct GlApi {
-    CreateShaderProc create_shader{};
-    ShaderSourceProc shader_source{};
-    CompileShaderProc compile_shader{};
-    GetShaderIvProc get_shader_iv{};
-    GetShaderInfoLogProc get_shader_log{};
-    DeleteShaderProc delete_shader{};
-    CreateProgramProc create_program{};
-    AttachShaderProc attach_shader{};
-    LinkProgramProc link_program{};
-    GetProgramIvProc get_program_iv{};
-    GetProgramInfoLogProc get_program_log{};
-    DeleteProgramProc delete_program{};
-    UseProgramProc use_program{};
-    GenVertexArraysProc gen_vertex_arrays{};
-    BindVertexArrayProc bind_vertex_array{};
-    DeleteVertexArraysProc delete_vertex_arrays{};
-    GenBuffersProc gen_buffers{};
-    BindBufferProc bind_buffer{};
-    BufferDataProc buffer_data{};
-    BufferSubDataProc buffer_sub_data{};
-    DeleteBuffersProc delete_buffers{};
-    EnableVertexAttribArrayProc enable_vertex_attrib_array{};
-    VertexAttribPointerProc vertex_attrib_pointer{};
-    GetUniformLocationProc get_uniform_location{};
-    Uniform1iProc uniform_1i{};
-    Uniform1fProc uniform_1f{};
-    Uniform2fProc uniform_2f{};
-    Uniform3fProc uniform_3f{};
-    Uniform4fProc uniform_4f{};
-    ActiveTextureProc active_texture{};
-    GenerateMipmapProc generate_mipmap{};
-
-    bool load() {
-#define LOAD_GL(member, name)                                                                      \
-    member = reinterpret_cast<decltype(member)>(glfwGetProcAddress(name));                         \
-    if (!member) return false
-        LOAD_GL(create_shader, "glCreateShader");
-        LOAD_GL(shader_source, "glShaderSource");
-        LOAD_GL(compile_shader, "glCompileShader");
-        LOAD_GL(get_shader_iv, "glGetShaderiv");
-        LOAD_GL(get_shader_log, "glGetShaderInfoLog");
-        LOAD_GL(delete_shader, "glDeleteShader");
-        LOAD_GL(create_program, "glCreateProgram");
-        LOAD_GL(attach_shader, "glAttachShader");
-        LOAD_GL(link_program, "glLinkProgram");
-        LOAD_GL(get_program_iv, "glGetProgramiv");
-        LOAD_GL(get_program_log, "glGetProgramInfoLog");
-        LOAD_GL(delete_program, "glDeleteProgram");
-        LOAD_GL(use_program, "glUseProgram");
-        LOAD_GL(gen_vertex_arrays, "glGenVertexArrays");
-        LOAD_GL(bind_vertex_array, "glBindVertexArray");
-        LOAD_GL(delete_vertex_arrays, "glDeleteVertexArrays");
-        LOAD_GL(gen_buffers, "glGenBuffers");
-        LOAD_GL(bind_buffer, "glBindBuffer");
-        LOAD_GL(buffer_data, "glBufferData");
-        LOAD_GL(buffer_sub_data, "glBufferSubData");
-        LOAD_GL(delete_buffers, "glDeleteBuffers");
-        LOAD_GL(enable_vertex_attrib_array, "glEnableVertexAttribArray");
-        LOAD_GL(vertex_attrib_pointer, "glVertexAttribPointer");
-        LOAD_GL(get_uniform_location, "glGetUniformLocation");
-        LOAD_GL(uniform_1i, "glUniform1i");
-        LOAD_GL(uniform_1f, "glUniform1f");
-        LOAD_GL(uniform_2f, "glUniform2f");
-        LOAD_GL(uniform_3f, "glUniform3f");
-        LOAD_GL(uniform_4f, "glUniform4f");
-        LOAD_GL(active_texture, "glActiveTexture");
-        LOAD_GL(generate_mipmap, "glGenerateMipmap");
-#undef LOAD_GL
-        return true;
-    }
-};
 
 struct AffineTransform {
     std::array<float, 9> rotation{1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -328,13 +213,6 @@ rws::Vec3 transform_draw_point(const std::array<float, 12>& m, const rws::Vec3 p
             m[8] * p.x + m[9] * p.y + m[10] * p.z + m[11]};
 }
 
-GlApi& gl_api() {
-    static GlApi api;
-    static const bool loaded = api.load();
-    (void)loaded;
-    return api;
-}
-
 float read_f32(const std::span<const std::byte> bytes, const std::uint64_t offset) {
     std::uint32_t raw{};
     for (unsigned i = 0; i < 4; ++i)
@@ -478,11 +356,12 @@ void GeometryPreview::clear() {
     release_geometry();
     texture_catalog_ = {};
     texture_variant_ = 0;
-    mission_points_.clear();
-    mission_lines_.clear();
+    set_mission_overlays({});
     mission_actor_models_.clear();
-    selected_mission_entry_.reset();
     hidden_mission_entries_.clear();
+    hidden_sublayers_.clear();
+    overlay_filter_.fill('\0');
+    slice_.enabled = false;
 }
 
 // Drops the loaded model and its GPU data but keeps what the app supplied for
@@ -512,11 +391,15 @@ void GeometryPreview::release_geometry() {
     measurement_a_.reset();
     measurement_b_.reset();
     collision_triangle_mapping_.clear();
+    instance_root_inverse_.clear();
     vertices_.clear();
     uv_sets_.clear();
     faces_.clear();
     gpu_vertices_.clear();
     draw_batches_.clear();
+    batch_bounds_.clear();
+    batch_order_.clear();
+    visual_triangle_total_ = collision_triangle_total_ = 0;
     material_colors_.clear();
     material_textures_.clear();
     material_lightmap_textures_.clear();
@@ -540,11 +423,17 @@ void GeometryPreview::release_geometry() {
     preserve_view_on_scene_reload_ = false;
 }
 
-void GeometryPreview::set_mission_overlays(std::vector<MissionOverlayPoint> points,
-                                           std::vector<MissionOverlayLine> lines) {
-    mission_points_ = std::move(points);
-    mission_lines_ = std::move(lines);
+void GeometryPreview::set_mission_overlays(MissionOverlaySet overlays) {
+    mission_points_ = std::move(overlays.points);
+    mission_lines_ = std::move(overlays.lines);
+    mission_faces_ = std::move(overlays.faces);
+    mission_relations_.clear();
+    for (const auto& [a, b] : overlays.relations) {
+        mission_relations_[a].push_back(b);
+        mission_relations_[b].push_back(a);
+    }
     selected_mission_entry_.reset();
+    rebuild_overlay_indexes();
 }
 
 void GeometryPreview::set_texture_catalog(csf::TextureCatalog catalog) {
@@ -555,6 +444,89 @@ void GeometryPreview::set_texture_catalog(csf::TextureCatalog catalog) {
 void GeometryPreview::set_mission_actor_models(std::vector<MissionActorModel> models) {
     mission_actor_models_ = std::move(models);
     scene_mode_ = false;
+}
+
+void GeometryPreview::update_mission(MissionOverlaySet overlays, std::vector<MissionActorModel> models,
+                                     const std::optional<std::uint32_t> selected) {
+    set_mission_overlays(std::move(overlays));
+    selected_mission_entry_ = selected;
+    // Entries that kept their record, prototype and attachments only need a new
+    // placement; any other difference changes the geometry in the scene.
+    const bool same_layout =
+        scene_mode_ && models.size() == mission_actor_models_.size() &&
+        std::ranges::equal(models, mission_actor_models_, [](const auto& a, const auto& b) {
+            return a.source_entry == b.source_entry && a.prototype == b.prototype &&
+                   std::ranges::equal(a.attachments, b.attachments, [](const auto& x, const auto& y) {
+                       return x.model == y.model && x.left_hand == y.left_hand;
+                   });
+        });
+    if (same_layout) {
+        for (const auto& model : models) {
+            const auto& current = *std::ranges::find(mission_actor_models_, model.source_entry,
+                                                     &MissionActorModel::source_entry);
+            if (current.position.x != model.position.x || current.position.y != model.position.y ||
+                current.position.z != model.position.z || current.heading_radians != model.heading_radians ||
+                current.pitch_radians != model.pitch_radians)
+                place_mission_actor(model.source_entry, model.position, model.heading_radians,
+                                    model.pitch_radians);
+        }
+        return;
+    }
+    // Keep playback on actors that still exist; record entries may have moved.
+    for (auto& model : models) {
+        const auto previous = std::ranges::find(mission_actor_models_, model.source_entry,
+                                                &MissionActorModel::source_entry);
+        if (previous != mission_actor_models_.end() && previous->prototype == model.prototype) {
+            model.animation = previous->animation;
+            model.animation_time = previous->animation_time;
+            model.animation_loop = previous->animation_loop;
+        }
+    }
+    mission_actor_models_ = std::move(models);
+    hidden_mission_entries_.clear();
+    preserve_view_on_scene_reload_ = true;
+    scene_mode_ = false;
+}
+
+void GeometryPreview::place_mission_actor(const std::uint32_t source_entry, const rws::Vec3 position,
+                                          const float heading_radians, const float pitch_radians) {
+    const auto found = std::ranges::find(mission_actor_models_, source_entry,
+                                         &MissionActorModel::source_entry);
+    if (found == mission_actor_models_.end()) return;
+    found->position = position;
+    found->heading_radians = heading_radians;
+    found->pitch_radians = pitch_radians;
+    if (!scene_mode_) return; // The next scene build uses the new placement.
+    const float cy = std::cos(heading_radians), sy = std::sin(heading_radians),
+                cp = std::cos(pitch_radians), sp = std::sin(pitch_radians);
+    const AffineTransform placement{{{cy, sy * sp, sy * cp, 0, cp, -sp, -sy, cy * sp, cy * cp}}, position};
+    auto attachment_placement = placement;
+    const auto hand_pose = actor_hand_poses_.find(source_entry);
+    if (hand_pose != actor_hand_poses_.end() && hand_pose->second.followed)
+        attachment_placement = compose(placement, draw_matrix_transform(hand_pose->second.transform));
+    for (std::size_t i = 0; i < draw_batches_.size(); ++i) {
+        auto& batch = draw_batches_[i];
+        if (actor_owner(batch.owner_offset) != source_entry) continue;
+        batch.transform = draw_transform(batch.actor_attachment ? attachment_placement : placement);
+        if (i < batch_bounds_.size()) update_batch_bounds(i);
+    }
+    animating_frame_ = ImGui::GetFrameCount();
+}
+
+void GeometryPreview::place_scene_instance(const std::uint64_t offset, const std::array<float, 9>& rotation,
+                                           const rws::Vec3 position) {
+    const auto root = instance_root_inverse_.find(offset);
+    if (!scene_mode_ || root == instance_root_inverse_.end()) return;
+    const AffineTransform transform{{{rotation[0], rotation[3], rotation[6], rotation[1], rotation[4], rotation[7],
+                                      rotation[2], rotation[5], rotation[8]}},
+                                    position};
+    const auto placement = draw_transform(compose(transform, draw_matrix_transform(root->second)));
+    for (std::size_t i = 0; i < draw_batches_.size(); ++i) {
+        if (draw_batches_[i].owner_offset != offset) continue;
+        draw_batches_[i].transform = placement;
+        if (i < batch_bounds_.size()) update_batch_bounds(i);
+    }
+    animating_frame_ = ImGui::GetFrameCount();
 }
 
 void GeometryPreview::set_mission_entries_visible(const std::span<const std::uint32_t> entries,
@@ -634,10 +606,12 @@ void GeometryPreview::refresh_mission_actor_animation() {
         if (hand_pose != actor_hand_poses_.end() && hand_pose->second.followed)
             attachment_placement =
                 compose(placement, draw_matrix_transform(hand_pose->second.transform));
-        for (auto& batch : draw_batches_)
-            if (batch.actor_attachment &&
-                actor_owner(batch.owner_offset) == found->source_entry)
-                batch.transform = draw_transform(attachment_placement);
+        for (std::size_t i = 0; i < draw_batches_.size(); ++i) {
+            auto& batch = draw_batches_[i];
+            if (actor_owner(batch.owner_offset) != found->source_entry) continue;
+            if (batch.actor_attachment) batch.transform = draw_transform(attachment_placement);
+            if (i < batch_bounds_.size()) update_batch_bounds(i); // The pose moved its vertices.
+        }
         gl.bind_buffer(gl_array_buffer, vertex_buffer_);
         gl.buffer_sub_data(gl_array_buffer,
                            static_cast<GlSizePtr>(range.vertex_begin * sizeof(GpuVertex)),
@@ -670,7 +644,41 @@ void GeometryPreview::reset_view() {
     pitch_ = scene_mode_ ? 0.35F : -0.35F;
     target_yaw_ = yaw_;
     target_pitch_ = pitch_;
-    distance_ = std::max(radius_ * 3.0F, 0.01F);
+    // Fit the framed volume to the vertical 50 degree field of view with a small
+    // margin. A box is fitted corner by corner from the default view direction;
+    // a sphere only by its radius.
+    constexpr float tan_half_fov = 0.46630766F; // tan(25 degrees)
+    constexpr float sin_half_fov = 0.42261826F; // sin(25 degrees)
+    constexpr float margin = 1.08F;
+    const float aspect = canvas_width_ > 1.0F && canvas_height_ > 1.0F
+                             ? canvas_width_ / canvas_height_
+                             : 16.0F / 9.0F;
+    float distance = radius_ / sin_half_fov;
+    if (frame_extent_) {
+        // Basis vectors of the view in world space: right, up, toward the camera.
+        const float cy = std::cos(yaw_), sy = std::sin(yaw_), cp = std::cos(pitch_),
+                    sp = std::sin(pitch_);
+        const std::array<rws::Vec3, 3> rows =
+            scene_mode_ ? std::array<rws::Vec3, 3>{{{cy, 0, -sy},
+                                                    {-sp * sy, cp, -sp * cy},
+                                                    {cp * sy, sp, cp * cy}}}
+                        : std::array<rws::Vec3, 3>{{{cy, -sy, 0},
+                                                    {-sp * sy, -sp * cy, cp},
+                                                    {cp * sy, cp * cy, sp}}};
+        const auto dot = [](const rws::Vec3 a, const rws::Vec3 b) {
+            return a.x * b.x + a.y * b.y + a.z * b.z;
+        };
+        distance = 0.0F;
+        for (int corner = 0; corner < 8; ++corner) {
+            const rws::Vec3 point{(corner & 1) ? frame_extent_->x : -frame_extent_->x,
+                                  (corner & 2) ? frame_extent_->y : -frame_extent_->y,
+                                  (corner & 4) ? frame_extent_->z : -frame_extent_->z};
+            const float x = dot(point, rows[0]), y = dot(point, rows[1]), z = dot(point, rows[2]);
+            distance = std::max({distance, z + std::fabs(x) / (tan_half_fov * aspect),
+                                 z + std::fabs(y) / tan_half_fov});
+        }
+    }
+    distance_ = std::max(distance * margin, 0.01F);
     orthographic_scale_ = std::max(radius_ * 1.15F, 0.01F);
     pan_x_ = pan_y_ = 0.0F;
     navigation_offset_ = {};
@@ -678,9 +686,11 @@ void GeometryPreview::reset_view() {
     preserve_camera_position_ = false;
 }
 
-void GeometryPreview::frame_bounds(const rws::Vec3 center, const float radius) {
+void GeometryPreview::frame_bounds(const rws::Vec3 center, const float radius,
+                                   const std::optional<rws::Vec3> half_extent) {
     center_ = center;
     radius_ = std::max(radius, 0.001F);
+    frame_extent_ = half_extent;
     reset_view();
 }
 
@@ -710,6 +720,7 @@ std::optional<std::uint64_t> GeometryPreview::pick_scene(const float mouse_x,
     if (!scene_mode_ || canvas_width_ <= 0.0F || canvas_height_ <= 0.0F) return std::nullopt;
     const auto ray = viewport_ray(mouse_x, mouse_y);
     if (!ray) return std::nullopt;
+    const auto clip_planes = active_clip_planes();
     const auto origin = ray->origin;
     const auto direction = ray->direction;
 
@@ -749,7 +760,7 @@ std::optional<std::uint64_t> GeometryPreview::pick_scene(const float mouse_x,
                                          origin.y + direction.y * distance,
                                          origin.z + direction.z * distance};
             if (distance > 0.0F && distance < closest &&
-                rws::collision_point_visible(hit_position, clips_)) {
+                rws::collision_point_visible(hit_position, clip_planes)) {
                 closest = distance;
                 result = batch.owner_offset;
             }
@@ -802,14 +813,24 @@ std::optional<rws::CollisionHit> GeometryPreview::pick_collision(const float mou
     const auto ray = viewport_ray(mouse_x, mouse_y);
     if (!ray) return std::nullopt;
     return rws::pick_collision_worlds(collision_worlds_, collision_document_->bytes(), *ray,
-                                      clips_);
+                                      active_clip_planes());
+}
+
+GeometryPreview::ViewRotation GeometryPreview::view_rotation() const {
+    const float yaw = projection_ == 3 ? 1.57079632679F : (projection_ == 0 ? yaw_ : 0.0F);
+    const float pitch = projection_ == 1 ? -1.57079632679F : (projection_ == 0 ? pitch_ : 0.0F);
+    auto& cache = view_rotation_cache_;
+    if (cache.yaw != yaw || cache.pitch != pitch) {
+        cache.yaw = yaw;
+        cache.pitch = pitch;
+        cache.rotation = {std::cos(yaw), std::sin(yaw), std::cos(pitch), std::sin(pitch)};
+    }
+    return cache.rotation;
 }
 
 std::optional<ImVec2> GeometryPreview::project_point(const rws::Vec3 point) const {
     if (canvas_width_ <= 0 || canvas_height_ <= 0) return std::nullopt;
-    const float yaw = projection_ == 3 ? 1.57079632679F : (projection_ == 0 ? yaw_ : 0.0F);
-    const float pitch = projection_ == 1 ? -1.57079632679F : (projection_ == 0 ? pitch_ : 0.0F);
-    const float cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch);
+    const auto [cy, sy, cp, sp] = view_rotation();
     const rws::Vec3 p{point.x - center_.x - navigation_offset_.x,
                       point.y - center_.y - navigation_offset_.y,
                       point.z - center_.z - navigation_offset_.z};
@@ -863,18 +884,31 @@ void GeometryPreview::update_keyboard_navigation() {
         target_navigation_offset_.y += direction.y * amount;
         target_navigation_offset_.z += direction.z * amount;
     };
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_W)) move(forward, speed);
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_S)) move(forward, -speed);
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_D)) move(right, speed);
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_A)) move(right, -speed);
+    bool moving = false;
+    const auto key_move = [&](const ImGuiKey key, const rws::Vec3 direction, const float amount) {
+        // Ctrl chords (Ctrl+D, Ctrl+S, ...) are commands, not movement.
+        if (!hovered || io.KeyCtrl || !ImGui::IsKeyDown(key)) return;
+        move(direction, amount);
+        moving = true;
+    };
+    key_move(ImGuiKey_W, forward, speed);
+    key_move(ImGuiKey_S, forward, -speed);
+    key_move(ImGuiKey_D, right, speed);
+    key_move(ImGuiKey_A, right, -speed);
     const rws::Vec3 up = scene_mode_ ? rws::Vec3{0, 1, 0} : rws::Vec3{0, 0, 1};
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_E)) move(up, speed);
-    if (hovered && ImGui::IsKeyDown(ImGuiKey_Q)) move(up, -speed);
+    key_move(ImGuiKey_E, up, speed);
+    key_move(ImGuiKey_Q, up, -speed);
 
+    // Easing is exponential, so it would creep toward the target for seconds;
+    // it snaps once the remainder is invisible, letting the frame loop go idle.
+    const auto ease = [](float& value, const float target, const float alpha, const float epsilon) {
+        value += (target - value) * alpha;
+        if (std::abs(target - value) <= epsilon) value = target;
+    };
     const float rotation_alpha = 1.0F - std::exp(-18.0F * std::min(io.DeltaTime, 0.1F));
     const auto old_camera_offset = camera_offset(yaw_, pitch_);
-    yaw_ += (target_yaw_ - yaw_) * rotation_alpha;
-    pitch_ += (target_pitch_ - pitch_) * rotation_alpha;
+    ease(yaw_, target_yaw_, rotation_alpha, 1e-5F);
+    ease(pitch_, target_pitch_, rotation_alpha, 1e-5F);
     if (preserve_camera_position_) {
         const auto new_camera_offset = camera_offset(yaw_, pitch_);
         const rws::Vec3 correction{old_camera_offset.x - new_camera_offset.x,
@@ -890,9 +924,15 @@ void GeometryPreview::update_keyboard_navigation() {
             preserve_camera_position_ = false;
     }
     const float movement_alpha = 1.0F - std::exp(-12.0F * std::min(io.DeltaTime, 0.1F));
-    navigation_offset_.x += (target_navigation_offset_.x - navigation_offset_.x) * movement_alpha;
-    navigation_offset_.y += (target_navigation_offset_.y - navigation_offset_.y) * movement_alpha;
-    navigation_offset_.z += (target_navigation_offset_.z - navigation_offset_.z) * movement_alpha;
+    const float movement_epsilon = std::max(navigation_scale * 1e-5F, 1e-6F);
+    ease(navigation_offset_.x, target_navigation_offset_.x, movement_alpha, movement_epsilon);
+    ease(navigation_offset_.y, target_navigation_offset_.y, movement_alpha, movement_epsilon);
+    ease(navigation_offset_.z, target_navigation_offset_.z, movement_alpha, movement_epsilon);
+    if (moving || yaw_ != target_yaw_ || pitch_ != target_pitch_ ||
+        navigation_offset_.x != target_navigation_offset_.x ||
+        navigation_offset_.y != target_navigation_offset_.y ||
+        navigation_offset_.z != target_navigation_offset_.z || animated_actor_dirty_)
+        animating_frame_ = ImGui::GetFrameCount();
 }
 
 bool GeometryPreview::load(const rws::Chunk& geometry_chunk, const std::span<const std::byte> bytes,
@@ -1054,8 +1094,11 @@ bool GeometryPreview::load(const rws::Chunk& geometry_chunk, const std::span<con
         radius_ = std::max(radius_, std::sqrt(x * x + y * y + z * z));
     }
     radius_ = std::max(radius_, 0.001F);
+    frame_extent_ = rws::Vec3{(maximum.x - minimum.x) * 0.5F, (maximum.y - minimum.y) * 0.5F,
+                              (maximum.z - minimum.z) * 0.5F};
     all_center_ = center_;
     all_radius_ = radius_;
+    all_extent_ = frame_extent_;
     faces_.reserve(static_cast<std::size_t>(geometry.value->triangle_count));
     for (std::int32_t i = 0; i < geometry.value->triangle_count; ++i) {
         const auto triangle = rws::decode_triangle(*geometry.value, i, bytes);
@@ -1130,10 +1173,15 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                                  const rws::Document* collision_document,
                                  const bool main_is_collision) {
     const bool preserve_view = preserve_view_on_scene_reload_;
+    // A rebuild after an edit keeps the exact camera; the scene bounds (and the
+    // orbit center derived from them) may have changed.
+    const auto kept_camera = camera();
     release_geometry();
     scene_mode_ = true;
     wireframe_ = false;
     checker_texture_ = upload_checker_texture(true);
+    visual_extent_.reset();
+    collision_extent_.reset();
 
     rws::Vec3 minimum{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
                       std::numeric_limits<float>::max()};
@@ -1470,8 +1518,9 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
             const auto source_batch = draw_batches_[batch_index];
             DrawBatch output_batch{source_batch.material, source_batch.first, source_batch.count,
                                    instance.offset};
-            const auto placement =
-                compose(transform, inverse_transform(found->second.original_root));
+            const auto root_inverse = inverse_transform(found->second.original_root);
+            instance_root_inverse_[instance.offset] = draw_transform(root_inverse);
+            const auto placement = compose(transform, root_inverse);
             output_batch.transform = draw_transform(placement);
             for (std::uint32_t i = 0; i < source_batch.count; ++i) {
                 const auto& vertex =
@@ -2290,6 +2339,7 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
         const auto dx = maximum.x - minimum.x, dy = maximum.y - minimum.y,
                    dz = maximum.z - minimum.z;
         visual_radius_ = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 0.001F);
+        visual_extent_ = rws::Vec3{dx * 0.5F, dy * 0.5F, dz * 0.5F};
     }
 
     auto append_collision = [&](const rws::Document& collision) {
@@ -2476,6 +2526,7 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
             const auto dy = collision_maximum.y - collision_minimum.y;
             const auto dz = collision_maximum.z - collision_minimum.z;
             collision_radius_ = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 0.001F);
+            collision_extent_ = rws::Vec3{dx * 0.5F, dy * 0.5F, dz * 0.5F};
         }
     };
 
@@ -2492,18 +2543,37 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
         error_ = "No renderable standard Clump/Atomic instances were found";
         return false;
     }
-    center_ = {(minimum.x + maximum.x) * 0.5F, (minimum.y + maximum.y) * 0.5F,
-               (minimum.z + maximum.z) * 0.5F};
-    radius_ = 0.0F;
-    for (const auto& vertex : vertices_) {
-        const auto x = vertex.x - center_.x, y = vertex.y - center_.y, z = vertex.z - center_.z;
-        radius_ = std::max(radius_, std::sqrt(x * x + y * y + z * z));
+    if (vertices_.empty() && collision_extent_) {
+        // Collision-only scene: frame the collision world.
+        center_ = collision_center_;
+        radius_ = collision_radius_;
+        frame_extent_ = collision_extent_;
+    } else {
+        center_ = {(minimum.x + maximum.x) * 0.5F, (minimum.y + maximum.y) * 0.5F,
+                   (minimum.z + maximum.z) * 0.5F};
+        radius_ = 0.0F;
+        for (const auto& vertex : vertices_) {
+            const auto x = vertex.x - center_.x, y = vertex.y - center_.y, z = vertex.z - center_.z;
+            radius_ = std::max(radius_, std::sqrt(x * x + y * y + z * z));
+        }
+        radius_ = std::max(radius_, 0.001F);
+        frame_extent_.reset();
+        if (!vertices_.empty())
+            frame_extent_ = rws::Vec3{(maximum.x - minimum.x) * 0.5F, (maximum.y - minimum.y) * 0.5F,
+                                      (maximum.z - minimum.z) * 0.5F};
     }
-    radius_ = std::max(radius_, 0.001F);
     all_center_ = center_;
     all_radius_ = radius_;
+    all_extent_ = frame_extent_;
     if (!gpu_vertices_.empty() && !create_gpu_resources()) return false;
-    if (!preserve_view) reset_view();
+    if (!preserve_view) {
+        reset_view();
+    } else {
+        const auto yaw = yaw_, pitch = pitch_;
+        set_camera(kept_camera);
+        yaw_ = yaw; // Keep any easing toward the target orientation.
+        pitch_ = pitch;
+    }
     return true;
 }
 
@@ -2530,14 +2600,16 @@ uniform float uAspect, uTanHalfFov, uNear, uFar;
 uniform bool uYUp;
 uniform bool uOrthographic;
 uniform vec4 uModel0, uModel1, uModel2;
+uniform vec2 uScreenOffset;
+uniform vec2 uViewportPixels;
 out vec2 vUv;
 out vec2 vLightmapUv;
 out vec2 vDebugUv;
 out vec3 vNormal;
 out vec3 vWorld;
 void main() {
-    vec3 worldPosition=vec3(dot(uModel0.xyz,aPosition)+uModel0.w,dot(uModel1.xyz,aPosition)+uModel1.w,dot(uModel2.xyz,aPosition)+uModel2.w);
     vec3 modelNormal=normalize(vec3(dot(uModel0.xyz,aNormal),dot(uModel1.xyz,aNormal),dot(uModel2.xyz,aNormal)));
+    vec3 worldPosition=vec3(dot(uModel0.xyz,aPosition)+uModel0.w,dot(uModel1.xyz,aPosition)+uModel1.w,dot(uModel2.xyz,aPosition)+uModel2.w);
     vec3 p = worldPosition - uCenter;
     float cy=cos(uYaw), sy=sin(uYaw), cp=cos(uPitch), sp=sin(uPitch);
     vec3 view;
@@ -2555,9 +2627,11 @@ void main() {
     float f=1.0/uTanHalfFov;
     if (uOrthographic)
         gl_Position=vec4(view.x/(uOrthographicScale*uAspect),view.y/uOrthographicScale,
-            ((uFar+uNear)/(uNear-uFar))*view.z+(2.0*uFar*uNear)/(uNear-uFar),1.0);
+            (-2.0*view.z-uFar-uNear)/(uFar-uNear),1.0);
     else gl_Position=vec4(view.x*f/uAspect, view.y*f,
         ((uFar+uNear)/(uNear-uFar))*view.z+(2.0*uFar*uNear)/(uNear-uFar), -view.z);
+    // Outline passes shift the whole mesh by a few pixels in screen space.
+    gl_Position.xy+=uScreenOffset*2.0/uViewportPixels*gl_Position.w;
     vUv=aBaseUv;
     vLightmapUv=aLightmapUv;
     vDebugUv=aDebugUv;
@@ -2581,6 +2655,7 @@ uniform float uLightmapIntensity;
 uniform float uDim;
 uniform vec4 uBaseColor;
 uniform vec4 uClip0, uClip1, uClip2;
+uniform vec4 uSlice;
 out vec4 FragColor;
 bool clipped(vec4 c) {
     if (c.x < 0.5) return false;
@@ -2589,6 +2664,7 @@ bool clipped(vec4 c) {
 }
 void main() {
     if (clipped(uClip0)||clipped(uClip1)||clipped(uClip2)) discard;
+    if (uSlice.x > 0.5 && (vWorld.y < uSlice.y || vWorld.y > uSlice.z)) discard;
     float light=0.42+0.58*abs(dot(normalize(vNormal), normalize(vec3(0.35,0.55,0.75))));
     vec2 uv=uUseDebugUv ? vDebugUv : vUv;
     vec4 color=uUseTexture ? texture(uTexture,uv) : uBaseColor;
@@ -2638,6 +2714,36 @@ void main() {
         destroy_gpu_resources();
         return false;
     }
+    const auto location = [&](const char* name) { return gl.get_uniform_location(shader_program_, name); };
+    auto& u = uniforms_;
+    u.center = location("uCenter");
+    u.yaw = location("uYaw");
+    u.pitch = location("uPitch");
+    u.distance = location("uDistance");
+    u.orthographic_scale = location("uOrthographicScale");
+    u.pan = location("uPan");
+    u.aspect = location("uAspect");
+    u.tan_half_fov = location("uTanHalfFov");
+    u.near_plane = location("uNear");
+    u.far_plane = location("uFar");
+    u.y_up = location("uYUp");
+    u.orthographic = location("uOrthographic");
+    u.model = {location("uModel0"), location("uModel1"), location("uModel2")};
+    u.screen_offset = location("uScreenOffset");
+    u.viewport_pixels = location("uViewportPixels");
+    u.texture = location("uTexture");
+    u.lightmap_texture = location("uLightmapTexture");
+    u.use_texture = location("uUseTexture");
+    u.use_lightmap = location("uUseLightmap");
+    u.lightmap_only = location("uLightmapOnly");
+    u.use_debug_uv = location("uUseDebugUv");
+    u.apply_lighting = location("uApplyLighting");
+    u.force_opaque = location("uForceOpaque");
+    u.lightmap_intensity = location("uLightmapIntensity");
+    u.dim = location("uDim");
+    u.base_color = location("uBaseColor");
+    u.slice = location("uSlice");
+    u.clip = {location("uClip0"), location("uClip1"), location("uClip2")};
     gl.gen_vertex_arrays(1, &vertex_array_);
     gl.gen_buffers(1, &vertex_buffer_);
     gl.bind_vertex_array(vertex_array_);
@@ -2661,21 +2767,104 @@ void main() {
     gl.vertex_attrib_pointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(GpuVertex),
                              reinterpret_cast<void*>(offsetof(GpuVertex, nx)));
     gl.bind_vertex_array(0);
+    build_render_cache();
     return true;
 }
 
+void GeometryPreview::build_render_cache() {
+    batch_bounds_.assign(draw_batches_.size(), {});
+    for (std::size_t i = 0; i < draw_batches_.size(); ++i) update_batch_bounds(i);
+    // Opaque batches sharing a material share its textures, so grouping them
+    // saves texture binds; collision draws last, in its own pass.
+    batch_order_.resize(draw_batches_.size());
+    std::iota(batch_order_.begin(), batch_order_.end(), 0U);
+    std::ranges::stable_sort(batch_order_, [&](const std::uint32_t a, const std::uint32_t b) {
+        const auto& first = draw_batches_[a];
+        const auto& second = draw_batches_[b];
+        const bool first_collision = first.layer == PreviewLayer::collision_world;
+        const bool second_collision = second.layer == PreviewLayer::collision_world;
+        if (first_collision != second_collision) return second_collision;
+        return first.material < second.material;
+    });
+    visual_triangle_total_ = collision_triangle_total_ = 0;
+    for (const auto& batch : draw_batches_)
+        (batch.layer == PreviewLayer::collision_world ? collision_triangle_total_ : visual_triangle_total_) +=
+            batch.count / 3;
+}
+
+void GeometryPreview::update_batch_bounds(const std::size_t batch_index) {
+    const auto& batch = draw_batches_[batch_index];
+    auto& bounds = batch_bounds_[batch_index];
+    bounds = {};
+    if (batch.count == 0 || std::size_t{batch.first} + batch.count > gpu_vertices_.size()) return;
+    rws::Vec3 lo{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                 std::numeric_limits<float>::max()};
+    rws::Vec3 hi{-lo.x, -lo.y, -lo.z};
+    for (std::size_t i = batch.first; i < std::size_t{batch.first} + batch.count; ++i) {
+        const auto& vertex = gpu_vertices_[i];
+        const auto p = transform_draw_point(batch.transform, {vertex.x, vertex.y, vertex.z});
+        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    }
+    const rws::Vec3 half{(hi.x - lo.x) * 0.5F, (hi.y - lo.y) * 0.5F, (hi.z - lo.z) * 0.5F};
+    const float radius = std::sqrt(half.x * half.x + half.y * half.y + half.z * half.z);
+    if (!std::isfinite(radius)) return;
+    bounds = {{lo.x + half.x, lo.y + half.y, lo.z + half.z}, radius};
+}
+
 void GeometryPreview::destroy_gpu_resources() {
+    destroy_overlay_program();
     auto& gl = gl_api();
+    if (gpu_queries_[0] != 0 && gl.delete_queries)
+        gl.delete_queries(static_cast<GLsizei>(gpu_queries_.size()), gpu_queries_.data());
+    gpu_queries_ = {};
+    gpu_query_pending_ = {};
+    gpu_ms_ = -1.0;
+    uniforms_ = {};
     if (vertex_buffer_ && gl.delete_buffers) gl.delete_buffers(1, &vertex_buffer_);
     if (vertex_array_ && gl.delete_vertex_arrays) gl.delete_vertex_arrays(1, &vertex_array_);
     if (shader_program_ && gl.delete_program) gl.delete_program(shader_program_);
     vertex_buffer_ = vertex_array_ = shader_program_ = 0;
 }
 
+void GeometryPreview::read_gpu_timer() {
+    auto& gl = gl_api();
+    for (std::size_t i = 0; i < gpu_queries_.size(); ++i) {
+        if (!gpu_query_pending_[i]) continue;
+        GLint available{};
+        gl.get_query_object_iv(gpu_queries_[i], gl_query_result_available, &available);
+        if (!available) continue;
+        unsigned long long nanoseconds{};
+        gl.get_query_object_ui64v(gpu_queries_[i], gl_query_result, &nanoseconds);
+        gpu_query_pending_[i] = false;
+        const double milliseconds = static_cast<double>(nanoseconds) / 1e6;
+        gpu_ms_ = gpu_ms_ < 0.0 ? milliseconds : gpu_ms_ * 0.8 + milliseconds * 0.2;
+    }
+}
+
 void GeometryPreview::render_gpu() {
-    if (!shader_program_ || !vertex_array_ || draw_batches_.empty() || canvas_width_ < 1.0F ||
-        canvas_height_ < 1.0F)
-        return;
+    if (canvas_width_ < 1.0F || canvas_height_ < 1.0F) return;
+    auto& gl = gl_api();
+    // The GPU time of the scene pass, read back a few frames later so the CPU
+    // never waits for it. A busy query slot skips timing for that frame.
+    bool timing = false;
+    if (show_frame_stats_ && gl.has_timer_queries()) {
+        if (gpu_queries_[0] == 0)
+            gl.gen_queries(static_cast<GLsizei>(gpu_queries_.size()), gpu_queries_.data());
+        read_gpu_timer();
+        const auto slot = gpu_query_next_;
+        if (!gpu_query_pending_[slot]) {
+            gl.begin_query(gl_time_elapsed, gpu_queries_[slot]);
+            gpu_query_pending_[slot] = true;
+            gpu_query_next_ = (slot + 1) % gpu_queries_.size();
+            timing = true;
+        }
+    }
+    render_scene_gpu();
+    if (timing) gl.end_query(gl_time_elapsed);
+}
+
+void GeometryPreview::render_scene_gpu() {
     auto& gl = gl_api();
     const auto& io = ImGui::GetIO();
     const int viewport_x = static_cast<int>(canvas_x_ * io.DisplayFramebufferScale.x);
@@ -2691,6 +2880,15 @@ void GeometryPreview::render_gpu() {
     glEnable(GL_SCISSOR_TEST);
     glClearDepth(1.0);
     glClear(GL_DEPTH_BUFFER_BIT);
+    last_draw_calls_ = last_culled_batches_ = 0;
+    if (!shader_program_ || !vertex_array_ || draw_batches_.empty()) {
+        // Overlays still draw over an empty scene, with nothing to hide them.
+        render_overlays_gpu(viewport_width, viewport_height);
+        glDisable(GL_SCISSOR_TEST);
+        return;
+    }
+    if (batch_bounds_.size() != draw_batches_.size() || batch_order_.size() != draw_batches_.size())
+        build_render_cache();
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
@@ -2703,6 +2901,7 @@ void GeometryPreview::render_gpu() {
     gl.use_program(shader_program_);
     gl.bind_vertex_array(vertex_array_);
     gl.active_texture(gl_texture0);
+    const auto& u = uniforms_;
 
     const float view_scale = projection_ == 0 ? distance_ : orthographic_scale_;
     const float pan_world_x = pan_x_ * view_scale;
@@ -2713,47 +2912,115 @@ void GeometryPreview::render_gpu() {
                                                 navigation_offset_.z * navigation_offset_.z);
     const float far_plane =
         std::max(distance_ + radius_ * 3.0F + navigation_distance, near_plane + 1.0F);
-    gl.uniform_3f(gl.get_uniform_location(shader_program_, "uCenter"),
-                  center_.x + navigation_offset_.x, center_.y + navigation_offset_.y,
+    // Orthographic depth is linear and must span the whole scene on both sides of the target.
+    const float ortho_reach = std::max(all_radius_, radius_) * 3.0F + navigation_distance;
+    const float clip_near = projection_ == 0 ? near_plane : distance_ - ortho_reach;
+    const float clip_far = projection_ == 0 ? far_plane : distance_ + ortho_reach;
+    const float aspect = static_cast<float>(viewport_width) / static_cast<float>(viewport_height);
+    const float tan_half_fov = std::tan(25.0F * 3.14159265358979323846F / 180.0F);
+    gl.uniform_3f(u.center, center_.x + navigation_offset_.x, center_.y + navigation_offset_.y,
                   center_.z + navigation_offset_.z);
     const float render_yaw = projection_ == 3 ? 1.57079632679F : (projection_ == 0 ? yaw_ : 0.0F);
     const float render_pitch =
         projection_ == 1 ? -1.57079632679F : (projection_ == 0 ? pitch_ : 0.0F);
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uYaw"), render_yaw);
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uPitch"), render_pitch);
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uDistance"), distance_);
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uOrthographicScale"),
-                  orthographic_scale_);
-    gl.uniform_2f(gl.get_uniform_location(shader_program_, "uPan"), pan_world_x, pan_world_z);
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uAspect"),
-                  static_cast<float>(viewport_width) / static_cast<float>(viewport_height));
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uTanHalfFov"),
-                  std::tan(25.0F * 3.14159265358979323846F / 180.0F));
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uNear"), near_plane);
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uFar"), far_plane);
-    gl.uniform_1i(gl.get_uniform_location(shader_program_, "uYUp"), scene_mode_);
-    gl.uniform_1i(gl.get_uniform_location(shader_program_, "uOrthographic"), projection_ != 0);
+    gl.uniform_1f(u.yaw, render_yaw);
+    gl.uniform_1f(u.pitch, render_pitch);
+    gl.uniform_1f(u.distance, distance_);
+    gl.uniform_1f(u.orthographic_scale, orthographic_scale_);
+    gl.uniform_2f(u.pan, pan_world_x, pan_world_z);
+    gl.uniform_1f(u.aspect, aspect);
+    gl.uniform_1f(u.tan_half_fov, tan_half_fov);
+    gl.uniform_1f(u.near_plane, clip_near);
+    gl.uniform_1f(u.far_plane, clip_far);
+    gl.uniform_1i(u.y_up, scene_mode_);
+    gl.uniform_1i(u.orthographic, projection_ != 0);
     for (std::size_t i = 0; i < clips_.size(); ++i) {
-        const auto name = std::string("uClip") + std::to_string(i);
         const auto& clip = clips_[i];
-        gl.uniform_4f(gl.get_uniform_location(shader_program_, name.c_str()),
-                      clip.enabled ? 1.0F : 0.0F, static_cast<float>(clip.axis), clip.position,
-                      clip.keep_greater ? 1.0F : -1.0F);
+        gl.uniform_4f(u.clip[i], clip.enabled ? 1.0F : 0.0F, static_cast<float>(clip.axis),
+                      clip.position, clip.keep_greater ? 1.0F : -1.0F);
     }
-    gl.uniform_1i(gl.get_uniform_location(shader_program_, "uTexture"), 0);
-    gl.uniform_1i(gl.get_uniform_location(shader_program_, "uLightmapTexture"), 1);
-    const GLint use_texture_location = gl.get_uniform_location(shader_program_, "uUseTexture");
-    const GLint use_lightmap_location = gl.get_uniform_location(shader_program_, "uUseLightmap");
-    const GLint lightmap_only_location = gl.get_uniform_location(shader_program_, "uLightmapOnly");
-    const GLint use_debug_uv_location = gl.get_uniform_location(shader_program_, "uUseDebugUv");
-    const GLint base_color_location = gl.get_uniform_location(shader_program_, "uBaseColor");
-    const GLint force_opaque_location = gl.get_uniform_location(shader_program_, "uForceOpaque");
-    const GLint dim_location = gl.get_uniform_location(shader_program_, "uDim");
-    const bool has_selected_actor =
-        selected_mission_entry_ &&
-        std::ranges::any_of(draw_batches_, [&](const auto& batch) {
-            return actor_owner(batch.owner_offset) == selected_mission_entry_;
-        });
+    gl.uniform_4f(u.slice, slice_.enabled && slice_.clip_geometry && scene_mode_ ? 1.0F : 0.0F,
+                  slice_.low, slice_.high, 0.0F);
+    gl.uniform_1i(u.texture, 0);
+    gl.uniform_1i(u.lightmap_texture, 1);
+    gl.uniform_1f(u.lightmap_intensity, lightmap_intensity_);
+    gl.uniform_1i(u.use_debug_uv, view_style_ == 3 || view_style_ == 4);
+    gl.uniform_1i(u.lightmap_only, view_style_ == 5);
+    gl.uniform_2f(u.screen_offset, 0.0F, 0.0F);
+    gl.uniform_2f(u.viewport_pixels, static_cast<float>(viewport_width),
+                  static_cast<float>(viewport_height));
+
+    // Uniforms and textures change only when a batch needs different values;
+    // consecutive batches mostly share them.
+    struct Bound {
+        std::optional<std::array<float, 12>> model;
+        std::optional<std::array<float, 4>> color;
+        std::optional<float> dim;
+        int use_texture{-1}, use_lightmap{-1}, force_opaque{-1}, apply_lighting{-1};
+        GLuint texture{~GLuint{}}, lightmap{~GLuint{}};
+    } bound;
+    const auto set_model = [&](const std::array<float, 12>& m) {
+        if (bound.model == m) return;
+        bound.model = m;
+        gl.uniform_4f(u.model[0], m[0], m[1], m[2], m[3]);
+        gl.uniform_4f(u.model[1], m[4], m[5], m[6], m[7]);
+        gl.uniform_4f(u.model[2], m[8], m[9], m[10], m[11]);
+    };
+    const auto set_base_color = [&](const float r, const float g, const float b, const float a) {
+        const std::array<float, 4> value{r, g, b, a};
+        if (bound.color == value) return;
+        bound.color = value;
+        gl.uniform_4f(u.base_color, r, g, b, a);
+    };
+    const auto set_dim = [&](const float value) {
+        if (bound.dim == value) return;
+        bound.dim = value;
+        gl.uniform_1f(u.dim, value);
+    };
+    const auto set_flag = [&](const int location, int& current, const bool value) {
+        if (current == static_cast<int>(value)) return;
+        current = value;
+        gl.uniform_1i(location, value);
+    };
+    const auto bind_textures = [&](const GLuint texture, const GLuint lightmap) {
+        if (bound.texture != texture) {
+            gl.active_texture(gl_texture0);
+            glBindTexture(GL_TEXTURE_2D, texture);
+            bound.texture = texture;
+        }
+        if (bound.lightmap != lightmap) {
+            gl.active_texture(gl_texture1);
+            glBindTexture(GL_TEXTURE_2D, lightmap);
+            bound.lightmap = lightmap;
+        }
+    };
+    set_flag(u.apply_lighting, bound.apply_lighting, view_style_ < 3);
+    std::size_t draw_calls = 0;
+    const auto draw_batch = [&](const DrawBatch& batch) {
+        glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first), static_cast<GLsizei>(batch.count));
+        ++draw_calls;
+    };
+
+    // Per batch: whether the selected actor owns it, and whether its bounds reach
+    // into the view volume. Only scene mode culls; a single model is one draw.
+    const ViewVolume volume{projection_ != 0, tan_half_fov, aspect, clip_near, clip_far,
+                            orthographic_scale_};
+    bool has_selected_actor = false;
+    batch_in_view_.resize(draw_batches_.size());
+    std::size_t culled = 0;
+    for (std::size_t i = 0; i < draw_batches_.size(); ++i) {
+        const auto& batch = draw_batches_[i];
+        if (selected_mission_entry_ && actor_owner(batch.owner_offset) == selected_mission_entry_)
+            has_selected_actor = true;
+        const auto& bounds = batch_bounds_[i];
+        bool in_view = true;
+        if (scene_mode_ && bounds.radius >= 0.0F) {
+            const auto center = view_point(bounds.center);
+            in_view = sphere_in_view(volume, center.x, center.y, center.z, bounds.radius);
+        }
+        batch_in_view_[i] = in_view;
+        culled += in_view ? 0 : 1;
+    }
     const auto batch_visible = [&](const DrawBatch& batch) {
         if (!isolate_selected_actor_ || !has_selected_actor) return true;
         return batch.layer != PreviewLayer::collision_world &&
@@ -2762,18 +3029,8 @@ void GeometryPreview::render_gpu() {
     const auto batch_dim = [&](const DrawBatch& batch) {
         if (!dim_unselected_actors_ || !has_selected_actor || isolate_selected_actor_)
             return 1.0F;
-        return actor_owner(batch.owner_offset) == selected_mission_entry_ ? 1.0F : 0.22F;
+        return actor_owner(batch.owner_offset) == selected_mission_entry_ ? 1.0F : 0.55F;
     };
-    const auto set_model = [&](const std::array<float, 12>& m) {
-        gl.uniform_4f(gl.get_uniform_location(shader_program_, "uModel0"), m[0], m[1], m[2], m[3]);
-        gl.uniform_4f(gl.get_uniform_location(shader_program_, "uModel1"), m[4], m[5], m[6], m[7]);
-        gl.uniform_4f(gl.get_uniform_location(shader_program_, "uModel2"), m[8], m[9], m[10],
-                      m[11]);
-    };
-    gl.uniform_1f(gl.get_uniform_location(shader_program_, "uLightmapIntensity"),
-                  lightmap_intensity_);
-    gl.uniform_1i(use_debug_uv_location, view_style_ == 3 || view_style_ == 4);
-    gl.uniform_1i(gl.get_uniform_location(shader_program_, "uApplyLighting"), view_style_ < 3);
 
     auto set_color = [&](const DrawBatch& batch) {
         const auto material = batch.material;
@@ -2787,123 +3044,184 @@ void GeometryPreview::render_gpu() {
                     : material;
             const auto packed = material_color(palette_material, 1.0F);
             const auto channels = ui::unpack_rgba(packed);
-            gl.uniform_4f(base_color_location, static_cast<float>(channels[0]) / 255.0F,
-                          static_cast<float>(channels[1]) / 255.0F,
-                          static_cast<float>(channels[2]) / 255.0F,
-                          batch.layer == PreviewLayer::collision_world ? collision_opacity_ : 1.0F);
+            set_base_color(static_cast<float>(channels[0]) / 255.0F,
+                           static_cast<float>(channels[1]) / 255.0F,
+                           static_cast<float>(channels[2]) / 255.0F,
+                           batch.layer == PreviewLayer::collision_world ? collision_opacity_ : 1.0F);
             return;
         }
         if (batch.layer == PreviewLayer::collision_world && collision_color_mode_ == 2) {
-            gl.uniform_4f(base_color_location, 0.95F, 0.25F, 0.72F, collision_opacity_);
+            set_base_color(0.95F, 0.25F, 0.72F, collision_opacity_);
             return;
         }
         const auto index = static_cast<std::size_t>(material);
         const auto rgba = index < material_colors_.size()
                               ? material_colors_[index]
                               : std::array<std::uint8_t, 4>{190, 190, 190, 255};
-        gl.uniform_4f(base_color_location, rgba[0] / 255.0F, rgba[1] / 255.0F, rgba[2] / 255.0F,
-                      batch.layer == PreviewLayer::collision_world ? collision_opacity_
-                                                                   : rgba[3] / 255.0F);
+        set_base_color(rgba[0] / 255.0F, rgba[1] / 255.0F, rgba[2] / 255.0F,
+                       batch.layer == PreviewLayer::collision_world ? collision_opacity_
+                                                                    : rgba[3] / 255.0F);
     };
 
     if (view_style_ != 7 || show_collision_) {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         // Opaque visual geometry establishes depth first. Fractional-alpha textures are then
         // composited without writing depth, followed by the optional collision overlay.
-        for (int render_pass = 0; render_pass < 3; ++render_pass) {
-            for (const auto& batch : draw_batches_) {
-                if (!batch_visible(batch)) continue;
-                const bool collision = batch.layer == PreviewLayer::collision_world;
-                if ((!collision && !show_visual_) ||
-                    (collision && (!show_collision_ || collision_style_ == 2)))
-                    continue;
-                if (!collision && view_style_ == 7) continue;
-                const auto material = static_cast<std::size_t>(batch.material);
-                GLuint texture{}, lightmap{};
-                if (!collision && (view_style_ == 0 || view_style_ == 6) &&
-                    (scene_mode_ || !uv_sets_.empty()) && material < material_textures_.size())
-                    texture = material_textures_[material];
-                else if ((view_style_ == 3 || view_style_ == 4) &&
-                         selected_uv_set_ < uv_sets_.size())
-                    texture = checker_texture_;
-                if ((view_style_ == 5 || view_style_ == 6) &&
-                    (scene_mode_ || uv_sets_.size() > 1) &&
-                    material < material_lightmap_textures_.size())
-                    lightmap = material_lightmap_textures_[material];
-                const bool translucent = !collision && !batch.force_opaque && texture != 0 &&
-                                         translucent_texture_ids_.contains(texture);
-                const int wanted_pass = collision ? 2 : (translucent ? 1 : 0);
-                if (render_pass != wanted_pass) continue;
-                if (collision || translucent) {
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                    glDepthMask(GL_FALSE);
-                    if (collision && collision_style_ == 3)
-                        glDisable(GL_DEPTH_TEST);
-                    else
-                        glEnable(GL_DEPTH_TEST);
-                } else {
-                    glDisable(GL_BLEND);
-                    glDepthMask(GL_TRUE);
+        for (auto& draws : pass_draws_) draws.clear();
+        for (const auto index : batch_order_) {
+            if (!batch_in_view_[index]) continue;
+            const auto& batch = draw_batches_[index];
+            if (!batch_visible(batch)) continue;
+            const bool collision = batch.layer == PreviewLayer::collision_world;
+            if ((!collision && !show_visual_) ||
+                (collision && (!show_collision_ || collision_style_ == 2)))
+                continue;
+            if (!collision && view_style_ == 7) continue;
+            const auto material = static_cast<std::size_t>(batch.material);
+            GLuint texture{}, lightmap{};
+            if (!collision && (view_style_ == 0 || view_style_ == 6) &&
+                (scene_mode_ || !uv_sets_.empty()) && material < material_textures_.size())
+                texture = material_textures_[material];
+            else if ((view_style_ == 3 || view_style_ == 4) &&
+                     selected_uv_set_ < uv_sets_.size())
+                texture = checker_texture_;
+            if ((view_style_ == 5 || view_style_ == 6) &&
+                (scene_mode_ || uv_sets_.size() > 1) &&
+                material < material_lightmap_textures_.size())
+                lightmap = material_lightmap_textures_[material];
+            const bool translucent = !collision && !batch.force_opaque && texture != 0 &&
+                                     translucent_texture_ids_.contains(texture);
+            pass_draws_[collision ? 2 : (translucent ? 1 : 0)].push_back({index, texture, lightmap});
+        }
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        for (std::size_t pass = 0; pass < pass_draws_.size(); ++pass) {
+            if (pass_draws_[pass].empty()) continue;
+            if (pass == 0) {
+                glDisable(GL_BLEND);
+                glDepthMask(GL_TRUE);
+                glEnable(GL_DEPTH_TEST);
+            } else {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                if (pass == 2 && collision_style_ == 3)
+                    glDisable(GL_DEPTH_TEST);
+                else
                     glEnable(GL_DEPTH_TEST);
-                }
+            }
+            for (const auto& draw : pass_draws_[pass]) {
+                const auto& batch = draw_batches_[draw.batch];
                 set_color(batch);
                 set_model(batch.transform);
-                gl.uniform_1f(dim_location, batch_dim(batch));
-                gl.uniform_1i(use_texture_location, texture != 0);
-                gl.uniform_1i(use_lightmap_location, lightmap != 0);
-                gl.uniform_1i(lightmap_only_location, view_style_ == 5);
-                gl.uniform_1i(force_opaque_location, !collision && batch.force_opaque);
-                gl.active_texture(gl_texture0);
-                glBindTexture(GL_TEXTURE_2D, texture);
-                gl.active_texture(gl_texture1);
-                glBindTexture(GL_TEXTURE_2D, lightmap);
-                glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first),
-                             static_cast<GLsizei>(batch.count));
+                set_dim(batch_dim(batch));
+                set_flag(u.use_texture, bound.use_texture, draw.texture != 0);
+                set_flag(u.use_lightmap, bound.use_lightmap, draw.lightmap != 0);
+                set_flag(u.force_opaque, bound.force_opaque, pass != 2 && batch.force_opaque);
+                bind_textures(draw.texture, draw.lightmap);
+                draw_batch(batch);
             }
         }
         glDepthMask(GL_TRUE);
     }
-    if (view_style_ == 7 || wireframe_ || (outline_selected_actor_ && has_selected_actor) ||
+    if (view_style_ == 7 || wireframe_ ||
         (show_collision_ && (collision_style_ == 1 || collision_style_ == 2))) {
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
         glDepthMask(GL_TRUE);
-        gl.uniform_1i(use_texture_location, 0);
-        gl.uniform_1i(use_lightmap_location, 0);
-        gl.uniform_1i(force_opaque_location, 1);
-        gl.uniform_1f(dim_location, 1.0F);
+        set_flag(u.use_texture, bound.use_texture, false);
+        set_flag(u.use_lightmap, bound.use_lightmap, false);
+        set_flag(u.force_opaque, bound.force_opaque, true);
+        set_dim(1.0F);
         const float color = view_style_ == 7 ? 0.84F : 0.09F;
-        gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F,
-                      view_style_ == 7 ? 0.95F : 0.13F, 1.0F);
         glDepthFunc(GL_LEQUAL);
         glEnable(GL_POLYGON_OFFSET_LINE);
         glPolygonOffset(-1.0F, -1.0F);
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-        for (const auto& batch : draw_batches_) {
+        for (const auto index : batch_order_) {
+            if (!batch_in_view_[index]) continue;
+            const auto& batch = draw_batches_[index];
             if (!batch_visible(batch)) continue;
             const bool collision = batch.layer == PreviewLayer::collision_world;
-            const bool selected_actor =
-                actor_owner(batch.owner_offset) == selected_mission_entry_;
-            const bool draw_visual_wire =
-                !collision && show_visual_ &&
-                (view_style_ == 7 || wireframe_ ||
-                 (outline_selected_actor_ && selected_actor));
+            const bool draw_visual_wire = !collision && show_visual_ && (view_style_ == 7 || wireframe_);
             const bool draw_collision_wire =
                 collision && show_collision_ && (collision_style_ == 1 || collision_style_ == 2);
             if (!draw_visual_wire && !draw_collision_wire) continue;
-            if (collision)
-                gl.uniform_4f(base_color_location, 0.1F, 0.95F, 0.95F, 1.0F);
-            else if (outline_selected_actor_ && selected_actor)
-                gl.uniform_4f(base_color_location, 1.0F, 0.72F, 0.12F, 1.0F);
-            else
-                gl.uniform_4f(base_color_location, color, view_style_ == 7 ? 0.88F : 0.10F,
-                              view_style_ == 7 ? 0.95F : 0.13F, 1.0F);
+            set_base_color(collision ? 0.1F : color,
+                           collision ? 0.95F : (view_style_ == 7 ? 0.88F : 0.10F),
+                           collision ? 0.95F : (view_style_ == 7 ? 0.95F : 0.13F), 1.0F);
             set_model(batch.transform);
-            glDrawArrays(GL_TRIANGLES, static_cast<GLint>(batch.first),
-                         static_cast<GLsizei>(batch.count));
+            draw_batch(batch);
         }
         glDisable(GL_POLYGON_OFFSET_LINE);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    }
+    if (outline_selected_actor_ && has_selected_actor) {
+        // A soft glow around the selected actor's silhouette, visible through
+        // occluders. The stencil masks the silhouette, then copies of the mesh
+        // shifted a few pixels outward paint rings around it, each pixel once so
+        // overlapping copies don't stack. Screen-space offsets need no normals,
+        // which in these models are often split per face.
+        selected_batches_.clear();
+        for (std::uint32_t i = 0; i < draw_batches_.size(); ++i) {
+            const auto& batch = draw_batches_[i];
+            if (batch_in_view_[i] && batch.layer != PreviewLayer::collision_world &&
+                actor_owner(batch.owner_offset) == selected_mission_entry_ && batch_visible(batch))
+                selected_batches_.push_back(i);
+        }
+        const auto draw_selected = [&] {
+            for (const auto index : selected_batches_) {
+                const auto& batch = draw_batches_[index];
+                set_model(batch.transform);
+                draw_batch(batch);
+            }
+        };
+        glDisable(GL_CULL_FACE);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glEnable(GL_STENCIL_TEST);
+        glStencilMask(0xFF);
+        glClearStencil(0);
+        glClear(GL_STENCIL_BUFFER_BIT);
+        set_flag(u.use_texture, bound.use_texture, false);
+        set_flag(u.use_lightmap, bound.use_lightmap, false);
+        set_flag(u.force_opaque, bound.force_opaque, false);
+        set_dim(1.0F);
+        set_flag(u.apply_lighting, bound.apply_lighting, false);
+        set_base_color(1.0F, 0.74F, 0.22F, 1.0F);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        glStencilFunc(GL_ALWAYS, 1, 0xFF);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+        draw_selected();
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glStencilFunc(GL_GREATER, 1, 0xFF); // Only pixels still at 0, then marked.
+        struct Ring {
+            float radius, alpha;
+            int steps;
+        };
+        const float pixels = ui::ui_scale() * io.DisplayFramebufferScale.x;
+        for (const auto ring : {Ring{1.5F, 0.95F, 8}, Ring{3.0F, 0.5F, 12}, Ring{4.5F, 0.2F, 16}}) {
+            set_base_color(1.0F, 0.74F, 0.22F, ring.alpha);
+            for (int step = 0; step < ring.steps; ++step) {
+                const float angle =
+                    6.28318530718F * static_cast<float>(step) / static_cast<float>(ring.steps);
+                gl.uniform_2f(u.screen_offset, std::cos(angle) * ring.radius * pixels,
+                              std::sin(angle) * ring.radius * pixels);
+                draw_selected();
+            }
+        }
+        gl.uniform_2f(u.screen_offset, 0.0F, 0.0F);
+        set_flag(u.apply_lighting, bound.apply_lighting, view_style_ < 3);
+        glDisable(GL_STENCIL_TEST);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        if (cull_backfaces_) {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+        }
     }
     if (selected_collision_) {
         const auto mapping =
@@ -2914,31 +3232,50 @@ void GeometryPreview::render_gpu() {
                                     item.triangle == selected_collision_->triangle_index;
                          });
         if (mapping != collision_triangle_mapping_.end()) {
-            glDisable(GL_BLEND);
             glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_TRUE);
-            gl.uniform_1i(use_texture_location, 0);
-            gl.uniform_1i(use_lightmap_location, 0);
-            gl.uniform_1i(force_opaque_location, 1);
-            gl.uniform_1f(dim_location, 1.0F);
+            set_flag(u.use_texture, bound.use_texture, false);
+            set_flag(u.use_lightmap, bound.use_lightmap, false);
+            set_dim(1.0F);
             set_model({1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0});
-            gl.uniform_4f(base_color_location, 1.0F, 0.15F, 0.8F, 1.0F);
+            const auto first = static_cast<GLint>(mapping->first);
+            // An x-ray fill shows the selection through occluding geometry, a
+            // brighter fill picks it out where actually visible, and a bright
+            // wire outline on top keeps the triangle's edges crisp at any zoom.
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(GL_FALSE);
+            set_flag(u.force_opaque, bound.force_opaque, false);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            glDisable(GL_DEPTH_TEST);
+            set_base_color(1.0F, 0.15F, 0.85F, 0.18F);
+            glDrawArrays(GL_TRIANGLES, first, 3);
+            glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LEQUAL);
+            set_base_color(1.0F, 0.35F, 0.88F, 0.5F);
+            glDrawArrays(GL_TRIANGLES, first, 3);
+            glDepthMask(GL_TRUE);
+            glDisable(GL_BLEND);
+            set_flag(u.force_opaque, bound.force_opaque, true);
+            set_base_color(1.0F, 0.2F, 0.85F, 1.0F);
             glEnable(GL_POLYGON_OFFSET_LINE);
             glPolygonOffset(-2, -2);
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             glLineWidth(3.0F);
-            glDrawArrays(GL_TRIANGLES, static_cast<GLint>(mapping->first), 3);
+            glDrawArrays(GL_TRIANGLES, first, 3);
             glLineWidth(1.0F);
             glDisable(GL_POLYGON_OFFSET_LINE);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         }
     }
+    last_draw_calls_ = draw_calls;
+    last_culled_batches_ = culled;
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glDisable(GL_CULL_FACE);
+    render_overlays_gpu(viewport_width, viewport_height);
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
-    glDisable(GL_CULL_FACE);
     glDisable(GL_SCISSOR_TEST);
     gl.active_texture(gl_texture0);
     gl.bind_vertex_array(0);
@@ -2953,16 +3290,23 @@ void GeometryPreview::draw(const rws::Chunk& geometry_chunk, const std::span<con
                                       "UV checker",      "Lightmap UV",    "Lightmap texture",
                                       "Base + lightmap", "Wireframe"};
     constexpr const char* projections[] = {"Perspective", "Top (X/Z)", "Front (X/Y)", "Side (Z/Y)"};
-    const float toolbar_height = ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y * 2.0F;
-    ImGui::BeginChild("geometry_toolbar", {0.0F, toolbar_height}, ImGuiChildFlags_Borders,
+    // The center panel has no padding (the canvas is edge to edge); the toolbar
+    // brings its own.
+    const float scale = ui::ui_scale();
+    const ImVec2 toolbar_padding{8.0F * scale, 5.0F * scale};
+    const float toolbar_height = ImGui::GetFrameHeight() + toolbar_padding.y * 2.0F;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, toolbar_padding);
+    ImGui::BeginChild("geometry_toolbar", {0.0F, toolbar_height},
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    ImGui::SetNextItemWidth(160.0F);
+    ImGui::PopStyleVar();
+    ImGui::SetNextItemWidth(170.0F * scale);
     if (ImGui::Combo("##geometry_style", &view_style_, styles,
                      static_cast<int>(std::size(styles))) &&
         view_style_ >= 4 && view_style_ <= 6 && uv_sets_.size() > 1)
         select_uv_set(1);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(135.0F);
+    ImGui::SetNextItemWidth(140.0F * scale);
     ImGui::Combo("##geometry_projection", &projection_, projections,
                  static_cast<int>(std::size(projections)));
     ImGui::SameLine();
@@ -2974,7 +3318,7 @@ void GeometryPreview::draw(const rws::Chunk& geometry_chunk, const std::span<con
         ImGui::Checkbox("Cull backfaces", &cull_backfaces_);
         if (!uv_sets_.empty()) {
             const std::string preview = "UV set " + std::to_string(selected_uv_set_ + 1);
-            ImGui::SetNextItemWidth(180.0F);
+            ImGui::SetNextItemWidth(200.0F * scale);
             if (ImGui::BeginCombo("UV channel", preview.c_str())) {
                 for (std::size_t i = 0; i < uv_sets_.size(); ++i) {
                     const std::string label = "UV set " + std::to_string(i + 1) +
@@ -3105,7 +3449,9 @@ bool GeometryPreview::draw_scene(
             measurement_b_ = hit.position;
         }
     };
-    if (ImGui::IsItemHovered()) {
+    // The edit gizmo owns the mouse from the press on a handle to the release.
+    const bool gizmo_owns_mouse = update_edit_gizmo();
+    if (ImGui::IsItemHovered() && !gizmo_owns_mouse) {
         const auto& io = ImGui::GetIO();
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             const int hit = axis_gizmo_hit(origin, size, io.MousePos);
@@ -3117,32 +3463,7 @@ bool GeometryPreview::draw_scene(
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             const auto drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (!gizmo_press_ && drag.x * drag.x + drag.y * drag.y < 16.0F) {
-                std::vector<csf::ScreenOverlayPrimitive> primitives;
-                primitives.reserve(mission_points_.size() + mission_lines_.size());
-                for (const auto& point : mission_points_) {
-                    if (!mission_layer_visible_[static_cast<std::size_t>(point.kind)]) continue;
-                    if (!mission_entry_visible(point.source_entry)) continue;
-                    if (!rws::collision_point_visible(point.position, clips_)) continue;
-                    if (const auto screen = project_point(point.position))
-                        primitives.push_back({point.source_entry, csf::OverlayPrimitiveKind::point,
-                                              screen->x, screen->y, screen->x, screen->y, 0, true,
-                                              false});
-                }
-                for (const auto& line : mission_lines_) {
-                    if (!mission_layer_visible_[static_cast<std::size_t>(line.kind)]) continue;
-                    if (!mission_entry_visible(line.source_entry)) continue;
-                    if (!rws::collision_point_visible(line.first, clips_) ||
-                        !rws::collision_point_visible(line.second, clips_))
-                        continue;
-                    const auto a = project_point(line.first), b = project_point(line.second);
-                    if (!a || !b) continue;
-                    primitives.push_back({line.source_entry, csf::OverlayPrimitiveKind::segment,
-                                          a->x, a->y, b->x, b->y, 1, true, false});
-                }
-                if (const auto overlay =
-                        csf::pick_overlay(primitives, io.MousePos.x, io.MousePos.y)) {
-                    selected_mission_entry_ = overlay->source_entry;
-                } else {
+                if (!overlay_click(io.MousePos)) {
                     selected_mission_entry_.reset();
                     const auto collision_hit = pick_collision(io.MousePos.x, io.MousePos.y);
                     if (collision_hit && (prefer_collision_ || measurement_mode_ || io.KeyAlt)) {
@@ -3192,6 +3513,7 @@ bool GeometryPreview::draw_scene(
                            error_.c_str());
         return open_tools;
     }
+    prepare_overlays(origin, size);
     draw_list->AddCallback(render_callback, this);
     draw_list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
     draw_list->PushClipRect(origin, {origin.x + size.x, origin.y + size.y}, true);
@@ -3287,50 +3609,6 @@ bool GeometryPreview::draw_scene(
     if (show_physics_ && !isolate_selected_actor_)
         for (const auto& line : physics_lines_)
             line3d(line.first, line.second, line.color, 1.8F);
-    for (const auto& line : mission_lines_) {
-        if (isolate_selected_actor_ && selected_mission_entry_ != line.source_entry) continue;
-        if (!mission_layer_visible_[static_cast<std::size_t>(line.kind)]) continue;
-        if (!mission_entry_visible(line.source_entry)) continue;
-        if (!rws::collision_point_visible(line.first, clips_) ||
-            !rws::collision_point_visible(line.second, clips_))
-            continue;
-        const float thickness = selected_mission_entry_ == line.source_entry ? 3.0F : 1.5F;
-        line3d(line.first, line.second, line.color, thickness);
-        if (line.directed) {
-            const auto a = project_point(line.first), b = project_point(line.second);
-            if (a && b) {
-                const float dx = b->x - a->x, dy = b->y - a->y;
-                const float length = std::sqrt(dx * dx + dy * dy);
-                if (length > 10.0F) {
-                    const float ux = dx / length, uy = dy / length;
-                    constexpr float size = 7.0F;
-                    const ImVec2 left{b->x - ux * size - uy * size * .55F,
-                                      b->y - uy * size + ux * size * .55F};
-                    const ImVec2 right{b->x - ux * size + uy * size * .55F,
-                                       b->y - uy * size - ux * size * .55F};
-                    draw_list->AddTriangleFilled(*b, left, right, line.color);
-                }
-            }
-        }
-    }
-    for (const auto& point : mission_points_) {
-        if (isolate_selected_actor_ && selected_mission_entry_ != point.source_entry) continue;
-        if (!mission_layer_visible_[static_cast<std::size_t>(point.kind)]) continue;
-        if (!mission_entry_visible(point.source_entry)) continue;
-        if (!rws::collision_point_visible(point.position, clips_)) continue;
-        if (const auto screen = project_point(point.position)) {
-            const bool selected = selected_mission_entry_ == point.source_entry;
-            const float radius = selected ? 7.0F : 4.0F;
-            draw_list->AddCircleFilled(*screen, radius, point.color, 12);
-            draw_list->AddCircle(*screen, radius + 1.0F,
-                                 selected ? ui::viewport_color(ui::Viewport::selection_secondary)
-                                          : ui::viewport_color(ui::Viewport::point_ring),
-                                 12, selected ? 2.0F : 1.0F);
-            if (selected && !point.label.empty())
-                draw_list->AddText({screen->x + 9.0F, screen->y - 9.0F},
-                                   ui::viewport_color(ui::Viewport::selection_secondary), point.label.c_str());
-        }
-    }
     if (selected_collision_ && selected_collision_->world_index < collision_worlds_.size()) {
         const auto& hit = *selected_collision_;
         const auto& world = collision_worlds_[hit.world_index];
@@ -3398,12 +3676,18 @@ bool GeometryPreview::draw_scene(
         line3d(corner(1, 1), corner(-1, 1), color, 1.5F);
         line3d(corner(-1, 1), corner(-1, -1), color, 1.5F);
     }
+    draw_overlay_decorations(draw_list, origin, size);
+    draw_edit_gizmo(draw_list);
     draw_list->PopClipRect();
     draw_viewport_hud(draw_list, origin, size, collision_status);
+    draw_overlay_legend(draw_list, origin, size);
     draw_axis_gizmo(draw_list, origin, size);
     draw_overlay_hover_tooltip();
     if (draw_viewport_toolbar(origin, size, has_visual, has_collision)) open_tools = true;
     draw_measure_panel(origin, size);
+    draw_overlay_minimap(origin, size);
+    draw_overlay_picker();
+    if (occlusion_pending_) animating_frame_ = ImGui::GetFrameCount();
     return open_tools;
 }
 
@@ -3417,11 +3701,6 @@ void GeometryPreview::toggle_perspective() noexcept {
 }
 
 namespace {
-
-constexpr const char* mission_layer_names[] = {"Actors",  "Navigation points", "Navigation links",
-                                               "Dummies", "Cutscene cameras",  "Areas",
-                                               "Lights",  "Effects",           "Actor CMO",
-                                               "Actor Physics"};
 
 std::string compact_count(const std::size_t value) {
     char buffer[24];
@@ -3451,7 +3730,8 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
         selected_style == scene_styles.end()
             ? 1
             : static_cast<std::size_t>(std::distance(scene_styles.begin(), selected_style));
-    const bool compact = size.x < 640.0F * ui::ui_scale();
+    // Mission overlays add marker controls and the filter field to the toolbar.
+    const bool compact = size.x < (has_mission_overlays() ? 1080.0F : 640.0F) * ui::ui_scale();
     const float pad = 8.0F * ui::ui_scale();
     const std::string chevron = ui::icons::LC_CHEVRON_DOWN;
 
@@ -3499,53 +3779,55 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
         ImGui::SameLine();
         if (popup_button("frame", labelled(ui::icons::LC_SCAN, "Frame") + " " + chevron, "Frame the camera")) {
             if (ImGui::MenuItem("All", "Home")) frame_all();
-            if (ImGui::MenuItem("Visual", nullptr, false, has_visual)) frame_bounds(visual_center_, visual_radius_);
+            if (ImGui::MenuItem("Visual", nullptr, false, has_visual)) frame_bounds(visual_center_, visual_radius_, visual_extent_);
             if (ImGui::MenuItem("Collision", nullptr, false, has_collision))
-                frame_bounds(collision_center_, collision_radius_);
+                frame_bounds(collision_center_, collision_radius_, collision_extent_);
             if (ImGui::MenuItem("Selection", "F", false, selected_mission_entry_.has_value()))
                 frame_selection(std::nullopt);
             ImGui::EndPopup();
         }
         ImGui::SameLine();
         if (popup_button("layers", labelled(ui::icons::LC_LAYERS, "Layers") + " " + chevron, "Layers and overlays")) {
-            ImGui::BeginDisabled(!has_visual);
-            ImGui::Checkbox("Visual scene", &show_visual_);
-            ImGui::EndDisabled();
-            ImGui::BeginDisabled(!has_collision);
-            ImGui::Checkbox("Level collision", &show_collision_);
-            ImGui::EndDisabled();
-            if (!mission_points_.empty() || !mission_lines_.empty()) {
-                ImGui::Separator();
-                for (std::size_t i = 0; i < std::size(mission_layer_names); ++i) {
-                    std::unordered_set<std::uint32_t> identities;
-                    ImU32 color = ui::viewport_color(ui::Viewport::bounds);
-                    for (const auto& point : mission_points_)
-                        if (static_cast<std::size_t>(point.kind) == i) {
-                            identities.insert(point.source_entry);
-                            color = point.color;
-                        }
-                    for (const auto& line : mission_lines_)
-                        if (static_cast<std::size_t>(line.kind) == i) {
-                            identities.insert(line.source_entry);
-                            color = line.color;
-                        }
-                    ImGui::PushID(static_cast<int>(i));
-                    ImGui::ColorButton("legend", ImGui::ColorConvertU32ToFloat4(color),
-                                       ImGuiColorEditFlags_NoTooltip, {12, 12});
-                    ImGui::SameLine();
-                    const auto text = std::string(mission_layer_names[i]) + " (" +
-                                      std::to_string(identities.size()) + ")";
-                    ImGui::Checkbox(text.c_str(), &mission_layer_visible_[i]);
-                    ImGui::PopID();
-                }
-            }
-            if (!skeleton_lines_.empty()) {
-                ImGui::Separator();
-                ImGui::Checkbox("Skeleton", &show_skeleton_);
-                if (show_skeleton_) ImGui::Checkbox("Bone IDs", &show_skeleton_labels_);
-            }
-            if (!physics_lines_.empty()) ImGui::Checkbox("Physics", &show_physics_);
+            draw_layers_popup(has_visual, has_collision);
             ImGui::EndPopup();
+        }
+        if (has_mission_overlays()) {
+            ImGui::SameLine();
+            if (popup_button("markers", labelled(ui::icons::LC_MAP_PIN, "Markers") + " " + chevron,
+                             "Marker display: labels, depth, fading, merging, height slice")) {
+                draw_markers_popup();
+                ImGui::EndPopup();
+            }
+            const auto toggle = [&](const char* id, const char* icon, bool& value, const char* tooltip) {
+                if (value) ImGui::PushStyleColor(ImGuiCol_Text, ui::color(ui::Token::accent));
+                const bool clicked = ImGui::Button((std::string(icon) + "##" + id).c_str());
+                if (value) ImGui::PopStyleColor();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip);
+                return clicked;
+            };
+            ImGui::SameLine();
+            if (toggle("focus", ui::icons::LC_TARGET, focus_mode_,
+                       "Focus mode (Z): dim markers unrelated to the selection"))
+                focus_mode_ = !focus_mode_;
+            ImGui::SameLine();
+            bool slice = slice_.enabled;
+            if (toggle("slice", ui::icons::LC_MOUNTAIN, slice,
+                       "Height slice (Y): show one floor around the selection or camera target"))
+                toggle_floor_slice();
+            ImGui::SameLine();
+            if (focus_filter_request_) {
+                ImGui::SetKeyboardFocusHere();
+                focus_filter_request_ = false;
+            }
+            ImGui::SetNextItemWidth((compact ? 90.0F : 150.0F) * ui::ui_scale());
+            ImGui::InputTextWithHint("##overlay_filter",
+                                     (std::string(ui::icons::LC_FILTER) + " Filter markers (/)").c_str(),
+                                     overlay_filter_.data(), overlay_filter_.size());
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                ImGui::SetTooltip("Name, sublayer or layer text; #123 for an entry; kind:nav for a layer.\n"
+                                  "Escape clears. Non-matching markers are %s.",
+                                  overlay_options_.dim_filtered ? "dimmed" : "hidden");
+            if (ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape)) overlay_filter_.fill('\0');
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(!has_collision);
@@ -3605,14 +3887,11 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
 void GeometryPreview::draw_viewport_hud(ImDrawList* draw_list, const ImVec2 origin, const ImVec2 size,
                                         const std::string_view collision_status) {
     if (show_hud_) {
-        std::size_t triangles = 0;
-        for (const auto& batch : draw_batches_) {
-            if (batch.layer == PreviewLayer::collision_world ? !show_collision_ : !show_visual_) continue;
-            triangles += batch.count / 3;
-        }
+        const std::size_t triangles = (show_visual_ ? visual_triangle_total_ : 0) +
+                                      (show_collision_ ? collision_triangle_total_ : 0);
         char first[96];
-        std::snprintf(first, sizeof(first), "fps %.0f \xC2\xB7 %s tris \xC2\xB7 cam %d",
-                      static_cast<double>(ImGui::GetIO().Framerate), compact_count(triangles).c_str(),
+        std::snprintf(first, sizeof(first), "fps %.0f \xC2\xB7 %s tris \xC2\xB7 cam %d", frame_fps_,
+                      compact_count(triangles).c_str(),
                       static_cast<int>(projection_ == 0 ? distance_ : orthographic_scale_));
         std::ostringstream second;
         second << scene_clump_count_ << " clumps \xC2\xB7 " << scene_instance_count_ << " instances \xC2\xB7 "
@@ -3620,16 +3899,29 @@ void GeometryPreview::draw_viewport_hud(ImDrawList* draw_list, const ImVec2 orig
         if (collision_sector_count_ != 0)
             second << " \xC2\xB7 collision " << collision_sector_count_ << " sectors / "
                    << compact_count(collision_triangle_count_) << " tris";
+        std::vector<std::string> lines{first, second.str()};
+        if (show_frame_stats_) {
+            // CPU covers the whole app frame; GPU only the scene pass, read back late.
+            char timing[128];
+            char gpu[24] = "n/a";
+            if (gpu_ms_ >= 0.0) std::snprintf(gpu, sizeof(gpu), "%.2f ms", gpu_ms_);
+            std::snprintf(timing, sizeof(timing), "cpu %.2f ms \xC2\xB7 gpu %s \xC2\xB7 %zu draws \xC2\xB7 %zu/%zu culled",
+                          frame_cpu_ms_, gpu, last_draw_calls_, last_culled_batches_, draw_batches_.size());
+            lines.emplace_back(timing);
+        }
         ImGui::PushFont(ui::font(ui::Font::mono));
         const float line = ImGui::GetTextLineHeightWithSpacing();
-        const auto second_text = second.str();
-        const float width = std::max(ImGui::CalcTextSize(first).x, ImGui::CalcTextSize(second_text.c_str()).x) + 16.0F;
-        const ImVec2 lo{origin.x + 8.0F, origin.y + size.y - line * 2.0F - 14.0F};
-        draw_list->AddRectFilled(lo, {lo.x + width, lo.y + line * 2.0F + 6.0F},
+        float width = 0.0F;
+        for (const auto& text : lines) width = std::max(width, ImGui::CalcTextSize(text.c_str()).x);
+        width += 16.0F;
+        const float height = line * static_cast<float>(lines.size());
+        const ImVec2 lo{origin.x + 8.0F, origin.y + size.y - height - 14.0F};
+        draw_list->AddRectFilled(lo, {lo.x + width, lo.y + height + 6.0F},
                                  ui::viewport_color(ui::Viewport::hud_background), 3.0F);
-        draw_list->AddText({lo.x + 8.0F, lo.y + 3.0F}, ui::viewport_color(ui::Viewport::hud_text), first);
-        draw_list->AddText({lo.x + 8.0F, lo.y + 3.0F + line}, ui::viewport_color(ui::Viewport::hud_text_dim),
-                           second_text.c_str());
+        for (std::size_t i = 0; i < lines.size(); ++i)
+            draw_list->AddText({lo.x + 8.0F, lo.y + 3.0F + line * static_cast<float>(i)},
+                               ui::viewport_color(i == 0 ? ui::Viewport::hud_text : ui::Viewport::hud_text_dim),
+                               lines[i].c_str());
         ImGui::PopFont();
     }
     if (!texture_status_.empty() || !collision_diagnostics_.empty() ||
@@ -3722,36 +4014,6 @@ void GeometryPreview::draw_axis_gizmo(ImDrawList* draw_list, const ImVec2 origin
     if (hovered >= 0) ImGui::SetTooltip(hovered == 0 ? "Perspective" : "Snap to %s view", hovered == 3 ? "side" : hovered == 1 ? "top" : "front");
 }
 
-void GeometryPreview::draw_overlay_hover_tooltip() {
-    const auto& io = ImGui::GetIO();
-    if (!canvas_hovered_ || io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]) return;
-    const MissionOverlayPoint* nearest = nullptr;
-    float best = 8.0F * 8.0F;
-    for (const auto& point : mission_points_) {
-        if (isolate_selected_actor_ && selected_mission_entry_ != point.source_entry) continue;
-        if (!mission_layer_visible_[static_cast<std::size_t>(point.kind)]) continue;
-        if (!mission_entry_visible(point.source_entry)) continue;
-        if (!rws::collision_point_visible(point.position, clips_)) continue;
-        const auto screen = project_point(point.position);
-        if (!screen) continue;
-        const float dx = screen->x - io.MousePos.x, dy = screen->y - io.MousePos.y;
-        if (dx * dx + dy * dy < best) {
-            best = dx * dx + dy * dy;
-            nearest = &point;
-        }
-    }
-    if (!nearest) return;
-    ImGui::BeginTooltip();
-    ImGui::PushFont(ui::font(ui::Font::mono));
-    ImGui::TextUnformatted(mission_layer_names[static_cast<std::size_t>(nearest->kind)]);
-    ImGui::PopFont();
-    if (!nearest->label.empty()) ImGui::TextUnformatted(nearest->label.c_str());
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::color(ui::Token::text_dim));
-    ImGui::Text("entry #%u", nearest->source_entry);
-    ImGui::PopStyleColor();
-    ImGui::EndTooltip();
-}
-
 void GeometryPreview::draw_measure_panel(const ImVec2 origin, const ImVec2 size) {
     if (!measurement_mode_) return;
     const float line = ImGui::GetTextLineHeightWithSpacing();
@@ -3805,7 +4067,7 @@ void GeometryPreview::draw_measure_panel(const ImVec2 origin, const ImVec2 size)
 }
 
 void GeometryPreview::frame_all() {
-    frame_bounds(all_center_, all_radius_);
+    frame_bounds(all_center_, all_radius_, all_extent_);
 }
 
 bool GeometryPreview::frame_selection(const std::optional<std::uint64_t> chunk_offset) {
@@ -3859,7 +4121,11 @@ bool GeometryPreview::frame_selection(const std::optional<std::uint64_t> chunk_o
     const rws::Vec3 focus{(minimum.x + maximum.x) * 0.5F, (minimum.y + maximum.y) * 0.5F,
                           (minimum.z + maximum.z) * 0.5F};
     const auto dx = maximum.x - minimum.x, dy = maximum.y - minimum.y, dz = maximum.z - minimum.z;
-    frame_bounds(focus, std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), minimum_radius));
+    const float radius = std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), minimum_radius);
+    // A lone marker keeps its surroundings: fit the sphere, not the empty box.
+    frame_bounds(focus, radius,
+                 radius > minimum_radius ? std::optional(rws::Vec3{dx * 0.5F, dy * 0.5F, dz * 0.5F})
+                                         : std::nullopt);
     return true;
 }
 
@@ -4119,7 +4385,8 @@ void GeometryPreview::draw_scene_tools(const std::string_view collision_status) 
             const auto dx = sector.bounding_box_sup.x - sector.bounding_box_inf.x;
             const auto dy = sector.bounding_box_sup.y - sector.bounding_box_inf.y;
             const auto dz = sector.bounding_box_sup.z - sector.bounding_box_inf.z;
-            frame_bounds(center, std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 0.001F));
+            frame_bounds(center, std::max(0.5F * std::sqrt(dx * dx + dy * dy + dz * dz), 0.001F),
+                         rws::Vec3{dx * 0.5F, dy * 0.5F, dz * 0.5F});
         }
         ImGui::SameLine();
         if (ImGui::Button("Copy coordinate")) {

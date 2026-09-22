@@ -14,11 +14,14 @@
 #include "commands.hpp"
 #include "file_dialogs.hpp"
 #include "navigation.hpp"
+#include "mission_editing.hpp"
 #include "screenshot.hpp"
 #include "ui/fonts.hpp"
 #include "ui/layout.hpp"
 #include "ui/shell.hpp"
 #include "ui/theme.hpp"
+
+#include "rwsman/frame_pacing.hpp"
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -34,15 +37,18 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
 
 std::optional<std::filesystem::path> dropped_file;
-bool content_scale_changed = false;
+// When the latest input event arrived (glfwGetTime seconds); wakes an idle frame loop.
+double last_input_time = 0.0;
 
 struct LaunchOptions {
     std::optional<std::filesystem::path> initial_path;
+    std::optional<std::filesystem::path> project; // Mission project workspace to open.
     // Developer aids: render frames, run commands (one per frame), save the back
     // buffer to a new PNG, and exit. The window stays hidden unless --show is passed.
     std::optional<std::filesystem::path> screenshot;
@@ -81,6 +87,8 @@ LaunchOptions parse_arguments(const std::vector<std::filesystem::path>& argument
             options.save_settings = true;
         } else if (argument == "--show") {
             options.show = true;
+        } else if (argument == "--project") {
+            options.project = path_value();
         } else if (argument == "--config-dir") {
             options.config_dir = path_value();
         } else if (argument == "--commands") {
@@ -95,11 +103,47 @@ LaunchOptions parse_arguments(const std::vector<std::filesystem::path>& argument
 }
 
 void drop_callback(GLFWwindow*, const int count, const char** paths) {
+    last_input_time = glfwGetTime();
     if (count > 0) dropped_file = std::filesystem::path(paths[0]);
 }
 
-void content_scale_callback(GLFWwindow*, float, float) {
-    content_scale_changed = true;
+// Installed before the ImGui backend, which chains to them from its own callbacks.
+void install_input_callbacks(GLFWwindow* window) {
+    glfwSetCursorPosCallback(window, [](GLFWwindow*, double, double) { last_input_time = glfwGetTime(); });
+    glfwSetMouseButtonCallback(window, [](GLFWwindow*, int, int, int) { last_input_time = glfwGetTime(); });
+    glfwSetScrollCallback(window, [](GLFWwindow*, double, double) { last_input_time = glfwGetTime(); });
+    glfwSetKeyCallback(window, [](GLFWwindow*, int, int, int, int) { last_input_time = glfwGetTime(); });
+    glfwSetCharCallback(window, [](GLFWwindow*, unsigned int) { last_input_time = glfwGetTime(); });
+    glfwSetCursorEnterCallback(window, [](GLFWwindow*, int) { last_input_time = glfwGetTime(); });
+    glfwSetWindowFocusCallback(window, [](GLFWwindow*, int) { last_input_time = glfwGetTime(); });
+    glfwSetWindowSizeCallback(window, [](GLFWwindow*, int, int) { last_input_time = glfwGetTime(); });
+    glfwSetWindowRefreshCallback(window, [](GLFWwindow*) { last_input_time = glfwGetTime(); });
+    glfwSetWindowContentScaleCallback(window, [](GLFWwindow*, float, float) { last_input_time = glfwGetTime(); });
+    last_input_time = glfwGetTime();
+}
+
+// Sleeps until `deadline`, finishing with a short spin: plain sleeps overshoot
+// by a millisecond or more (far more with Windows' default timer resolution).
+void sleep_until_precise(const std::chrono::steady_clock::time_point deadline) {
+    using namespace std::chrono;
+#ifdef _WIN32
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+    static const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                                       TIMER_ALL_ACCESS);
+    const auto coarse = deadline - microseconds(500);
+    if (timer && steady_clock::now() < coarse) {
+        LARGE_INTEGER due{};
+        due.QuadPart = -duration_cast<nanoseconds>(coarse - steady_clock::now()).count() / 100;
+        if (due.QuadPart < 0 && SetWaitableTimerEx(timer, &due, 0, nullptr, nullptr, nullptr, 0))
+            WaitForSingleObject(timer, INFINITE);
+    }
+#else
+    if (const auto coarse = deadline - milliseconds(1); steady_clock::now() < coarse)
+        std::this_thread::sleep_until(coarse);
+#endif
+    while (steady_clock::now() < deadline) std::this_thread::yield();
 }
 
 int run_app(const LaunchOptions& options) {
@@ -107,6 +151,7 @@ int run_app(const LaunchOptions& options) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
+    glfwWindowHint(GLFW_STENCIL_BITS, 8); // Selection outline mask.
     glfwWindowHint(GLFW_MAXIMIZED, options.maximize ? GLFW_TRUE : GLFW_FALSE);
     if (options.screenshot && !options.show) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     auto* window = glfwCreateWindow(options.width, options.height, "CSF RWS Tools - rws-man",
@@ -118,7 +163,7 @@ int run_app(const LaunchOptions& options) {
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
     glfwSetDropCallback(window, drop_callback);
-    glfwSetWindowContentScaleCallback(window, content_scale_callback);
+    install_input_callbacks(window);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -144,7 +189,12 @@ int run_app(const LaunchOptions& options) {
             std::error_code error;
             std::filesystem::create_directories(state.config_dir, error);
             ini_path = (state.config_dir / "layout.ini").string();
-            io.IniFilename = ini_path.c_str();
+            // Screenshot runs read the saved layouts but never write them back, like
+            // settings.ini (a scripted run must not rearrange the user's panels).
+            if (options.screenshot && !options.save_settings)
+                ImGui::LoadIniSettingsFromDisk(ini_path.c_str());
+            else
+                io.IniFilename = ini_path.c_str();
         }
         auto loaded = rwsman::load_settings(settings_path);
         state.settings = std::move(loaded.settings);
@@ -164,14 +214,58 @@ int run_app(const LaunchOptions& options) {
             state.log.push(rwsman::LogLevel::warn, "Shortcut conflict: " + conflict.first + " / " +
                                                        conflict.second + " (" + conflict.shortcut + ")");
 
-        if (options.initial_path) rwsman::open_path(state, *options.initial_path);
+        if (options.project) rwsman::open_mission_project(state, *options.project);
+        else if (options.initial_path) rwsman::open_path(state, *options.initial_path);
         int frame = 0, settled = 0, last_busy_frame = 0;
         std::size_t next_command = 0;
         auto last_settings_change = std::chrono::steady_clock::now();
         bool settings_pending = false;
+        // Frame pacing: the previous frame decides whether this one waits for input
+        // and how soon it may start. Scripted screenshot runs never wait.
+        rwsman::FrameRateCounter frame_rate;
+        rwsman::FramePacing pacing;
+        auto frame_start = std::chrono::steady_clock::now();
+        // Scripted screenshot runs never wait for a save prompt.
+        bool closing_confirmed = options.screenshot.has_value();
 
-        while (!glfwWindowShouldClose(window)) {
-            glfwPollEvents();
+        while (true) {
+            if (glfwWindowShouldClose(window)) {
+                // Unsaved mission edits: ask first; the dialog closes the window.
+                if (!state.mission.editor || !state.mission.editor->dirty() || closing_confirmed) break;
+                glfwSetWindowShouldClose(window, GLFW_FALSE);
+                state.ui.pending_discard = [&closing_confirmed, window] {
+                    closing_confirmed = true;
+                    glfwSetWindowShouldClose(window, GLFW_TRUE);
+                };
+                state.ui.pending_discard_label = "Exiting";
+            }
+            if (pacing.min_frame_time > 0.0)
+                sleep_until_precise(frame_start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                      std::chrono::duration<double>(pacing.min_frame_time)));
+            const bool waited = pacing.wait_for_events;
+            if (waited) {
+                // Compositor traffic (Wayland frame callbacks, buffer releases after a
+                // swap) also ends a wait. Only input, a close request, or the timeout
+                // should draw a frame, so any other wake-up goes back to waiting.
+                const double wait_start = glfwGetTime();
+                const double input_before = last_input_time;
+                double remaining = pacing.wait_timeout;
+                while (true) {
+                    glfwWaitEventsTimeout(remaining);
+                    if (last_input_time != input_before || dropped_file || glfwWindowShouldClose(window))
+                        break;
+                    remaining = pacing.wait_timeout - (glfwGetTime() - wait_start);
+                    if (remaining <= 0.0) break;
+                }
+            } else {
+                glfwPollEvents();
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (!waited && frame > 0)
+                frame_rate.add(std::chrono::duration<double>(now - frame_start).count());
+            frame_start = now;
+            state.frame_stats.fps = frame_rate.fps();
+            state.ui.animating = false;
             if (dropped_file) {
                 rwsman::open_path(state, *dropped_file);
                 dropped_file.reset();
@@ -179,8 +273,8 @@ int run_app(const LaunchOptions& options) {
             rwsman::poll_mission_load(state);
             rwsman::poll_file_dialogs(state);
 
-            // Fonts and style follow the OS content scale and the user override.
-            content_scale_changed = false;
+            // Fonts and style follow the OS content scale and the user override
+            // (checked every frame; rebuilt only when one of them changed).
             rwsman::ui::update_fonts_and_style(window, state.settings.ui_scale);
 
             ImGui_ImplOpenGL3_NewFrame();
@@ -219,6 +313,7 @@ int run_app(const LaunchOptions& options) {
                 }
             }
 
+            state.preview.set_frame_timing(state.frame_stats.fps, state.frame_stats.cpu_ms);
             rwsman::ui::draw_frame(state);
 
             ImGui::Render();
@@ -250,7 +345,26 @@ int run_app(const LaunchOptions& options) {
                 }
             }
             ++frame;
+            state.frame_stats.cpu_ms =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frame_start).count();
             glfwSwapBuffers(window);
+
+            if (!options.screenshot) {
+                const auto& settings = state.settings;
+                rwsman::FramePacingInput input;
+                input.now = glfwGetTime();
+                input.last_input = last_input_time;
+                input.animating = state.ui.animating || state.preview.animating() ||
+                                  state.mission.animation_playing || !state.toasts.empty() ||
+                                  ImGui::IsAnyMouseDown() || dropped_file.has_value();
+                input.background_work = rwsman::mission_load_active(state) || state.dialog != nullptr;
+                input.text_input = io.WantTextInput;
+                input.focused = glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0;
+                input.iconified = glfwGetWindowAttrib(window, GLFW_ICONIFIED) != 0;
+                pacing = rwsman::decide_frame_pacing(
+                    {settings.idle_redraw, settings.fps_limit, settings.background_fps_limit}, input);
+                state.frame_stats.idle = pacing.wait_for_events;
+            }
 
             // Settings are saved shortly after the last change, and always at exit.
             if (state.settings_dirty) {

@@ -11,6 +11,10 @@
 #include <sstream>
 #include <stdexcept>
 
+#ifdef RWSMAN_HAVE_PAKMAN
+#include "pakman/archive.hpp"
+#endif
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -224,6 +228,18 @@ void publish_directory(const std::filesystem::path& temporary,
 
 std::string timestamp() {
     return std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+}
+
+// Full archive verification. An explicitly chosen pakman-cli is honoured;
+// otherwise the linked pak-man library does it when it is available.
+void verify_archive(const std::filesystem::path& archive, const std::filesystem::path& pakman_cli) {
+#ifdef RWSMAN_HAVE_PAKMAN
+    if (pakman_cli.empty() || pakman_cli == std::filesystem::path{"pakman-cli"}) {
+        (void)pakman::Archive::open(archive).verify(true);
+        return;
+    }
+#endif
+    run_process({process_argument(pakman_cli), "verify", process_argument(archive)});
 }
 
 } // namespace
@@ -564,6 +580,86 @@ DeploymentResult ModProject::deploy(const std::filesystem::path& staging,
     return result;
 }
 
+bool ModProject::builtin_pak_support() noexcept {
+#ifdef RWSMAN_HAVE_PAKMAN
+    return true;
+#else
+    return false;
+#endif
+}
+
+MissionPakResult ModProject::export_mission_pak(const std::filesystem::path& original_archive,
+                                                const std::filesystem::path& output_archive,
+                                                const MissionPakOptions& options) const {
+    if (!std::filesystem::is_regular_file(original_archive))
+        throw std::runtime_error("Original mission archive does not exist");
+    if (output_archive.empty()) throw std::runtime_error("Archive output path is required");
+    if (same_path(output_archive, original_archive))
+        throw std::runtime_error("Refusing to overwrite the original mission archive");
+    if (same_path(output_archive, source_root) || below(output_archive, source_root) ||
+        below(output_archive, workspace_root))
+        throw std::runtime_error("Archive output must not be inside the source or project tree");
+    if (std::filesystem::exists(output_archive) && !options.overwrite)
+        throw std::runtime_error("Archive already exists; pass --overwrite to replace it");
+    const auto validation = validate();
+    if (!validation.passed) throw std::runtime_error("Cannot export a project that fails validation");
+
+    MissionPakResult result;
+    result.archive_path = output_archive;
+    result.original_sha256 = file_hash(original_archive);
+    if (!output_archive.parent_path().empty())
+        std::filesystem::create_directories(output_archive.parent_path());
+#ifdef RWSMAN_HAVE_PAKMAN
+    std::vector<pakman::Replacement> replacements;
+    for (const auto& file : files)
+        replacements.push_back({path_string(file.relative_path), file.authored_path});
+    pakman::RebuildOptions rebuild;
+    rebuild.overwrite = options.overwrite;
+    const auto rebuilt = pakman::rebuild_archive(original_archive, replacements, output_archive, rebuild);
+    result.replaced = rebuilt.replaced;
+    result.added = rebuilt.added;
+    result.copied = rebuilt.copied;
+    result.packer = "pakman_core (built in)";
+#else
+    auto temporary = output_archive;
+    temporary += ".packaging-" + timestamp();
+    std::vector<std::string> arguments{process_argument(options.pakman_cli), "rebuild",
+                                       process_argument(original_archive), "-o",
+                                       process_argument(temporary)};
+    for (const auto& file : files) {
+        arguments.emplace_back("--replace");
+        arguments.push_back(path_string(file.relative_path) + "=" + process_argument(file.authored_path));
+    }
+    try {
+        run_process(arguments);
+        run_process({process_argument(options.pakman_cli), "verify", process_argument(temporary)});
+        publish_file(temporary, output_archive, options.overwrite);
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw;
+    }
+    result.replaced = files.size();
+    result.packer = "pakman-cli";
+#endif
+    result.archive_sha256 = file_hash(output_archive);
+    result.manifest_path = output_archive;
+    result.manifest_path += ".package.json";
+    std::ofstream manifest(result.manifest_path, std::ios::trunc);
+    manifest << "{\n  \"format_version\":1,\n  \"kind\":\"mission-replacement\",\n  \"archive\":\""
+             << json_escape(path_string(output_archive.filename())) << "\",\n  \"archive_sha256\":\""
+             << result.archive_sha256 << "\",\n  \"original\":\""
+             << json_escape(path_string(original_archive.filename())) << "\",\n  \"original_sha256\":\""
+             << result.original_sha256 << "\",\n  \"packer\":\"" << json_escape(result.packer)
+             << "\",\n  \"files\":[";
+    for (std::size_t i = 0; i < files.size(); ++i)
+        manifest << (i ? "," : "") << "\n    {\"path\":\"" << json_escape(path_string(files[i].relative_path))
+                 << "\",\"sha256\":\"" << files[i].output_sha256 << "\"}";
+    manifest << (files.empty() ? "" : "\n  ") << "]\n}\n";
+    if (!manifest) throw std::runtime_error("Cannot write PAK package manifest");
+    return result;
+}
+
 DeploymentResult ModProject::deploy_package(
     const std::filesystem::path& archive_path, const std::filesystem::path& test_root,
     const std::filesystem::path& game_relative_archive_path, const PakOptions& options,
@@ -583,7 +679,7 @@ DeploymentResult ModProject::deploy_package(
     const auto archive_hash = file_hash(archive_path);
     if (archive_hash != packaged_archive_hash(archive_path))
         throw std::runtime_error("Packaged archive hash differs from its package manifest");
-    run_process({process_argument(options.pakman_cli), "verify", process_argument(archive_path)});
+    verify_archive(archive_path, options.pakman_cli);
     const auto target = test_root / game_relative_archive_path;
     const bool existed = std::filesystem::is_regular_file(target);
     DeploymentResult result;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rwsman/history.hpp"
+#include "rwsman/viewport_overlays.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -48,6 +49,10 @@ struct Settings {
     static constexpr std::size_t max_recent_pairings = 8;
 
     std::filesystem::path resource_root;
+    // Game installation (holds maps/<Mission>.pak) and mission-editing projects.
+    // An empty projects_root means <config dir>/projects.
+    std::filesystem::path game_root;
+    std::filesystem::path projects_root;
     float ui_scale{1.0F}; // User override, clamped to 0.8..2.0.
     std::string theme{"dark"};
     std::string workspace{"scene"};
@@ -65,6 +70,14 @@ struct Settings {
     float move_speed{1.0F};
     bool invert_y{};
     int default_view_style{};
+    OverlayOptions overlays;
+
+    // Frame pacing: skip redraws while nothing changes, and optional frame-rate caps
+    // (0 = no cap beyond vsync). The background cap applies while unfocused.
+    bool idle_redraw{true};
+    int fps_limit{};
+    int background_fps_limit{15};
+    bool show_frame_stats{}; // CPU/GPU frame times and draw counts in the stats HUD.
 
     ExportPolicy export_policy{ExportPolicy::new_files_only};
 

@@ -19,9 +19,14 @@ void apply_viewport_settings(AppState& state);
 [[nodiscard]] std::filesystem::path next_screenshot_path(const AppState& state);
 bool pair_collision(AppState& state, const std::filesystem::path& candidate_path, bool remember);
 void load_document(AppState& state, const std::filesystem::path& path);
+// Opens a recent (main, collision) pair: loads the main file unless it is already
+// open, then pairs the collision companion with it.
+void open_pairing(AppState& state, const RecentPairing& pairing);
 // Starts loading a mission on a worker thread. The current mission stays until
-// poll_mission_load() commits the result.
-void start_mission_load(AppState& state, const std::filesystem::path& path);
+// poll_mission_load() commits the result. With `project`, the mod project's
+// edits are applied. Unsaved mission edits make it ask first, unless `discard`.
+void start_mission_load(AppState& state, const std::filesystem::path& path,
+                        std::optional<std::filesystem::path> project = std::nullopt, bool discard = false);
 // Call once per frame: commits a finished mission load or reports its failure.
 void poll_mission_load(AppState& state);
 void cancel_mission_load(AppState& state);

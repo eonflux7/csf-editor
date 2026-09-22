@@ -120,6 +120,12 @@ void Document::set_byte(const std::uint64_t offset, const std::byte value) {
     }
 }
 
+void Document::replace_bytes(std::vector<std::byte> bytes) {
+    bytes_ = std::move(bytes);
+    dirty_ = false;
+    parse();
+}
+
 void Document::parse() {
     chunks_.clear();
     scene_instances_.clear();

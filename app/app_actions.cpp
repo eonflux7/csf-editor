@@ -141,6 +141,8 @@ void apply_viewport_settings(AppState& state) {
     state.preview.set_invert_y(state.settings.invert_y);
     state.preview.set_view_style(state.settings.default_view_style);
     state.preview.set_show_hud(state.settings.show_hud);
+    state.preview.set_show_frame_stats(state.settings.show_frame_stats);
+    state.preview.set_overlay_options(state.settings.overlays);
 }
 
 std::filesystem::path next_screenshot_path(const AppState& state) {
@@ -170,7 +172,7 @@ std::filesystem::path next_screenshot_path(const AppState& state) {
 void restore_mission_overlays(AppState& state) {
     if (!state.mission.scene) return;
     const auto overlays = make_mission_overlays(*state.mission.scene);
-    state.preview.set_mission_overlays(overlays.points, overlays.lines);
+    state.preview.set_mission_overlays(overlays);
 }
 
 bool pair_collision(AppState& state, const std::filesystem::path& candidate_path,
@@ -288,9 +290,24 @@ void load_document(AppState& state, const std::filesystem::path& path) {
     }
 }
 
-void start_mission_load(AppState& state, const std::filesystem::path& path) {
+void open_pairing(AppState& state, const RecentPairing& pairing) {
+    if (!state.document || state.document->source_path() != pairing.main) {
+        load_document(state, pairing.main);
+        // A failed load keeps the previous document; never pair the companion with it.
+        if (!state.document || state.document->source_path() != pairing.main) return;
+    }
+    pair_collision(state, pairing.collision, false);
+}
+
+void start_mission_load(AppState& state, const std::filesystem::path& path,
+                        std::optional<std::filesystem::path> project, const bool discard) {
+    if (!discard && state.mission.editor && state.mission.editor->dirty()) {
+        state.ui.pending_discard = [&state, path, project] { start_mission_load(state, path, project, true); };
+        state.ui.pending_discard_label = "Loading " + path_utf8(path.filename());
+        return;
+    }
     if (!state.loader) state.loader = std::make_shared<MissionLoader>();
-    if (!state.loader->start(path, state.config_dir)) {
+    if (!state.loader->start(path, state.config_dir, project)) {
         state.warn("A mission is already loading; wait or cancel it first");
         return;
     }
@@ -331,7 +348,7 @@ void poll_mission_load(AppState& state) {
                                  : "Mission collision map is unresolved";
     state.preview.clear();
     state.preview.set_texture_catalog(mission.graph->textures());
-    state.preview.set_mission_overlays(result->overlays.points, result->overlays.lines);
+    state.preview.set_mission_overlays(result->overlays);
     state.preview.set_mission_actor_models(std::move(result->actor_models));
     state.display_names = resolve_chunk_display_names(
         state.document->chunks(), state.document->bytes(), state.document->scene_instances());
@@ -349,24 +366,19 @@ void poll_mission_load(AppState& state) {
     state.settings.add_recent_file(result->input, true);
     state.settings_dirty = true;
 
-    char seconds[16];
-    std::snprintf(seconds, sizeof(seconds), "%.2f", result->seconds);
-    const std::string success =
-        "Loaded mission " + path_utf8(mission.graph->scene_path()) + " (" + seconds + " s, " +
-        std::to_string(count_chunks(state.document->chunks(), 0x10)) + " clumps, " +
-        std::to_string(mission.scene->actors().size()) + " actors, " +
-        std::to_string(mission.scene->navigation_stats().points) + " nav points)";
-    state.ok(success);
     state.log.push(state.collision_document ? LogLevel::info : LogLevel::warn,
                    state.collision_status);
-    const auto problems = std::ranges::count_if(state.diagnostics, [](const auto& row) {
-        return row.severity != DiagnosticSeverity::note;
-    });
-    if (problems > 0)
+    if (const auto problems = state.diagnostic_problem_count(); problems > 0)
         state.log.push(LogLevel::warn, std::to_string(problems) +
                                            " diagnostics while loading (see the Diagnostics panel)");
-    // Last line: the success message stays the most recent entry in the status bar.
-    state.status = success;
+    // Logged last: the status bar shows the newest log line, and the warning count
+    // already has its own status segment.
+    char seconds[16];
+    std::snprintf(seconds, sizeof(seconds), "%.2f", result->seconds);
+    state.ok("Loaded mission " + path_utf8(mission.graph->scene_path()) + " (" + seconds + " s, " +
+             std::to_string(count_chunks(state.document->chunks(), 0x10)) + " clumps, " +
+             std::to_string(mission.scene->actors().size()) + " actors, " +
+             std::to_string(mission.scene->navigation_stats().points) + " nav points)");
 }
 
 void open_path(AppState& state, const std::filesystem::path& path) {

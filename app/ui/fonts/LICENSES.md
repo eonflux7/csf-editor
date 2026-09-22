@@ -6,8 +6,8 @@ fonts are embedded.
 
 | File | Font | Source | License |
 |---|---|---|---|
-| `plex_sans_regular.inc`, `plex_sans_semibold.inc` | IBM Plex Sans | https://github.com/IBM/plex | SIL Open Font License 1.1 |
-| `plex_mono_regular.inc` | IBM Plex Mono | https://github.com/IBM/plex | SIL Open Font License 1.1 |
+| `inter_regular.inc`, `inter_semibold.inc` | Inter 4.1 (`extras/ttf/Inter-Regular.ttf`, `Inter-SemiBold.ttf`) | https://github.com/rsms/inter | SIL Open Font License 1.1 |
+| `iosevka_term_regular.inc` | IosevkaTerm 34.8.1 (`PkgTTF-IosevkaTerm`, `IosevkaTerm-Regular.ttf`) | https://github.com/be5invis/Iosevka | SIL Open Font License 1.1 |
 | `lucide_subset.inc` | Lucide icon font (`lucide-static`) | https://lucide.dev | ISC License |
 
 `../icons.hpp` maps Lucide icon names to code points using the code point table
@@ -19,11 +19,15 @@ and rerun the script (see its docstring for the inputs).
 
 ---
 
-## IBM Plex (SIL Open Font License 1.1)
+## Inter and IosevkaTerm (SIL Open Font License 1.1)
 
-Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"
+Inter: Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
 
-This Font Software is licensed under the SIL Open Font License, Version 1.1.
+IosevkaTerm: Copyright (c) 2015-2026, Renzhi Li (aka. Belleve Invis, belleve@typeof.net)
+
+Both fonts are licensed under the SIL Open Font License, Version 1.1, and neither
+declares a Reserved Font Name. The embedded copies are subsets (see
+`tools/generate_ui_fonts.py`) and are not sold or distributed on their own.
 
 This license is copied below, and is also available with a FAQ at: http://scripts.sil.org/OFL
 

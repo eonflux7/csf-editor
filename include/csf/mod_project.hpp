@@ -55,6 +55,21 @@ struct PakOptions {
     bool overwrite{};
 };
 
+struct MissionPakOptions {
+    // Used only when this build has no built-in pak-man (see builtin_pak_support).
+    std::filesystem::path pakman_cli{"pakman-cli"};
+    bool overwrite{};
+};
+
+struct MissionPakResult {
+    std::filesystem::path archive_path;
+    std::filesystem::path manifest_path;
+    std::string archive_sha256;
+    std::string original_sha256;
+    std::size_t replaced{}, added{}, copied{};
+    std::string packer;
+};
+
 struct PackageResult {
     std::filesystem::path archive_path;
     std::filesystem::path manifest_path;
@@ -87,6 +102,16 @@ public:
     [[nodiscard]] PackageResult package(const std::filesystem::path& staging_root,
                                         const std::filesystem::path& archive_path,
                                         const PakOptions& options = {}) const;
+    // Rebuilds a complete replacement for a shipped mission archive (for
+    // example maps/Ransom.pak): the original's header, entry order, path bytes,
+    // duplicates, timestamps and unchanged compressed records are kept, and only
+    // the project's files are replaced or appended. The result is verified and
+    // written to a new path with an adjacent .package.json.
+    [[nodiscard]] MissionPakResult export_mission_pak(const std::filesystem::path& original_archive,
+                                                      const std::filesystem::path& output_archive,
+                                                      const MissionPakOptions& options = {}) const;
+    // True when pak-man's library is linked in; otherwise pakman-cli is run.
+    [[nodiscard]] static bool builtin_pak_support() noexcept;
     [[nodiscard]] std::filesystem::path resolve_overlay(
         const std::filesystem::path& staging_root,
         const std::filesystem::path& relative_path) const;

@@ -5,6 +5,7 @@
 #include "rws/decoded.hpp"
 #include "ui/theme.hpp"
 #include "rws/physics_inspection.hpp"
+#include "rwsman/viewport_overlays.hpp"
 
 #include <algorithm>
 #include <array>
@@ -25,53 +26,92 @@ rws::Vec3 rws_point(const csf::Vec3 value) {
 MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
     using Kind = GeometryPreview::MissionOverlayKind;
     MissionOverlays result;
-    const auto append_orientation = [&](const Kind kind, const std::uint32_t entry,
-                                        const csf::Vec3 position, const float heading,
-                                        const float pitch, const ImU32 color,
-                                        const float length = 120.0F) {
-        const auto origin = rws_point(position);
-        result.lines.push_back(
-            {kind, entry, origin,
-             {origin.x + std::sin(heading) * std::cos(pitch) * length,
-              origin.y - std::sin(pitch) * length,
-              origin.z + std::cos(heading) * std::cos(pitch) * length},
-             color, true});
+    const auto facing = [](const float heading, const float pitch) {
+        return rws::Vec3{std::sin(heading) * std::cos(pitch), -std::sin(pitch),
+                         std::cos(heading) * std::cos(pitch)};
     };
-    for (const auto& actor : scene.actors())
-        if (const auto spawn = scene.actor_spawn_position(actor)) {
-            const auto color = ui::viewport_color(ui::Viewport::actor);
-            result.points.push_back({Kind::actor, actor.source.entry_index,
-                                     rws_point(*spawn), actor.name.value_or("Actor"), color});
-            append_orientation(
-                Kind::actor, actor.source.entry_index, *spawn,
-                csf::mission_actor_angle_radians(actor.heading.value_or(0)),
-                csf::mission_actor_angle_radians(actor.pitch.value_or(0)), color);
-        }
-    std::map<std::pair<std::int32_t, std::int32_t>, csf::Vec3> nav_points;
-    for (const auto& group : scene.navigation())
+    const auto relate = [&](const std::uint32_t a, const std::uint32_t b) {
+        if (a != b) result.relations.emplace_back(a, b);
+    };
+    // Things an area can contain, for area membership relations.
+    struct Placed {
+        std::uint32_t entry;
+        csf::Vec3 position;
+    };
+    std::vector<Placed> placed;
+
+    std::map<std::pair<std::int32_t, std::int32_t>, std::pair<csf::Vec3, std::uint32_t>> nav_points;
+    std::map<std::int32_t, std::string> group_names;
+    for (const auto& group : scene.navigation()) {
+        const auto type = group.type.value_or(0);
+        const char* type_name = type == 0 ? "ground" : type == 1 ? "climb" : "special";
+        std::string name = group.name && !group.name->empty()
+                               ? *group.name
+                               : "Group " + (group.id ? std::to_string(*group.id) : std::string("?"));
+        name += std::string(" (") + type_name + ")";
+        if (group.id) group_names[*group.id] = name;
+        const auto color = type == 0   ? ui::viewport_color(ui::Viewport::nav_ground)
+                           : type == 1 ? ui::viewport_color(ui::Viewport::nav_climb)
+                                       : ui::viewport_color(ui::Viewport::nav_special);
         for (const auto& point : group.points)
             if (point.position && point.group_id && point.id) {
-                nav_points[{*point.group_id, *point.id}] = *point.position;
-                const auto color = group.type.value_or(0) == 0
-                                       ? ui::viewport_color(ui::Viewport::nav_ground)
-                                   : group.type == 1 ? ui::viewport_color(ui::Viewport::nav_climb)
-                                                     : ui::viewport_color(ui::Viewport::nav_special);
-                result.points.push_back({Kind::navigation_point, point.source.entry_index,
-                                         rws_point(*point.position),
-                                         point.name.value_or("Nav point"), color});
-                append_orientation(Kind::navigation_point, point.source.entry_index,
-                                   *point.position, point.heading.value_or(0),
-                                   point.pitch.value_or(0), color, 70.0F);
+                nav_points[{*point.group_id, *point.id}] = {*point.position, point.source.entry_index};
+                GeometryPreview::MissionOverlayPoint marker{
+                    Kind::navigation_point, point.source.entry_index, rws_point(*point.position),
+                    point.name.value_or("Nav point"), color, name};
+                if (point.heading || point.pitch)
+                    marker.heading = facing(point.heading.value_or(0), point.pitch.value_or(0));
+                result.points.push_back(std::move(marker));
+                placed.push_back({point.source.entry_index, *point.position});
             }
+    }
+    for (const auto& actor : scene.actors())
+        if (const auto spawn = scene.actor_spawn_position(actor)) {
+            std::string sublayer = actor.faction && !actor.faction->empty()
+                                       ? "Faction: " + *actor.faction
+                                   : actor.class_id ? "Class " + std::to_string(*actor.class_id)
+                                                    : std::string("Unclassified");
+            GeometryPreview::MissionOverlayPoint marker{
+                Kind::actor, actor.source.entry_index, rws_point(*spawn), actor.name.value_or("Actor"),
+                ui::viewport_color(ui::Viewport::actor), std::move(sublayer)};
+            marker.heading = facing(csf::mission_actor_angle_radians(actor.heading.value_or(0)),
+                                    csf::mission_actor_angle_radians(actor.pitch.value_or(0)));
+            result.points.push_back(std::move(marker));
+            placed.push_back({actor.source.entry_index, *spawn});
+            if (actor.group && actor.cell)
+                if (const auto found = nav_points.find({*actor.group, *actor.cell});
+                    found != nav_points.end())
+                    relate(actor.source.entry_index, found->second.second);
+        }
+    // A link and its reverse become one undirected line.
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t> link_lines;
     auto add_connection = [&](const csf::NavConnection& connection) {
         if (!connection.valid) return;
         const auto origin = nav_points.find({*connection.origin_group, *connection.origin_point});
         const auto destination =
             nav_points.find({*connection.destination_group, *connection.destination_point});
-        if (origin != nav_points.end() && destination != nav_points.end())
-            result.lines.push_back({Kind::navigation_connection, connection.source.entry_index,
-                                    rws_point(origin->second), rws_point(destination->second),
-                                    ui::viewport_color(ui::Viewport::nav_link), true});
+        if (origin == nav_points.end() || destination == nav_points.end()) return;
+        const auto entry = connection.source.entry_index;
+        const auto from = origin->second.second, to = destination->second.second;
+        relate(entry, from);
+        relate(entry, to);
+        if (const auto reverse = link_lines.find({to, from}); reverse != link_lines.end()) {
+            auto& line = result.lines[reverse->second];
+            if (!line.partner_entry) {
+                line.partner_entry = entry;
+                line.directed = false;
+                relate(line.source_entry, entry);
+                return;
+            }
+        }
+        link_lines[{from, to}] = result.lines.size();
+        const auto group = group_names.find(*connection.origin_group);
+        GeometryPreview::MissionOverlayLine line{Kind::navigation_connection, entry,
+                                                 rws_point(origin->second.first),
+                                                 rws_point(destination->second.first),
+                                                 ui::viewport_color(ui::Viewport::nav_link), true};
+        if (group != group_names.end()) line.sublayer = group->second;
+        result.lines.push_back(std::move(line));
     };
     for (const auto& group : scene.navigation())
         for (const auto& connection : group.connections)
@@ -80,63 +120,84 @@ MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
         add_connection(connection);
     for (const auto& dummy : scene.dummies())
         if (dummy.position) {
-            const auto color = ui::viewport_color(ui::Viewport::dummy);
-            result.points.push_back({Kind::dummy, dummy.source.entry_index,
-                                     rws_point(*dummy.position), dummy.name.value_or("Dummy"),
-                                     color});
-            append_orientation(Kind::dummy, dummy.source.entry_index, *dummy.position,
-                               dummy.heading.value_or(0), dummy.pitch.value_or(0), color);
+            GeometryPreview::MissionOverlayPoint marker{
+                Kind::dummy, dummy.source.entry_index, rws_point(*dummy.position),
+                dummy.name.value_or("Dummy"), ui::viewport_color(ui::Viewport::dummy)};
+            marker.heading = facing(dummy.heading.value_or(0), dummy.pitch.value_or(0));
+            result.points.push_back(std::move(marker));
+            placed.push_back({dummy.source.entry_index, *dummy.position});
         }
-    for (const auto& area : scene.areas()) {
-        for (std::size_t i = 0; i < area.points.size(); ++i) {
-            const auto& a = area.points[i];
-            const auto& b = area.points[(i + 1) % area.points.size()];
-            result.lines.push_back({Kind::area, area.source.entry_index, rws_point(a), rws_point(b),
-                                    ui::viewport_color(ui::Viewport::area)});
-            if (area.height && std::isfinite(*area.height) && *area.height != 0) {
-                const csf::Vec3 top_a{a.x, a.y + *area.height, a.z};
-                const csf::Vec3 top_b{b.x, b.y + *area.height, b.z};
-                result.lines.push_back({Kind::area, area.source.entry_index, rws_point(top_a),
-                                        rws_point(top_b), ui::viewport_color(ui::Viewport::area, 0.71F)});
-                result.lines.push_back({Kind::area, area.source.entry_index, rws_point(a),
-                                        rws_point(top_a), ui::viewport_color(ui::Viewport::area, 0.52F)});
-            }
-        }
-    }
     for (const auto& light : scene.lights())
         if (light.position) {
-            const auto packed = light.color.value_or(0xFFF591U);
-            const auto color = ui::rgb_u32(packed);
-            result.points.push_back({Kind::light, light.source.entry_index,
-                                     rws_point(*light.position), light.name.value_or("Light"),
-                                     color});
-            if (light.radius && *light.radius > 0 && std::isfinite(*light.radius)) {
-                constexpr int segments = 24;
-                for (int i = 0; i < segments; ++i) {
-                    const float a = static_cast<float>(i) * 6.283185307F / segments;
-                    const float b = static_cast<float>(i + 1) * 6.283185307F / segments;
-                    const auto center = *light.position;
-                    result.lines.push_back({Kind::light,
-                                            light.source.entry_index,
-                                            {center.x + std::cos(a) * *light.radius, center.y,
-                                             center.z + std::sin(a) * *light.radius},
-                                            {center.x + std::cos(b) * *light.radius, center.y,
-                                             center.z + std::sin(b) * *light.radius},
-                                            ui::with_alpha(color, 120)});
-                }
-            }
+            GeometryPreview::MissionOverlayPoint marker{
+                Kind::light, light.source.entry_index, rws_point(*light.position),
+                light.name.value_or("Light"), ui::rgb_u32(light.color.value_or(0xFFF591U))};
+            if (light.radius && *light.radius > 0 && std::isfinite(*light.radius))
+                marker.radius = *light.radius;
+            result.points.push_back(std::move(marker));
+            placed.push_back({light.source.entry_index, *light.position});
         }
     for (const auto& effect : scene.effects()) {
         if (!effect.dummy_id) continue;
         const auto dummy = std::ranges::find_if(
             scene.dummies(), [&](const auto& value) { return value.id == effect.dummy_id; });
         if (dummy == scene.dummies().end() || !dummy->position) continue;
-        const auto color = ui::viewport_color(ui::Viewport::effect);
-        result.points.push_back({Kind::effect, effect.source.entry_index,
-                                 rws_point(*dummy->position), effect.name.value_or("Effect"),
-                                 color});
-        append_orientation(Kind::effect, effect.source.entry_index, *dummy->position,
-                           dummy->heading.value_or(0), dummy->pitch.value_or(0), color, 90.0F);
+        GeometryPreview::MissionOverlayPoint marker{
+            Kind::effect, effect.source.entry_index, rws_point(*dummy->position),
+            effect.name.value_or("Effect"), ui::viewport_color(ui::Viewport::effect),
+            effect.class_id ? "Class " + std::to_string(*effect.class_id) : std::string{}};
+        marker.heading = facing(dummy->heading.value_or(0), dummy->pitch.value_or(0));
+        result.points.push_back(std::move(marker));
+        relate(effect.source.entry_index, dummy->source.entry_index);
+    }
+    for (const auto& area : scene.areas()) {
+        if (area.points.size() < 2) continue;
+        const auto entry = area.source.entry_index;
+        const auto edge = ui::viewport_color(ui::Viewport::area);
+        const bool has_height = area.height && std::isfinite(*area.height) && *area.height != 0;
+        const float height = has_height ? *area.height : 0.0F;
+        const auto raised = [&](const csf::Vec3& p) { return rws::Vec3{p.x, p.y + height, p.z}; };
+        for (std::size_t i = 0; i < area.points.size(); ++i) {
+            const auto& a = area.points[i];
+            const auto& b = area.points[(i + 1) % area.points.size()];
+            result.lines.push_back({Kind::area, entry, rws_point(a), rws_point(b), edge});
+            if (!has_height) continue;
+            result.lines.push_back({Kind::area, entry, raised(a), raised(b),
+                                    ui::viewport_color(ui::Viewport::area, 0.71F)});
+            result.lines.push_back({Kind::area, entry, rws_point(a), raised(a),
+                                    ui::viewport_color(ui::Viewport::area, 0.52F)});
+            // Side wall.
+            const auto fill = ui::viewport_color(ui::Viewport::area_fill);
+            result.faces.push_back({Kind::area, entry, rws_point(a), rws_point(b), raised(b), fill});
+            result.faces.push_back({Kind::area, entry, rws_point(a), raised(b), raised(a), fill});
+        }
+        // Floor and roof caps, triangulated on the X/Z plane.
+        std::vector<Point2> outline;
+        outline.reserve(area.points.size());
+        for (const auto& p : area.points) outline.push_back({p.x, p.z});
+        const auto fill = ui::viewport_color(ui::Viewport::area_fill);
+        for (const auto& t : triangulate_polygon(outline)) {
+            const auto &a = area.points[t[0]], &b = area.points[t[1]], &c = area.points[t[2]];
+            result.faces.push_back({Kind::area, entry, rws_point(a), rws_point(b), rws_point(c), fill});
+            if (has_height)
+                result.faces.push_back({Kind::area, entry, raised(a), raised(b), raised(c), fill});
+        }
+        // Membership: inside the outline and within the vertical extent (a flat
+        // area counts everything above or below it).
+        float low = area.points.front().y, high = low;
+        for (const auto& p : area.points) {
+            low = std::min(low, p.y);
+            high = std::max(high, p.y);
+        }
+        if (has_height) {
+            low = std::min(low, low + height);
+            high = std::max(high, high + height);
+        }
+        for (const auto& item : placed) {
+            if (has_height && (item.position.y < low - 1.0F || item.position.y > high + 1.0F))
+                continue;
+            if (point_in_polygon(outline, item.position.x, item.position.z)) relate(entry, item.entry);
+        }
     }
     return result;
 }
@@ -170,18 +231,19 @@ void append_cutscene_camera_overlays(
                 const rws::Vec3 left{tip.x - right.x * width, tip.y, tip.z - right.z * width};
                 const rws::Vec3 right_tip{tip.x + right.x * width, tip.y, tip.z + right.z * width};
                 const auto color = ui::viewport_color(ui::Viewport::cutscene_camera);
+                const auto cutscene = path_utf8(path.filename());
                 output.points.push_back({Kind::cutscene_camera, dummy->source.entry_index, origin,
-                                         dummy->name.value_or("Cutscene camera") + " [" +
-                                             path_utf8(path.filename()) + "]",
-                                         color});
-                output.lines.push_back(
-                    {Kind::cutscene_camera, dummy->source.entry_index, origin, tip, color});
-                output.lines.push_back(
-                    {Kind::cutscene_camera, dummy->source.entry_index, origin, left, color});
-                output.lines.push_back(
-                    {Kind::cutscene_camera, dummy->source.entry_index, origin, right_tip, color});
-                output.lines.push_back(
-                    {Kind::cutscene_camera, dummy->source.entry_index, left, right_tip, color});
+                                         dummy->name.value_or("Cutscene camera") + " [" + cutscene +
+                                             "]",
+                                         color, cutscene, forward});
+                for (const auto& [a, b] : {std::pair{origin, tip}, std::pair{origin, left},
+                                           std::pair{origin, right_tip}, std::pair{left, right_tip}}) {
+                    GeometryPreview::MissionOverlayLine line{Kind::cutscene_camera,
+                                                             dummy->source.entry_index, a, b, color};
+                    line.detail = true;
+                    line.sublayer = cutscene;
+                    output.lines.push_back(std::move(line));
+                }
             }
 }
 

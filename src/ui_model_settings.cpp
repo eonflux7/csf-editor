@@ -130,6 +130,10 @@ void Settings::clamp() noexcept {
     ui_scale = std::clamp(ui_scale, 0.8F, 2.0F);
     if (!std::isfinite(move_speed) || move_speed <= 0.0F) move_speed = 1.0F;
     move_speed = std::clamp(move_speed, 0.05F, 50.0F);
+    const auto clamp_fps = [](int& value) { value = value <= 0 ? 0 : std::clamp(value, 5, 1000); };
+    clamp_fps(fps_limit);
+    clamp_fps(background_fps_limit);
+    overlays.clamp();
     if (recent_files.size() > max_recent_files) recent_files.resize(max_recent_files);
     if (recent_pairings.size() > max_recent_pairings) recent_pairings.resize(max_recent_pairings);
 }
@@ -169,6 +173,8 @@ std::string serialize_settings(const Settings& settings) {
     out << "# CSF RWS Tools settings. Safe to edit; unknown lines are ignored.\n";
     out << "version = " << Settings::current_version << '\n';
     out << "resource_root = " << escape(path_text(settings.resource_root)) << '\n';
+    out << "game_root = " << escape(path_text(settings.game_root)) << '\n';
+    out << "projects_root = " << escape(path_text(settings.projects_root)) << '\n';
     out << "ui_scale = " << format_float(settings.ui_scale) << '\n';
     out << "theme = " << escape(settings.theme) << '\n';
     out << "workspace = " << escape(settings.workspace) << '\n';
@@ -180,6 +186,30 @@ std::string serialize_settings(const Settings& settings) {
     out << "move_speed = " << format_float(settings.move_speed) << '\n';
     out << "invert_y = " << (settings.invert_y ? "true" : "false") << '\n';
     out << "default_view_style = " << settings.default_view_style << '\n';
+    out << "idle_redraw = " << (settings.idle_redraw ? "true" : "false") << '\n';
+    out << "fps_limit = " << settings.fps_limit << '\n';
+    out << "background_fps_limit = " << settings.background_fps_limit << '\n';
+    out << "show_frame_stats = " << (settings.show_frame_stats ? "true" : "false") << '\n';
+    const auto& overlays = settings.overlays;
+    out << "overlay_labels = " << overlay_labels_name(overlays.labels) << '\n';
+    out << "overlay_headings = " << overlay_detail_name(overlays.headings) << '\n';
+    out << "overlay_details = " << overlay_detail_name(overlays.details) << '\n';
+    out << "overlay_occluded_opacity = " << format_float(overlays.occluded_opacity) << '\n';
+    out << "overlay_fade_distance = " << format_float(overlays.fade_distance) << '\n';
+    out << "overlay_merge_pixels = " << format_float(overlays.merge_pixels) << '\n';
+    out << "overlay_icon_limit = " << overlays.icon_limit << '\n';
+    out << "overlay_legend = " << (overlays.show_legend ? "true" : "false") << '\n';
+    out << "overlay_minimap = " << (overlays.show_minimap ? "true" : "false") << '\n';
+    out << "overlay_dim_filtered = " << (overlays.dim_filtered ? "true" : "false") << '\n';
+    out << "overlay_hidden =";
+    for (std::size_t i = 0; i < overlays.hidden_layers.size(); ++i)
+        out << (i == 0 ? " " : "\t") << escape(overlays.hidden_layers[i]);
+    out << '\n';
+    for (const auto& preset : overlays.presets) {
+        out << "overlay_preset = " << escape(preset.name);
+        for (const auto& layer : preset.hidden_layers) out << '\t' << escape(layer);
+        out << '\n';
+    }
     out << "export_policy = "
         << (settings.export_policy == ExportPolicy::new_files_only ? "new_files_only"
                                                                    : "confirm_overwrite")
@@ -244,6 +274,10 @@ SettingsLoad parse_settings(const std::string_view text) {
                 warn("written by a newer version; unknown settings are ignored");
         } else if (key == "resource_root") {
             s.resource_root = path_from_text(unescape(value));
+        } else if (key == "game_root") {
+            s.game_root = path_from_text(unescape(value));
+        } else if (key == "projects_root") {
+            s.projects_root = path_from_text(unescape(value));
         } else if (key == "ui_scale") {
             ok = parse_float(value, s.ui_scale);
         } else if (key == "theme") {
@@ -266,6 +300,52 @@ SettingsLoad parse_settings(const std::string_view text) {
             ok = parse_bool(value, s.invert_y);
         } else if (key == "default_view_style") {
             ok = parse_int(value, s.default_view_style);
+        } else if (key == "idle_redraw") {
+            ok = parse_bool(value, s.idle_redraw);
+        } else if (key == "fps_limit") {
+            ok = parse_int(value, s.fps_limit);
+        } else if (key == "background_fps_limit") {
+            ok = parse_int(value, s.background_fps_limit);
+        } else if (key == "show_frame_stats") {
+            ok = parse_bool(value, s.show_frame_stats);
+        } else if (key == "overlay_labels") {
+            const auto parsed = parse_overlay_labels(value);
+            if (parsed) s.overlays.labels = *parsed;
+            ok = parsed.has_value();
+        } else if (key == "overlay_headings" || key == "overlay_details") {
+            const auto parsed = parse_overlay_detail(value);
+            if (parsed) (key == "overlay_headings" ? s.overlays.headings : s.overlays.details) = *parsed;
+            ok = parsed.has_value();
+        } else if (key == "overlay_occluded_opacity") {
+            ok = parse_float(value, s.overlays.occluded_opacity);
+        } else if (key == "overlay_fade_distance") {
+            ok = parse_float(value, s.overlays.fade_distance);
+        } else if (key == "overlay_merge_pixels") {
+            ok = parse_float(value, s.overlays.merge_pixels);
+        } else if (key == "overlay_icon_limit") {
+            ok = parse_int(value, s.overlays.icon_limit);
+        } else if (key == "overlay_legend") {
+            ok = parse_bool(value, s.overlays.show_legend);
+        } else if (key == "overlay_minimap") {
+            ok = parse_bool(value, s.overlays.show_minimap);
+        } else if (key == "overlay_dim_filtered") {
+            ok = parse_bool(value, s.overlays.dim_filtered);
+        } else if (key == "overlay_hidden") {
+            s.overlays.hidden_layers.clear();
+            if (!value.empty())
+                for (const auto part : split_tabs(value))
+                    if (!part.empty()) s.overlays.hidden_layers.push_back(unescape(part));
+        } else if (key == "overlay_preset") {
+            const auto parts = split_tabs(value);
+            ok = !parts.empty() && !parts[0].empty();
+            if (ok) {
+                OverlayPreset preset{unescape(parts[0]), {}};
+                for (std::size_t i = 1; i < parts.size(); ++i)
+                    if (!parts[i].empty()) preset.hidden_layers.push_back(unescape(parts[i]));
+                std::erase_if(s.overlays.presets,
+                              [&](const OverlayPreset& other) { return other.name == preset.name; });
+                s.overlays.presets.push_back(std::move(preset));
+            }
         } else if (key == "export_policy") {
             if (value == "new_files_only")
                 s.export_policy = ExportPolicy::new_files_only;

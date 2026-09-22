@@ -345,37 +345,75 @@ Measurement measure_points(const Vec3 a, const Vec3 b) noexcept {
     return result;
 }
 
+namespace {
+
+// Slab test: does the ray reach the box within [0, limit]?
+bool ray_box_hit(const CollisionRay& ray, const Vec3 inf, const Vec3 sup, const float limit) {
+    const auto axis = [](const Vec3 value, const std::size_t i) {
+        return i == 0 ? value.x : (i == 1 ? value.y : value.z);
+    };
+    float near_value = 0.0F, far_value = limit;
+    for (std::size_t i = 0; i < 3; ++i) {
+        const float origin = axis(ray.origin, i), direction = axis(ray.direction, i);
+        if (std::abs(direction) < 1.0e-12F) {
+            if (origin < axis(inf, i) || origin > axis(sup, i)) return false;
+            continue;
+        }
+        float a = (axis(inf, i) - origin) / direction;
+        float b = (axis(sup, i) - origin) / direction;
+        if (a > b) std::swap(a, b);
+        near_value = std::max(near_value, a);
+        far_value = std::min(far_value, b);
+        if (near_value > far_value) return false;
+    }
+    return far_value >= 0.0F;
+}
+
+struct RayTriangleHit {
+    float distance{}, u{}, v{};
+};
+
+// Möller-Trumbore, both faces.
+std::optional<RayTriangleHit> ray_triangle_hit(const CollisionRay& ray, const Vec3 a, const Vec3 b,
+                                               const Vec3 c) {
+    const Vec3 e1{b.x - a.x, b.y - a.y, b.z - a.z}, e2{c.x - a.x, c.y - a.y, c.z - a.z};
+    const Vec3 p{ray.direction.y * e2.z - ray.direction.z * e2.y,
+                 ray.direction.z * e2.x - ray.direction.x * e2.z,
+                 ray.direction.x * e2.y - ray.direction.y * e2.x};
+    const float determinant = e1.x * p.x + e1.y * p.y + e1.z * p.z;
+    if (std::abs(determinant) < 1.0e-10F) return std::nullopt;
+    const float inverse = 1.0F / determinant;
+    const Vec3 offset{ray.origin.x - a.x, ray.origin.y - a.y, ray.origin.z - a.z};
+    const float u = (offset.x * p.x + offset.y * p.y + offset.z * p.z) * inverse;
+    if (u < -1.0e-6F || u > 1.000001F) return std::nullopt;
+    const Vec3 q{offset.y * e1.z - offset.z * e1.y, offset.z * e1.x - offset.x * e1.z,
+                 offset.x * e1.y - offset.y * e1.x};
+    const float v =
+        (ray.direction.x * q.x + ray.direction.y * q.y + ray.direction.z * q.z) * inverse;
+    if (v < -1.0e-6F || u + v > 1.000001F) return std::nullopt;
+    const float distance = (e2.x * q.x + e2.y * q.y + e2.z * q.z) * inverse;
+    if (distance <= 0.0F) return std::nullopt;
+    return RayTriangleHit{distance, u, v};
+}
+
+Vec3 point_along(const CollisionRay& ray, const float distance) {
+    return {ray.origin.x + ray.direction.x * distance, ray.origin.y + ray.direction.y * distance,
+            ray.origin.z + ray.direction.z * distance};
+}
+
+} // namespace
+
 std::optional<CollisionHit> pick_collision_worlds(const std::span<const RecoveredWorld> worlds,
                                                   const std::span<const std::byte> bytes,
                                                   const CollisionRay& ray,
                                                   const std::span<const CollisionClipPlane> clips) {
-    const auto axis = [](const Vec3 value, const std::size_t i) {
-        return i == 0 ? value.x : (i == 1 ? value.y : value.z);
-    };
-    const auto bounds_hit = [&](const Vec3 inf, const Vec3 sup, float limit) {
-        float near_value = 0.0F, far_value = limit;
-        for (std::size_t i = 0; i < 3; ++i) {
-            const float origin = axis(ray.origin, i), direction = axis(ray.direction, i);
-            if (std::abs(direction) < 1.0e-12F) {
-                if (origin < axis(inf, i) || origin > axis(sup, i)) return false;
-                continue;
-            }
-            float a = (axis(inf, i) - origin) / direction;
-            float b = (axis(sup, i) - origin) / direction;
-            if (a > b) std::swap(a, b);
-            near_value = std::max(near_value, a);
-            far_value = std::min(far_value, b);
-            if (near_value > far_value) return false;
-        }
-        return far_value >= 0.0F;
-    };
     float closest = std::numeric_limits<float>::max();
     std::optional<CollisionHit> hit;
     for (std::size_t wi = 0; wi < worlds.size(); ++wi) {
         const auto& world = worlds[wi];
         for (std::size_t si = 0; si < world.sectors.size(); ++si) {
             const auto& sector = world.sectors[si];
-            if (!bounds_hit(sector.bounding_box_inf, sector.bounding_box_sup, closest)) continue;
+            if (!ray_box_hit(ray, sector.bounding_box_inf, sector.bounding_box_sup, closest)) continue;
             for (std::int32_t ti = 0; ti < sector.triangle_count; ++ti) {
                 const auto triangle =
                     decode_recovered_world_triangle_resolved(world, si, ti, bytes);
@@ -383,49 +421,67 @@ std::optional<CollisionHit> pick_collision_worlds(const std::span<const Recovere
                 const auto& a = triangle.value->vertices[0];
                 const auto& b = triangle.value->vertices[1];
                 const auto& c = triangle.value->vertices[2];
-                const Vec3 e1{b.x - a.x, b.y - a.y, b.z - a.z}, e2{c.x - a.x, c.y - a.y, c.z - a.z};
-                const Vec3 p{ray.direction.y * e2.z - ray.direction.z * e2.y,
-                             ray.direction.z * e2.x - ray.direction.x * e2.z,
-                             ray.direction.x * e2.y - ray.direction.y * e2.x};
-                const float determinant = e1.x * p.x + e1.y * p.y + e1.z * p.z;
-                if (std::abs(determinant) < 1.0e-10F) continue;
-                const float inverse = 1.0F / determinant;
-                const Vec3 offset{ray.origin.x - a.x, ray.origin.y - a.y, ray.origin.z - a.z};
-                const float u = (offset.x * p.x + offset.y * p.y + offset.z * p.z) * inverse;
-                if (u < -1.0e-6F || u > 1.000001F) continue;
-                const Vec3 q{offset.y * e1.z - offset.z * e1.y, offset.z * e1.x - offset.x * e1.z,
-                             offset.x * e1.y - offset.y * e1.x};
-                const float v =
-                    (ray.direction.x * q.x + ray.direction.y * q.y + ray.direction.z * q.z) *
-                    inverse;
-                if (v < -1.0e-6F || u + v > 1.000001F) continue;
-                const float distance = (e2.x * q.x + e2.y * q.y + e2.z * q.z) * inverse;
-                if (distance <= 0.0F || distance >= closest) continue;
-                const Vec3 position{ray.origin.x + ray.direction.x * distance,
-                                    ray.origin.y + ray.direction.y * distance,
-                                    ray.origin.z + ray.direction.z * distance};
+                const auto crossing = ray_triangle_hit(ray, a, b, c);
+                if (!crossing || crossing->distance >= closest) continue;
+                const auto position = point_along(ray, crossing->distance);
                 if (!collision_point_visible(position, clips)) continue;
+                const Vec3 e1{b.x - a.x, b.y - a.y, b.z - a.z}, e2{c.x - a.x, c.y - a.y, c.z - a.z};
                 Vec3 normal{e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z,
                             e1.x * e2.y - e1.y * e2.x};
                 const float length =
                     std::sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
                 if (length <= 1.0e-10F) continue;
                 normal = {normal.x / length, normal.y / length, normal.z / length};
-                closest = distance;
+                closest = crossing->distance;
                 hit = CollisionHit{wi,
                                    si,
                                    ti,
                                    triangle.value->material_slot,
                                    sector.chunk_offset,
                                    triangle.value->source_offset,
-                                   distance,
+                                   crossing->distance,
                                    position,
                                    normal,
-                                   {1.0F - u - v, u, v}};
+                                   {1.0F - crossing->u - crossing->v, crossing->u, crossing->v}};
             }
         }
     }
     return hit;
+}
+
+int count_collision_walls(const std::span<const RecoveredWorld> worlds,
+                          const std::span<const std::byte> bytes, const CollisionRay& ray,
+                          const float max_distance, const float merge_distance,
+                          const std::span<const CollisionClipPlane> clips) {
+    if (!(max_distance > 0.0F)) return 0;
+    std::vector<float> crossings;
+    for (const auto& world : worlds) {
+        for (std::size_t si = 0; si < world.sectors.size(); ++si) {
+            const auto& sector = world.sectors[si];
+            if (!ray_box_hit(ray, sector.bounding_box_inf, sector.bounding_box_sup, max_distance))
+                continue;
+            for (std::int32_t ti = 0; ti < sector.triangle_count; ++ti) {
+                const auto triangle =
+                    decode_recovered_world_triangle_resolved(world, si, ti, bytes);
+                if (!triangle) continue;
+                const auto& t = triangle.value->vertices;
+                const auto crossing = ray_triangle_hit(ray, t[0], t[1], t[2]);
+                if (!crossing || crossing->distance >= max_distance) continue;
+                if (!collision_point_visible(point_along(ray, crossing->distance), clips)) continue;
+                crossings.push_back(crossing->distance);
+            }
+        }
+    }
+    // Hits on shared edges or coplanar layers count once; each wall has two faces,
+    // while a one-sided surface (terrain, a single plane) still counts as a wall.
+    std::ranges::sort(crossings);
+    int surfaces = 0;
+    float last = -std::numeric_limits<float>::max();
+    for (const float distance : crossings) {
+        if (distance - last > merge_distance) ++surfaces;
+        last = distance;
+    }
+    return (surfaces + 1) / 2;
 }
 
 RecoveredWorld recover_world(const Chunk& world, const std::span<const std::byte> bytes) {

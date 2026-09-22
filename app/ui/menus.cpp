@@ -43,11 +43,7 @@ void draw_recent_pairings(AppState& state) {
     const auto pairings = state.settings.recent_pairings;
     for (const auto& pair : pairings) {
         const auto label = path_utf8(pair.main.filename()) + " + " + path_utf8(pair.collision.filename());
-        if (ImGui::MenuItem(label.c_str())) {
-            if (!state.document || state.document->source_path() != pair.main)
-                load_document(state, pair.main);
-            if (state.document) pair_collision(state, pair.collision, false);
-        }
+        if (ImGui::MenuItem(label.c_str())) open_pairing(state, pair);
     }
     ImGui::EndMenu();
 }

@@ -6,7 +6,19 @@
 
 namespace rwsman {
 
-enum class DialogKind { document, mission, companion, resource_root };
+enum class DialogKind {
+    document,
+    mission,
+    companion,
+    resource_root,
+    game_root,          // Game installation folder (holds maps/<Mission>.pak).
+    projects_root,      // Folder that new mission projects are created in.
+    open_project,       // Mission project folder to open.
+    save_project,       // Folder for a new mission project.
+    export_original,    // Shipped mission archive, for the export dialog.
+    export_output,      // Where the rebuilt mission archive is written.
+    import_donor,       // Another unpacked mission to import from.
+};
 
 // Opens a native file or folder dialog without blocking the frame loop. Only one
 // dialog is open at a time; further requests are ignored until it closes. On

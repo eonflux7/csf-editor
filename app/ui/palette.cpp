@@ -142,7 +142,7 @@ void draw_palette(AppState& state) {
                              viewport->WorkPos.y + viewport->WorkSize.y * 0.14F},
                             ImGuiCond_Always, {0.5F, 0.0F});
     ImGui::SetNextWindowSize({width, 0.0F});
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {10.0F, 8.0F});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {10.0F * ui_scale(), 8.0F * ui_scale()});
     ImGui::PushStyleColor(ImGuiCol_Border, color(Token::accent, 0.5F) );
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
@@ -208,11 +208,14 @@ void draw_palette(AppState& state) {
             const ImVec2 start = ImGui::GetCursorScreenPos();
             if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_None, {0.0F, row_height - 2.0F}))
                 activated = i;
-            if (ImGui::IsItemHovered() && ImGui::GetIO().MouseDelta.x != 0.0F)
+            // Hover moves the cursor only when the mouse moves, so a still pointer
+            // does not fight the arrow keys.
+            const auto delta = ImGui::GetIO().MouseDelta;
+            if (ImGui::IsItemHovered() && (delta.x != 0.0F || delta.y != 0.0F))
                 state.ui.palette_cursor = i;
             if (selected && keyboard_moved) ImGui::SetScrollHereY();
             const float right = start.x + ImGui::GetContentRegionAvail().x;
-            ImGui::SetCursorScreenPos({start.x + 4.0F, start.y});
+            ImGui::SetCursorScreenPos({start.x + 4.0F * ui_scale(), start.y});
             const bool disabled = row.command && row.command->enabled && !row.command->enabled();
             if (disabled) ImGui::BeginDisabled();
             ImGui::PushStyleColor(ImGuiCol_Text, color(selected ? Token::accent : Token::text_dim));
@@ -236,7 +239,8 @@ void draw_palette(AppState& state) {
             if (!tail.empty()) {
                 const float tail_width = ImGui::CalcTextSize(tail.c_str()).x;
                 ImGui::SameLine();
-                ImGui::SetCursorScreenPos({std::max(right - tail_width - 6.0F, ImGui::GetCursorScreenPos().x + 8.0F),
+                ImGui::SetCursorScreenPos({std::max(right - tail_width - 6.0F * ui_scale(),
+                                                    ImGui::GetCursorScreenPos().x + 8.0F * ui_scale()),
                                            start.y});
                 ImGui::TextUnformatted(tail.c_str());
             }

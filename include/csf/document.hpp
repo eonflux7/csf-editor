@@ -83,6 +83,9 @@ class Document {
 public:
     [[nodiscard]] static Document load(const std::filesystem::path& path);
     [[nodiscard]] static Document from_bytes(std::vector<std::byte> bytes);
+    // Parses in-memory bytes that represent `source_path` (for example an edited copy).
+    [[nodiscard]] static Document from_bytes(std::vector<std::byte> bytes,
+                                             std::filesystem::path source_path);
     [[nodiscard]] static bool sniff(std::span<const std::byte> bytes) noexcept;
 
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return source_path_; }

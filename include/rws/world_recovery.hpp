@@ -129,6 +129,12 @@ decode_recovered_world_triangle_resolved(const RecoveredWorld& world, std::size_
 [[nodiscard]] std::optional<CollisionHit>
 pick_collision_worlds(std::span<const RecoveredWorld> worlds, std::span<const std::byte> bytes,
                       const CollisionRay& ray, std::span<const CollisionClipPlane> clips = {});
+// Walls crossed by the ray within `max_distance`: surface hits closer together
+// than `merge_distance` merge, and each pair of faces counts as one wall.
+[[nodiscard]] int count_collision_walls(std::span<const RecoveredWorld> worlds,
+                                        std::span<const std::byte> bytes, const CollisionRay& ray,
+                                        float max_distance, float merge_distance,
+                                        std::span<const CollisionClipPlane> clips = {});
 [[nodiscard]] bool collision_point_visible(Vec3 point,
                                            std::span<const CollisionClipPlane> clips) noexcept;
 [[nodiscard]] Measurement measure_points(Vec3 a, Vec3 b) noexcept;

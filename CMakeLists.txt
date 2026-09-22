@@ -26,16 +26,22 @@ endif()
 
 add_library(csf_core
     src/csf_animation_catalog.cpp
+    src/csf_animation_slots.cpp
     src/csf_authoring.cpp
     src/csf_cmo.cpp
     src/csf_document.cpp
     src/csf_export.cpp
     src/csf_mission.cpp
+    src/csf_mission_edit.cpp
     src/csf_mission_scene.cpp
     src/csf_mod_project.cpp
     src/csf_object_database.cpp
     src/csf_overlay.cpp
     src/csf_program.cpp
+    src/csf_script_check.cpp
+    src/csf_script_signatures.cpp
+    src/csf_source_text.cpp
+    src/csf_tree.cpp
 )
 add_library(csf::core ALIAS csf_core)
 target_include_directories(csf_core PUBLIC include)
@@ -46,6 +52,21 @@ else()
     target_compile_options(csf_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# Mission PAK export links pak-man's archive library when its source tree is
+# available (by default the sibling ../pak-man checkout). Without it, csf-mod
+# and the GUI run an external pakman-cli instead.
+set(RWSMAN_PAKMAN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../pak-man" CACHE PATH
+    "pak-man source tree linked for built-in mission PAK export")
+if(EXISTS "${RWSMAN_PAKMAN_DIR}/CMakeLists.txt")
+    set(PAKMAN_CORE_ONLY ON CACHE BOOL "" FORCE)
+    add_subdirectory("${RWSMAN_PAKMAN_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/pakman" EXCLUDE_FROM_ALL)
+    target_link_libraries(csf_core PRIVATE pakman_core)
+    target_compile_definitions(csf_core PRIVATE RWSMAN_HAVE_PAKMAN=1)
+    message(STATUS "Mission PAK export: built in (${RWSMAN_PAKMAN_DIR})")
+else()
+    message(STATUS "Mission PAK export: external pakman-cli (pak-man source not found)")
+endif()
+
 # GUI-free helpers behind the workbench: settings, command registry, fuzzy
 # search, navigation history, the operation log, and symbol indexes. It has no
 # ImGui, GLFW, or OpenGL dependency, so the core-only build and the tests cover it.
@@ -54,6 +75,7 @@ add_library(rwsman_ui_model STATIC
     src/ui_model_commands.cpp
     src/ui_model_diagnostics.cpp
     src/ui_model_discovery.cpp
+    src/ui_model_frame_pacing.cpp
     src/ui_model_fuzzy.cpp
     src/ui_model_history.cpp
     src/ui_model_index_builders.cpp
@@ -61,6 +83,7 @@ add_library(rwsman_ui_model STATIC
     src/ui_model_mission_lookup.cpp
     src/ui_model_search.cpp
     src/ui_model_settings.cpp
+    src/ui_model_viewport_overlays.cpp
 )
 add_library(rwsman::ui_model ALIAS rwsman_ui_model)
 target_include_directories(rwsman_ui_model PUBLIC include)
@@ -156,6 +179,9 @@ if(RWSMAN_BUILD_GUI)
         app/commands.cpp
         app/file_dialogs.cpp
         app/geometry_preview.cpp
+        app/geometry_preview_editing.cpp
+        app/geometry_preview_overlays.cpp
+        app/mission_editing.cpp
         app/mission_loader.cpp
         app/mission_overlays.cpp
         app/navigation.cpp
@@ -174,6 +200,7 @@ if(RWSMAN_BUILD_GUI)
         app/ui/menus.cpp
         app/ui/property_grid.cpp
         app/ui/mission_details.cpp
+        app/ui/mission_editor.cpp
         app/ui/overlays.cpp
         app/ui/preferences.cpp
         app/ui/palette.cpp

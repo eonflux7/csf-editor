@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """Regenerates the embedded UI fonts and icon header under app/ui/.
 
-The GUI embeds three subsetted, compressed fonts so the build never downloads
-or depends on system fonts:
+The GUI embeds subsetted, compressed fonts so the build never downloads or
+depends on system fonts:
 
-  * IBM Plex Sans (Regular, SemiBold) - chrome text        (SIL OFL 1.1)
-  * IBM Plex Mono (Regular)            - IDs, offsets, values (SIL OFL 1.1)
-  * Lucide icon font                   - toolbar/tree glyphs (ISC)
+  * Inter (Regular, SemiBold)  - chrome text          (SIL OFL 1.1)
+  * IosevkaTerm (Regular)      - IDs, offsets, values (SIL OFL 1.1)
+  * Lucide icon font           - toolbar/tree glyphs  (ISC)
 
 Inputs (put them in one directory, see app/ui/fonts/LICENSES.md for sources):
-  IBMPlexSans-Regular.ttf  IBMPlexSans-SemiBold.ttf  IBMPlexMono-Regular.ttf
-  lucide.ttf               IconsLucide.h
+  Inter-Regular.ttf  Inter-SemiBold.ttf    (extras/ttf/ in the Inter release zip)
+  IosevkaTerm-Regular.ttf                  (PkgTTF-IosevkaTerm-<version>.zip)
+  lucide.ttf         IconsLucide.h         (not needed with --text-only)
 
 Requires: fonttools (`pip install fonttools`) and a C++ compiler. ImGui's
 binary_to_compressed_c.cpp is compiled from an ImGui source checkout.
 
   tools/generate_ui_fonts.py --sources DIR --imgui build/_deps/imgui-src
+
+--text-only regenerates only the text fonts and keeps the committed Lucide
+subset and app/ui/icons.hpp; lucide.ttf and IconsLucide.h must come from the
+same Lucide release, so update them together.
 """
 import argparse
 import re
@@ -39,16 +44,16 @@ check ellipsis dot folder package globe mountain component bookmark keyboard
 command
 """.split()
 
-# Text ranges kept from the Plex families: Latin, punctuation, arrows, shapes.
+# Text ranges kept from the text fonts: Latin, punctuation, arrows, shapes.
 TEXT_UNICODES = (
     "U+0020-007E,U+00A0-00FF,U+0100-017F,U+2010-2027,U+2030-203A,U+20AC,"
     "U+2190-2193,U+2212,U+2264-2265,U+25A0-25CF,U+2713-2714,U+2022,U+00B7"
 )
 
 FONTS = [
-    ("IBMPlexSans-Regular.ttf", "plex_sans_regular", True),
-    ("IBMPlexSans-SemiBold.ttf", "plex_sans_semibold", True),
-    ("IBMPlexMono-Regular.ttf", "plex_mono_regular", True),
+    ("Inter-Regular.ttf", "inter_regular", True),
+    ("Inter-SemiBold.ttf", "inter_semibold", True),
+    ("IosevkaTerm-Regular.ttf", "iosevka_term_regular", True),
 ]
 
 
@@ -61,6 +66,8 @@ def main():
     parser.add_argument("--sources", required=True, type=Path)
     parser.add_argument("--imgui", required=True, type=Path)
     parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[1] / "app" / "ui")
+    parser.add_argument("--text-only", action="store_true",
+                        help="regenerate only the text fonts; keep the Lucide subset and icons.hpp")
     args = parser.parse_args()
     fonts_dir = args.out / "fonts"
     fonts_dir.mkdir(parents=True, exist_ok=True)
@@ -83,6 +90,8 @@ def main():
                 f"--unicodes={TEXT_UNICODES}", "--layout-features=kern,liga", "--no-hinting",
                 f"--output-file={subset}")
             embed(subset, symbol)
+        if args.text_only:
+            return
 
         header = (args.sources / "IconsLucide.h").read_text()
         table = {m.group(1): int(m.group(2), 16) for m in re.finditer(

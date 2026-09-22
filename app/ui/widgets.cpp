@@ -13,6 +13,8 @@ void section(const char* label) {
     std::string upper(label);
     for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     ImGui::Spacing();
+    // The hairline ends at the right edge of the current column or group, not the window.
+    const float x1 = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
     ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
     ImGui::PushFont(font(Font::sans_bold));
     ImGui::TextUnformatted(upper.c_str());
@@ -23,7 +25,6 @@ void section(const char* label) {
     const ImVec2 text_min = ImGui::GetItemRectMin();
     const float y = (text_min.y + text_max.y) * 0.5F;
     const float x0 = text_max.x + ImGui::GetStyle().ItemSpacing.x;
-    const float x1 = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
     if (x1 > x0) ImGui::GetWindowDrawList()->AddLine({x0, y}, {x1, y}, color_u32(Token::line));
 }
 

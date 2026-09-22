@@ -106,6 +106,17 @@ enum class Viewport : std::uint8_t {
     physics_body,
     physics_ragdoll,
     physics_joint,
+    area_fill,          // Translucent area volume faces.
+    marker_outline,     // Dark rim around overlay markers.
+    hover,              // Hovered overlay marker and lines.
+    related,            // Markers related to the selection (focus mode).
+    cluster,            // Merged marker fill.
+    cluster_text,
+    label_background,
+    offscreen,          // Edge arrow toward an off-screen selection.
+    minimap_background,
+    minimap_view,       // Camera footprint on the minimap.
+    slice_band,         // Height slice limits.
     count
 };
 [[nodiscard]] ImU32 viewport_color(Viewport color, float alpha = 1.0F);

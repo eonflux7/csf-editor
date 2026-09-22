@@ -10,17 +10,24 @@
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <map>
+#include <span>
+#include <string>
 
 namespace rwsman::ui {
 
 void draw_preferences(AppState& state) {
     if (!state.ui.show_preferences) return;
     auto& settings = state.settings;
-    ImGui::SetNextWindowSize({520.0F * ui_scale(), 560.0F * ui_scale()}, ImGuiCond_FirstUseEver);
+    const auto* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_FirstUseEver, {0.5F, 0.5F});
+    ImGui::SetNextWindowSize({560.0F * ui_scale(), std::min(700.0F * ui_scale(), viewport->WorkSize.y * 0.9F)},
+                             ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Preferences", &state.ui.show_preferences)) {
         ImGui::End();
         return;
@@ -51,9 +58,40 @@ void draw_preferences(AppState& state) {
     }
     dim_text("%zu missions found. The Missions tab and the start page list them.", state.discovered.size());
 
+    section("Mission editing");
+    // Paths edited as text keep a buffer while the field is active.
+    const auto path_setting = [&](const char* id, const char* hint, std::filesystem::path& value,
+                                  const DialogKind dialog) {
+        static std::map<std::string, std::array<char, 512>> buffers;
+        auto& buffer = buffers[id];
+        const auto text = path_utf8(value);
+        const auto input_id = std::string("##") + id;
+        const bool editing = ImGui::GetActiveID() == ImGui::GetID(input_id.c_str());
+        if (!editing) std::snprintf(buffer.data(), buffer.size(), "%s", text.c_str());
+        ImGui::SetNextItemWidth(-90.0F * ui_scale());
+        ImGui::InputTextWithHint(input_id.c_str(), hint, buffer.data(), buffer.size());
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            value = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(buffer.data()),
+                                                        std::strlen(buffer.data())));
+            changed();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button((std::string("Browse...##") + id).c_str())) request_file_dialog(state, dialog, value);
+    };
+    ImGui::TextUnformatted("Game installation");
+    path_setting("game_root", "folder with maps/<Mission>.pak", settings.game_root, DialogKind::game_root);
+    ImGui::TextUnformatted("Mission projects");
+    path_setting("projects_root", path_utf8(state.config_dir / "projects").c_str(), settings.projects_root,
+                 DialogKind::projects_root);
+    dim_text("The export dialog finds the shipped archive in the game folder. New projects are "
+             "created in the projects folder (empty: the per-user config folder).");
+
     section("Appearance");
-    static float pending_scale = 0.0F;
-    if (pending_scale == 0.0F || ImGui::IsWindowAppearing()) pending_scale = settings.ui_scale * 100.0F;
+    // The slider edits a copy so the fonts are rebuilt once, on release. It follows
+    // the setting otherwise (the zoom shortcuts change it too).
+    static float pending_scale = 100.0F;
+    const ImGuiID scale_slider = ImGui::GetID("UI scale");
+    if (ImGui::GetActiveID() != scale_slider) pending_scale = settings.ui_scale * 100.0F;
     ImGui::SetNextItemWidth(220.0F * ui_scale());
     ImGui::SliderFloat("UI scale", &pending_scale, 80.0F, 200.0F, "%.0f%%");
     if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -61,7 +99,8 @@ void draw_preferences(AppState& state) {
         settings.clamp();
         changed();
     }
-    dim_text("Applied when you release the slider. The OS display scale is applied on top of this.");
+    dim_text("Applied when you release the slider; Ctrl+= / Ctrl+- / Ctrl+0 zoom from anywhere. "
+             "The OS display scale is applied on top of this.");
     const char* themes[] = {"dark", "high-contrast"};
     int theme_index = theme_name() == "high-contrast" ? 1 : 0;
     ImGui::SetNextItemWidth(220.0F * ui_scale());
@@ -95,6 +134,38 @@ void draw_preferences(AppState& state) {
         changed();
     }
 
+    section("Performance");
+    // Choices, not free sliders: a cap is only useful at common refresh rates.
+    const auto fps_combo = [&](const char* label, int& value, const std::span<const int> choices,
+                               const char* none) {
+        const auto name = [&](const int fps) { return fps == 0 ? std::string(none) : std::to_string(fps) + " fps"; };
+        ImGui::SetNextItemWidth(220.0F * ui_scale());
+        bool edited = false;
+        if (ImGui::BeginCombo(label, name(value).c_str())) {
+            for (const int choice : choices)
+                if (ImGui::Selectable(name(choice).c_str(), choice == value)) {
+                    value = choice;
+                    edited = true;
+                }
+            ImGui::EndCombo();
+        }
+        return edited;
+    };
+    bool performance_changed = false;
+    constexpr std::array<int, 8> foreground_choices{0, 30, 60, 90, 120, 144, 165, 240};
+    constexpr std::array<int, 6> background_choices{0, 5, 10, 15, 30, 60};
+    performance_changed |= fps_combo("Frame rate limit", settings.fps_limit, foreground_choices, "Display refresh");
+    performance_changed |= fps_combo("When unfocused", settings.background_fps_limit, background_choices, "Same as focused");
+    performance_changed |= ImGui::Checkbox("Pause redraws when idle", &settings.idle_redraw);
+    dim_text("Stops drawing while nothing moves; input, camera motion, and playing animations "
+             "resume it at once.");
+    performance_changed |= ImGui::Checkbox("Frame timings in the stats HUD", &settings.show_frame_stats);
+    if (performance_changed) {
+        settings.clamp();
+        apply_viewport_settings(state);
+        changed();
+    }
+
     section("Exports");
     int policy = settings.export_policy == ExportPolicy::new_files_only ? 0 : 1;
     if (ImGui::RadioButton("New files only (default)", &policy, 0)) {
@@ -119,7 +190,6 @@ void draw_preferences(AppState& state) {
         set_theme(settings.theme);
         apply_theme(ui_scale());
         apply_viewport_settings(state);
-        pending_scale = 0.0F;
         changed();
         state.info("Settings reset to defaults (resource root kept)");
     }

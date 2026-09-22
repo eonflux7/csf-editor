@@ -2,6 +2,11 @@
 #include "csf/cmo.hpp"
 #include "csf/document.hpp"
 #include "csf/export.hpp"
+#include "csf/mission_edit.hpp"
+#include "csf/mod_project.hpp"
+#include "csf/script_signatures.hpp"
+#include "csf/source_text.hpp"
+#include "csf/tree.hpp"
 #include "csf/mission.hpp"
 #include "csf/mission_scene.hpp"
 #include "csf/object_database.hpp"
@@ -18,17 +23,20 @@
 #include "rwsman/commands.hpp"
 #include "rwsman/diagnostics.hpp"
 #include "rwsman/discovery.hpp"
+#include "rwsman/frame_pacing.hpp"
 #include "rwsman/fuzzy.hpp"
 #include "rwsman/history.hpp"
 #include "rwsman/index_builders.hpp"
 #include "rwsman/log.hpp"
 #include "rwsman/search_index.hpp"
 #include "rwsman/settings.hpp"
+#include "rwsman/viewport_overlays.hpp"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -512,6 +520,8 @@ void test_settings_model() {
     using namespace rwsman;
     Settings settings;
     settings.resource_root = "/games/CSF unpacked/with\ttab";
+    settings.game_root = "/games/Commandos Strike Force";
+    settings.projects_root = "/home/user/csf projects";
     settings.ui_scale = 1.25F;
     settings.theme = "dark";
     settings.workspace = "mission";
@@ -520,7 +530,22 @@ void test_settings_model() {
     settings.invert_y = true;
     settings.move_speed = 2.5F;
     settings.default_view_style = 2;
+    settings.idle_redraw = false;
+    settings.fps_limit = 60;
+    settings.background_fps_limit = 0;
+    settings.show_frame_stats = true;
     settings.export_policy = ExportPolicy::confirm_overwrite;
+    settings.overlays.labels = OverlayOptions::Labels::nearby;
+    settings.overlays.headings = OverlayOptions::Detail::selected;
+    settings.overlays.details = OverlayOptions::Detail::all;
+    settings.overlays.occluded_opacity = 0.5F;
+    settings.overlays.fade_distance = 0.0F;
+    settings.overlays.merge_pixels = 9.0F;
+    settings.overlays.icon_limit = 40;
+    settings.overlays.show_minimap = true;
+    settings.overlays.dim_filtered = false;
+    settings.overlays.hidden_layers = {"light", "nav_link"};
+    settings.overlays.presets = {{"Mine\ttab", {"actor", "area"}}, {"Empty", {}}};
     settings.add_recent_file("/maps/FR01.scn", true);
     settings.add_recent_file("/models/back\\slash\nnewline.rpc", false);
     settings.add_recent_file("/maps/FR01.scn", true); // Moves to the front, no duplicate.
@@ -566,8 +591,18 @@ void test_settings_model() {
     const auto garbage = parse_settings(binary);
     CHECK(garbage.settings == Settings{} && garbage.warnings.size() == 1);
     // Out-of-range values are clamped instead of trusted.
-    const auto clamped = parse_settings("ui_scale = 40\nmove_speed = -2\n");
+    const auto clamped = parse_settings("ui_scale = 40\nmove_speed = -2\n"
+                                        "overlay_occluded_opacity = 7\noverlay_merge_pixels = -3\n"
+                                        "overlay_hidden = b\ta\tb\n");
     CHECK(clamped.settings.ui_scale == 2.0F && clamped.settings.move_speed == 1.0F);
+    const auto clamped_fps = parse_settings("fps_limit = 2\nbackground_fps_limit = -4\n");
+    CHECK(clamped_fps.settings.fps_limit == 5 && clamped_fps.settings.background_fps_limit == 0);
+    CHECK(clamped.settings.overlays.occluded_opacity == 1.0F &&
+          clamped.settings.overlays.merge_pixels == 0.0F &&
+          (clamped.settings.overlays.hidden_layers == std::vector<std::string>{"a", "b"}));
+    const auto bad_overlay = parse_settings("overlay_labels = sometimes\noverlay_preset = \n");
+    CHECK(bad_overlay.warnings.size() == 2 &&
+          bad_overlay.settings.overlays.labels == OverlayOptions::Labels::hovered);
     // A newer file version still yields the values this version understands.
     const auto newer = parse_settings("version = 99\ntheme = light\n");
     CHECK(newer.settings.theme == "light" && newer.warnings.size() == 1);
@@ -791,20 +826,739 @@ void test_search_index_grouping() {
     CHECK(index.size() == 0 && index.indices_of(SymbolKind::script).empty());
 }
 
+std::vector<std::byte> compile_source(const std::string_view text) {
+    csf::Tree tree;
+    const std::string prefix("CSFFBS\0\x7F", 8);
+    std::ranges::transform(prefix, tree.prefix.begin(), [](const char c) { return static_cast<std::byte>(c); });
+    tree.version = 1;
+    tree.roots = csf::parse_source_text(text);
+    return tree.serialize();
+}
+
+void test_csf_tree_and_source_text() {
+    // The canonical writer: labelled scalars are an identifier entry (value
+    // 0xFFFFFFFF) plus a value entry, containers carry their label inline, and
+    // each element's first entry links to its next sibling.
+    csf::Tree tree;
+    std::ranges::transform(std::string("CSFFBS\0\x7F", 8), tree.prefix.begin(),
+                           [](const char c) { return static_cast<std::byte>(c); });
+    tree.version = 3;
+    auto root = csf::TreeNode::array(std::nullopt);
+    root.children.push_back(csf::TreeNode::integer(".ID", 7));
+    auto position = csf::TreeNode::group(".POS");
+    position.children = {csf::TreeNode::real(std::nullopt, 1.5F), csf::TreeNode::real(std::nullopt, -0.0F)};
+    root.children.push_back(position);
+    root.children.push_back(csf::TreeNode::string(".NOMBRE", "A"));
+    root.children.push_back(csf::TreeNode::string(".OTRO", "A"));
+    root.children.push_back(csf::TreeNode::string(".VACIO", ""));
+    tree.roots.push_back(root);
+    const auto bytes = tree.serialize();
+    const auto document = csf::Document::from_bytes(bytes);
+    CHECK(document.state() == csf::ParseState::exact);
+    CHECK(document.header().version == 3);
+    const auto& entries = document.entries();
+    CHECK(entries.size() == 12);
+    CHECK(entries[0].raw_value_or_size == 5 && entries[0].raw_next_entry == 0);
+    CHECK(entries[1].kind() == csf::ValueKind::identifier && entries[1].raw_value_or_size == 0xFFFFFFFFU);
+    CHECK(entries[1].raw_next_entry == 3 && entries[2].raw_next_entry == 0);
+    CHECK(entries[3].raw_identifier_index == 1 && entries[3].raw_next_entry == 6);
+    CHECK(entries[4].raw_next_entry == 5 && entries[5].raw_next_entry == 0);
+    // Strings are interned in first-use order; the empty string is zero bytes.
+    CHECK(document.strings().size() == 2 && document.strings()[1].bytes.empty());
+    CHECK(document.identifiers().size() == 5);
+    CHECK(csf::Tree::from_document(document) == tree);
+    CHECK(csf::Tree::from_document(document).serialize() == bytes);
+
+    // Source text reproduces the exact tree, including raw real bits.
+    auto special = root;
+    special.children.push_back(csf::TreeNode::real(".NAN", 0));
+    special.children.back().raw = 0x7FC00001U;
+    special.children.push_back(csf::TreeNode::string("DA\xD1O", "caf\xE9 \"x\"\n"));
+    special.children.push_back(csf::TreeNode::string(".RAW", ""));
+    special.children.back().text = std::string("abc", 3); // no final NUL
+    special.children.push_back(csf::TreeNode::integer("weird label", -3));
+    const auto printed = csf::to_source_text(special);
+    CHECK(printed.find("DA\xC3\x91O:") != std::string::npos);
+    CHECK(printed.find("\"abc\"~") != std::string::npos);
+    CHECK(printed.find("%7fc00001") != std::string::npos);
+    CHECK(printed.find("-0.0") != std::string::npos);
+    CHECK(csf::parse_source_value(printed) == special);
+
+    // Instruction blocks are indented by control flow and parse back exactly.
+    const auto script = csf::parse_source_value(R"([
+      .ID 22
+      .ACCIONES {
+        PAUSE (RANDOM (NUMERO 0.0) (NUMERO 2.0))  # comment
+        WHILE (BOOL TRUE)
+          PLAY_ANMBDD (THIS) (ANM_BDD 1937)
+          IF (CMP (VAR 8388608)
+                  (NUMERO 1.0))
+            PAUSE (NUMERO 4.0)
+          ELSE
+          ENDIF
+        WEND
+      }
+    ])");
+    const auto* actions = script.child(".ACCIONES");
+    CHECK(actions && actions->children.size() == 8);
+    CHECK(actions->children[0].children.size() == 2);
+    CHECK(actions->children[3].children[1].children.size() == 3);
+    CHECK(actions->children[2].children[2].children[1].as_int() == 1937);
+    CHECK(actions->children[0].children[1].children[1].children[1].as_real() == 0.0F);
+    const auto block = csf::to_source_text(script);
+    CHECK(block.find("    WHILE (BOOL TRUE)\n      PLAY_ANMBDD (THIS) (ANM_BDD 1937)") != std::string::npos);
+    CHECK(block.find("\n      ELSE\n") != std::string::npos);
+    CHECK(csf::parse_source_value(block) == script);
+    CHECK(csf::check_script_against_signatures(script).empty() ||
+          !csf::check_script_against_signatures(script).empty());
+    const auto unknown = csf::check_script_against_signatures(
+        csf::parse_source_value("[ .ACCIONES {\n NOT_A_REAL_OPCODE 1\n} ]"));
+    CHECK(unknown.size() == 1 && unknown.front().opcode == "NOT_A_REAL_OPCODE");
+
+    // Errors carry positions.
+    try {
+        (void)csf::parse_source_value("[\n  .ID 1\n  .POS (1.0 2.0\n");
+        CHECK(false);
+    } catch (const csf::SourceTextError& error) {
+        CHECK(error.line() == 3);
+    }
+    try {
+        (void)csf::parse_source_value("[ .ID 99999999999 ]");
+        CHECK(false);
+    } catch (const csf::SourceTextError&) {
+    }
+    CHECK(csf::utf8_to_windows_1252("\xE2\x82\xAC") == std::string("\x80"));
+    CHECK(!csf::utf8_to_windows_1252("\xE4\xB8\xAD"));
+    CHECK(csf::windows_1252_to_utf8("\x80\xF1") == "\xE2\x82\xAC\xC3\xB1");
+    CHECK(std::ranges::is_sorted(csf::animation_slot_names()));
+    CHECK(std::ranges::binary_search(csf::animation_slot_names(), std::string_view("DISTRAIDO_IDLE_ARMA1")));
+}
+
+void write_text_file(const std::filesystem::path& path, const std::string_view text) {
+    std::vector<std::byte> bytes(text.size());
+    std::ranges::transform(text, bytes.begin(), [](const char c) { return static_cast<std::byte>(c); });
+    write_bytes(path, bytes);
+}
+
+void test_actor_look() {
+    const auto root = std::filesystem::temp_directory_path() / "rws-man-actor-look-tests";
+    std::filesystem::remove_all(root);
+    const auto package = root / "Mission";
+    const auto map = package / "Maps" / "M1";
+    write_bytes(map / "M1.scn", compile_source(R"([
+  .VERSION 17
+  .BICHOS (
+    [ .NOMBRE A .ID 1 .CLASSID 10 .POS (0.0 0.0 0.0) .ANGULO 0.0 ]
+    [ .NOMBRE B .ID 5 .CLASSID 10 .POS (100.0 0.0 50.0) .ANGULO 90.0 ]
+  )
+])"));
+    write_bytes(package / "BDD" / "Objetos.bdd", compile_source(R"([ .VERSION 10 .LISTADATOS (
+  [ .ID 10 .NOMBRE Soldier .TIPO ALEMAN .HOMBRE 1 .MODELO "Models\\Char\\AlSt.dff"
+    .LOD1_NOMBRE "Models\\Char\\AlStL1.dff" .LOD1_DIST 2500.0 .LOD2_DIST 0.0 .COMPOR SOLDADO
+    .BBOX [ .INF (-60.0 -0.5 -19.0) .SUP (60.0 180.0 15.0) ]
+    .PHYSIC [ .TIPO FILE .MODEL_FILE "Models\\ragdoll.rws" .MASS 1.0 .BOUNCE 0.1 .SLIDE 2.0 ] ]
+  [ .ID 29 .NOMBRE Bidon .TIPO DECORATIVO .HOMBRE 1 .MODELO "Models\\Deco\\bidon.dff"
+    .LOD1_DIST 0.0 .LOD2_DIST 0.0 .COMPOR NINGUNO
+    .BBOX [ .INF (-34.0 -1.5 -34.0) .SUP (34.0 98.0 34.0) ]
+    .PHYSIC [ .TIPO FILE .MODEL_FILE "Models\\Deco\\bidon.rws" .MASS 1.0 .BOUNCE 0.5 .SLIDE 0.7 ] ]
+) ])"));
+    std::vector<std::byte> phd;
+    for (const auto b : {0xFD, 0xFC, 0xFC, 0xFC}) phd.push_back(static_cast<std::byte>(b));
+    append_u32(phd, 1);
+    append_u32(phd, 1);
+    append_u32(phd, 3);
+    append_csf_string(phd, "Models\\ragdoll.rws", false);
+    append_csf_string(phd, "Models\\Char\\AlSt.dff", false);
+    for (const float value : {-60.0F, -0.5F, -19.0F, 60.0F, 180.0F, 15.0F, 1.0F, 0.1F, 2.0F}) append_f32(phd, value);
+    write_bytes(map / "M1.phd", phd);
+
+    auto editor = csf::MissionEditor::open(map / "M1.scn", package);
+    const auto objects_file = *editor.file_of_kind(csf::MissionFileKind::objects);
+    const auto physics_file = *editor.file_of_kind(csf::MissionFileKind::physics_index);
+    const auto objects_before = editor.files()[objects_file].bytes();
+    const auto class_of = [&](const std::int32_t actor) {
+        for (const auto& value : editor.scene().actors())
+            if (value.id == actor) return value.class_id.value_or(0);
+        return 0;
+    };
+
+    // The actor moves to a copy of its class with the barrel's look.
+    auto result = editor.set_actor_look(5, 29);
+    CHECK(result.applied && class_of(5) == 500 && class_of(1) == 10);
+    CHECK(std::ranges::any_of(result.warnings, [](const std::string& w) { return w.find("skeleton") != std::string::npos; }));
+    {
+        const auto tree = csf::Tree::from_document(editor.document(objects_file));
+        const auto& records = tree.roots[0].child(".LISTADATOS")->children;
+        CHECK(records.size() == 3 && records.back().child(".ID")->as_int() == 500);
+        const auto& copy = records.back();
+        CHECK(copy.child(".MODELO")->as_string() == "Models\\Deco\\bidon.dff");
+        CHECK(copy.child(".NOMBRE")->as_string() == "Soldier (look: bidon)");
+        CHECK(!copy.child(".LOD1_NOMBRE") && copy.child(".LOD1_DIST")->as_real() == 0.0F);
+        CHECK(copy.child(".COMPOR")->as_string() == "SOLDADO");
+        CHECK(copy.child(".BBOX")->child(".SUP")->children[1].as_real() == 98.0F);
+        CHECK(*copy.child(".PHYSIC") == *records.front().child(".PHYSIC"));
+    }
+    {
+        // The physics descriptor gains the soldier's entry with the new model and box.
+        const auto& bytes = editor.files()[physics_file].raw;
+        CHECK(bytes.size() == phd.size() * 2 - 12 - 20 + 21);
+        const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        CHECK(text.find("Models\\Deco\\bidon.dff") != std::string::npos);
+        CHECK(text.rfind("Models\\ragdoll.rws") > text.find("Models\\Char\\AlSt.dff"));
+    }
+    const auto physics_with_copy = editor.files()[physics_file].raw;
+
+    // The same look reuses the copy; changing back reuses the original class.
+    CHECK(editor.set_actor_look(1, 29).applied && class_of(1) == 500);
+    CHECK(editor.files()[physics_file].raw == physics_with_copy);
+    CHECK(!editor.set_actor_look(1, 29).applied);
+    CHECK(editor.set_actor_look(5, 10).applied && class_of(5) == 10);
+    CHECK(editor.set_actor_look(1, 10).applied && class_of(1) == 10);
+    // The unused copy and its physics entry are gone again.
+    CHECK(editor.files()[objects_file].bytes() == objects_before);
+    CHECK(editor.files()[physics_file].raw == phd);
+    CHECK(editor.modified_files().empty());
+    CHECK(!editor.set_actor_look(1, 404).applied);
+
+    CHECK(editor.undo() && class_of(1) == 500);
+    CHECK(editor.files()[physics_file].raw == physics_with_copy);
+    std::filesystem::remove_all(root);
+}
+
+void test_mission_editor() {
+    const auto root = std::filesystem::temp_directory_path() / "rws-man-mission-editor-tests";
+    std::filesystem::remove_all(root);
+    const auto package = root / "Mission";
+    const auto donor = root / "Donor";
+    const auto map = package / "Maps" / "M1";
+    const std::string scene_text = R"([
+  .VERSION 17
+  .PLAYER 1
+  .MUNDOVIS [ .RWS "Maps\\M1\\world.rws" .FOGDISTANCE 2000.0 .INICIO_COMMANDO 0 .INICIO_SNIPER 1 .INICIO_SPY 0 ]
+  .BICHOS (
+    [ .NOMBRE HERO .ID 1 .CLASSID 10 .POS (0.0 0.0 0.0) .ANGULO 0.0 .ANGULO_X 0.0 .COLISION 1 .FLAGS 0 .SEGUNDA_EXPLOSION 0 .CELDA [ .GRUPO 1 .PUNTO 1 ] ]
+    [ .NOMBRE GUARD .ID 5 .CLASSID 10 .POS (100.0 0.0 50.0) .ANGULO 90.0 .ANGULO_X 0.0 .COLISION 1 .FLAGS 0 .SEGUNDA_EXPLOSION 0 .SCRIPT (7) .CELDA [ .GRUPO 1 .PUNTO 2 ] ]
+  )
+  .EFECTOS ( [ .ID 3 .NOMBRE fx .CLASSID 88 .DUMMY 2 .PRIORITY -1 .SHARE_GROUP -1 ] )
+  .PUNTUACION_MAXIMA 2000
+  .PUNTUACION_MINIMA 1000
+  .MALLA_NAVEGACION [
+    .GRUPOS (
+      [ .ID 1 .NOMBRE G .TIPO 0 .PUNTOS (
+          [ .ID 1 .NOMBRE "" .POS (0.0 0.0 0.0) .ROT 0.0 .ROT_X 0.0 ]
+          [ .ID 2 .NOMBRE "" .POS (100.0 0.0 50.0) .ROT 1.5707964 .ROT_X 0.0 ]
+          [ .ID 3 .NOMBRE "" .POS (200.0 0.0 0.0) .ROT 0.0 .ROT_X 0.0 ] )
+        .CONEXIONES ( [ .PUNTO_ORI 2 .PUNTO_DST 3 ] ) ]
+      [ .ID 2 .NOMBRE H .TIPO 0 .PUNTOS ( [ .ID 1 .NOMBRE "" .POS (500.0 0.0 0.0) .ROT 0.0 .ROT_X 0.0 ] )
+        .CONEXIONES ( ) ]
+    )
+    .CONEXIONES ( )
+  ]
+  .MALLA_DUMMIES [ .DUMMIES ( [ .ID 2 .NOMBRE "" .POS (1.0 2.0 3.0) .ROT 0.0 .ROT_X 0.0 ] )
+    .CARPETAS [ .RAIZ ( [ .NOMBRE "" .CARPETAS ( [ .NOMBRE A .ELEMENTOS (2) ] ) ] ) ] ]
+  .MALLA_AREAS [ .AREAS ( [ .ID 1 .FLAGS 1 .OCLUSION 1 .NOMBRE Z .HEIGHT 200.0 .REVERB 0 .LIMITREVERB 0
+    .PUNTOS ( [ .POS (0.0 0.0 0.0) ] [ .POS (10.0 0.0 0.0) ] [ .POS (10.0 0.0 10.0) ] ) ] ) ]
+  .MALLA_LUCES [ .LIGHTS ( [ .ID 9 .NOMBRE "" .POS (5.0 5.0 5.0) .COLOR 255 .MODULATE 0 .RADIO 100.0 ] )
+    .CARPETAS [ .RAIZ ( [ .NOMBRE "" .ELEMENTOS (9) ] ) ] ]
+])";
+    const std::string program_text = R"([
+  .RECURSOS [ .ANIMACIONES (100) .CLASSID ( ) ]
+  .VARIABLES ( )
+  .SCRIPTS (
+    [ .ID 7 .NOMBRE GUARD_LOOP .CARPETA "" .FLAGS [ .TRIGGER 0 .ENABLED 1 .VALIDO 1 ] .EVENTOS ( (START_GAME) )
+      .ACCIONES {
+        WHILE (BOOL TRUE)
+          PLAY_ANMBDD (THIS) (ANM_BDD 100)
+        WEND
+      } ]
+    [ .ID 8 .NOMBRE TRIG .CARPETA "" .FLAGS [ .TRIGGER 1 .ENABLED 1 .VALIDO 1 ] .EVENTOS ( (INIT) )
+      .ACCIONES {
+        SET_POSICION (BICHO 5) (DUMMY 2)
+      } ]
+  )
+  .POOL ( )
+])";
+    const auto objects = [](const bool with_imported) {
+        std::string text = R"([ .VERSION 10 .LISTADATOS (
+  [ .ID 10 .NOMBRE Soldier .TIPO ALEMAN .COMPOR SOLDADO .HOMBRE 1 .MODELO "Models\\Char\\A.dff" ]
+  [ .ID 11 .NOMBRE Other .TIPO ALEMAN .COMPOR SOLDADO .HOMBRE 1 .MODELO "Models\\Char\\A.dff" ]
+  [ .ID 12 .NOMBRE Civil .TIPO NEUTRO .COMPOR CIVIL .HOMBRE 1 .MODELO "Models\\Char\\A.dff" ])";
+        if (with_imported)
+            text += R"(
+  [ .ID 40 .NOMBRE Tank .TIPO TANQUE .COMPOR VEHICULO .HOMBRE 0 .MODELO "Models\\Vehi\\Tank.dff"
+    .MODELO_COLISION [ .CO_MODEL_EX "Models\\Vehi\\Tank.cmo" ] .ARMAS (70)
+    .ANIMACIONES ( [ .ID 300 .TIPO REPOSO ] ) ])";
+        return text + " ) ]";
+    };
+    const auto animations = [](const bool donor_records) {
+        std::string text = R"([ .VERSION 1 .LISTADATOS (
+  [ .ID 100 .NOMBRE idle .FILE "Anims\\Comm\\idle.anm" ]
+  [ .ID 101 .NOMBRE talk .FILE "Anims\\Comm\\talk.anm" ])";
+        if (donor_records) text += R"(
+  [ .ID 300 .NOMBRE tank_idle .FILE "Anims\\Vehi\\tank.anm" ])";
+        return text + " ) ]";
+    };
+    for (const auto& [target, donor_side] : {std::pair{package, false}, std::pair{donor, true}}) {
+        const auto maps = target / "Maps" / "M1";
+        write_bytes(maps / "M1.scn", compile_source(scene_text));
+        write_bytes(maps / "M1.gsc", compile_source(program_text));
+        write_bytes(target / "BDD" / "Objetos.bdd", compile_source(objects(donor_side)));
+        write_bytes(target / "BDD" / "Anims.bdd", compile_source(animations(donor_side)));
+        write_bytes(target / "BDD" / "Armas.bdd",
+                    compile_source(donor_side ? R"([ .LISTADATOS ( [ .ID 70 .NOMBRE Gun .FILE "Models\\Weap\\Gun.dff" .FILE2 "Models\\Weap\\Gun3.dff" ] ) ])"
+                                              : "[ .LISTADATOS ( ) ]"));
+        std::vector<std::byte> m3d;
+        append_csf_string(m3d, "Models\\Char\\A.dff", false);
+        for (int i = 0; i < 4; ++i) m3d.push_back(std::byte{0xFF});
+        append_u32(m3d, 0);
+        write_bytes(maps / "M1.m3d", m3d);
+        std::vector<std::byte> and_index;
+        append_csf_string(and_index, "Anims\\Comm\\idle.anm", false);
+        and_index.push_back(std::byte{0});
+        and_index.push_back(std::byte{1});
+        append_u32(and_index, 0);
+        write_bytes(maps / "M1.and", and_index);
+        write_text_file(maps / "M1.txl", "Models\\Char\\Textures\\a.dds\r\n");
+        write_bytes(target / "Models" / "Char" / "A.rpc", {std::byte{0x10}});
+    }
+    // Donor-only assets: a model whose Texture chunk names "tankskin".
+    std::vector<std::byte> tank;
+    std::vector<std::byte> texture;
+    append_header(texture, 0x02, 12);
+    for (const auto c : std::string("tankskin\0\0\0\0", 12)) texture.push_back(static_cast<std::byte>(c));
+    std::vector<std::byte> texture_chunk;
+    append_header(texture_chunk, 0x06, static_cast<std::uint32_t>(texture.size()));
+    texture_chunk.insert(texture_chunk.end(), texture.begin(), texture.end());
+    append_header(tank, 0x10, static_cast<std::uint32_t>(texture_chunk.size()));
+    tank.insert(tank.end(), texture_chunk.begin(), texture_chunk.end());
+    write_bytes(donor / "Models" / "Vehi" / "Tank.rpc", tank);
+    write_bytes(donor / "Models" / "Vehi" / "Tank.cmo", {std::byte{1}});
+    write_bytes(donor / "Models" / "Weap" / "Gun3.rpc", {std::byte{0x10}});
+    write_bytes(donor / "Models" / "Vehi" / "Textures" / "tankskin.dds", {std::byte{2}});
+    write_bytes(donor / "Anims" / "Vehi" / "tank.anm", {std::byte{3}});
+    write_text_file(donor / "Maps" / "M1" / "M1.txl",
+                    "Models\\Char\\Textures\\a.dds\r\nModels\\Vehi\\Textures\\tankskin.dds\r\n");
+
+    const auto source_document = csf::Document::load(map / "M1.scn");
+    const auto source_scene = source_document.bytes();
+    auto editor = csf::MissionEditor::open(map / "M1.scn", package);
+    CHECK(editor.scene().actors().size() == 2);
+    CHECK(editor.file_of_kind(csf::MissionFileKind::mission_script));
+    CHECK(editor.file_of_kind(csf::MissionFileKind::model_index));
+    CHECK(editor.modified_files().empty() && !editor.dirty());
+    CHECK(editor.find_file("maps\\m1\\M1.SCN") == editor.scene_file());
+
+    // Moving an actor moves its mirrored placement point; undo restores bytes.
+    auto result = editor.set_actor_placement(5, {{150.0F, 5.0F, 60.0F}, 180.0F, 0.0F});
+    CHECK(result.applied && result.warnings.empty());
+    const auto* guard = &editor.scene().actors()[1];
+    CHECK(guard->position->x == 150.0F && guard->heading == 180.0F);
+    const auto* point = editor.scene().navigation_point(1, 2);
+    CHECK(point && point->position->x == 150.0F && std::abs(*point->heading - 3.14159265F) < 1e-5F);
+    CHECK(editor.modified_files().size() == 1 && editor.dirty());
+    CHECK(editor.undo());
+    CHECK(editor.document(editor.scene_file()).bytes().size() == source_scene.size());
+    CHECK(std::ranges::equal(editor.document(editor.scene_file()).bytes(), source_scene));
+    CHECK(editor.modified_files().empty());
+    CHECK(editor.redo() && editor.scene().actors()[1].position->x == 150.0F);
+    // Moving the placement point carries its actor.
+    CHECK(editor.set_navigation_point(1, 2, {160.0F, 5.0F, 60.0F}).applied);
+    CHECK(editor.scene().actors()[1].position->x == 160.0F);
+
+    // Class changes stay within the mission's database unless forced.
+    result = editor.set_actor_class(5, 99);
+    CHECK(!result.applied && result.message.find("import") != std::string::npos);
+    const auto history = editor.history_position();
+    result = editor.set_actor_class(5, 12);
+    CHECK(result.applied && editor.scene().actors()[1].class_id == 12);
+    CHECK(std::ranges::any_of(result.warnings, [](const std::string& w) { return w.find("TIPO") != std::string::npos; }));
+    CHECK(editor.history_position() == history + 1);
+    CHECK(!editor.set_actor_class(5, 12).applied); // no change is not a history step
+    CHECK(editor.history_position() == history + 1);
+
+    // Animation overrides are inserted in canonical field order before CELDA.
+    CHECK(!editor.set_actor_animations(5, {{100, "NOT_A_SLOT"}}).applied);
+    CHECK(!editor.set_actor_animations(5, {{555, "DISTRAIDO_IDLE_ARMA1"}}).applied);
+    CHECK(editor.set_actor_animations(5, {{101, "DISTRAIDO_IDLE_ARMA1"}}).applied);
+    CHECK(editor.scene().actors()[1].animations.size() == 1);
+    CHECK(editor.scene().actors()[1].animations[0].id == 101);
+    {
+        const auto tree = csf::Tree::from_document(editor.scene_document());
+        const auto& actor = tree.roots[0].child(".BICHOS")->children[1];
+        CHECK(actor.children[actor.children.size() - 2].is(".ANIMACIONES"));
+        CHECK(actor.children.back().is(".CELDA"));
+    }
+    CHECK(editor.set_actor_scripts(5, {}).applied);
+    CHECK(editor.scene().actors()[1].script_ids.empty());
+    CHECK(!editor.set_actor_scripts(5, {8}).applied); // trigger scripts are not actor scripts
+    CHECK(editor.set_actor_scripts(5, {7}).applied);
+    CHECK(editor.set_actor_faction(5, "ALEMAN").applied);
+    CHECK(editor.scene().actors()[1].faction == "ALEMAN");
+    CHECK(editor.set_actor_name(5, "Guardi\xC3\xA1n").applied);
+    CHECK(editor.scene().actors()[1].name == "Guardi\xC3\xA1n");
+
+    // Duplicates get new IDs, unique names and their own placement point.
+    std::int32_t copy{};
+    CHECK(editor.duplicate_actor(5, {10.0F, 0.0F, 0.0F}, &copy).applied && copy == 6);
+    const auto& actors = editor.scene().actors();
+    CHECK(actors.size() == 3 && actors[2].position->x == 170.0F && actors[2].group == 1 && actors[2].cell == 4);
+    CHECK(actors[2].name != actors[1].name && actors[2].script_ids == std::vector<std::int32_t>{7});
+    CHECK(editor.scene().navigation_point(1, 4));
+    std::int32_t added{};
+    CHECK(editor.add_actor(11, {{480.0F, 0.0F, 0.0F}, 45.0F, 0.0F}, "NEW", std::nullopt, &added).applied);
+    CHECK(added == 7 && editor.scene().actors().back().group == 1);
+    CHECK(!editor.add_actor(77, {{0, 0, 0}, 0, 0}, "X").applied);
+
+    // Deleting refuses while scripts or the mission still name the record.
+    CHECK(!editor.delete_actor(5).applied);
+    CHECK(!editor.delete_actor(1).applied);
+    CHECK(editor.delete_actor(6).applied);
+    CHECK(!editor.scene().navigation_point(1, 4));
+    CHECK(editor.delete_actor(5, true).applied);
+    CHECK(editor.undo() && editor.scene().actors().size() == 3);
+
+    // Dummies, lights, navigation and areas.
+    CHECK(!editor.delete_dummy(2).applied);
+    std::int32_t dummy{};
+    CHECK(editor.duplicate_dummy(2, {1, 0, 0}, &dummy).applied && dummy == 3);
+    CHECK(editor.set_dummy_placement(3, {9, 9, 9}, 1.0F, 0.0F).applied);
+    CHECK(editor.delete_dummy(3).applied);
+    CHECK(editor.set_light(9, {csf::Vec3{1, 1, 1}, 0x00FF00, std::nullopt, 50.0F}).applied);
+    CHECK(editor.scene().lights()[0].radius == 50.0F);
+    std::int32_t light{};
+    CHECK(editor.duplicate_light(9, {1, 0, 0}, &light).applied && light == 10);
+    CHECK(editor.scene().folders().back().element_ids == std::vector<std::int32_t>({9, 10}));
+    CHECK(editor.delete_light(10).applied);
+    CHECK(editor.connect_navigation_points(1, 3, 2, 1).applied);
+    CHECK(!editor.connect_navigation_points(2, 1, 1, 3).applied);
+    CHECK(editor.scene().cross_group_connections().size() == 1);
+    CHECK(editor.disconnect_navigation_points(2, 1, 1, 3).applied);
+    std::int32_t point_id{};
+    CHECK(editor.add_navigation_point(2, {600, 0, 0}, &point_id).applied && point_id == 2);
+    CHECK(editor.connect_navigation_points(2, 1, 2, 2).applied);
+    CHECK(editor.delete_navigation_point(2, 2).applied);
+    CHECK(editor.scene().navigation()[1].connections.empty());
+    CHECK(!editor.delete_navigation_point(1, 2).applied); // placement of the guard
+    CHECK(editor.insert_area_point(1, 1, {5, 0, 0}).applied);
+    CHECK(editor.scene().areas()[0].points.size() == 4 && editor.scene().areas()[0].points[1].x == 5.0F);
+    CHECK(editor.remove_area_point(1, 1).applied);
+    CHECK(!editor.remove_area_point(1, 0).applied);
+    CHECK(editor.set_area_point(1, 0, {-1, 0, 0}).applied && editor.set_area_height(1, 300).applied);
+
+    // Mission properties and raw scalars.
+    CHECK(editor.set_player_actor(5).applied && editor.scene().player().active_player == 5);
+    CHECK(!editor.set_player_actor(404).applied);
+    CHECK(editor.set_start_availability(true, true, false).applied);
+    CHECK(editor.scene().player().commando_start == 1);
+    CHECK(editor.set_scores(3000, 1500).applied);
+    CHECK(!editor.set_scores(1, 2).applied);
+    CHECK(editor.set_environment(".FOGDISTANCE", 1500.0F).applied);
+    CHECK(!editor.set_environment(".FOGDISTANCE", 1500).applied);
+    const auto fog = std::ranges::find_if(editor.scene_document().entries(), [&](const csf::Entry& entry) {
+        return entry.kind() == csf::ValueKind::real &&
+               std::bit_cast<float>(entry.raw_value_or_size) == 1500.0F;
+    });
+    CHECK(fog != editor.scene_document().entries().end());
+    CHECK(editor.set_scalar(editor.scene_file(), fog->entry_index, 1600.0F).applied);
+
+    // Scripts round-trip as text; references and signatures are checked.
+    const auto program = *editor.file_of_kind(csf::MissionFileKind::mission_script);
+    const auto text = editor.script_text(program, 7);
+    CHECK(text && text->find("PLAY_ANMBDD (THIS) (ANM_BDD 100)") != std::string::npos);
+    CHECK(!editor.set_script_text(program, 7, *text).applied); // unchanged
+    auto edited = *text;
+    edited.replace(edited.find("ANM_BDD 100"), 11, "ANM_BDD 101");
+    result = editor.set_script_text(program, 7, edited);
+    CHECK(result.applied && result.warnings.empty());
+    const auto resources = csf::Tree::from_document(editor.document(program));
+    CHECK(resources.roots[0].child(".RECURSOS")->child(".ANIMACIONES")->children.size() == 2);
+    edited.replace(edited.find("ANM_BDD 101"), 11, "ANM_BDD 999");
+    result = editor.set_script_text(program, 7, edited);
+    CHECK(result.applied && std::ranges::any_of(result.warnings, [](const std::string& w) {
+              return w.find("Animation 999") != std::string::npos;
+          }));
+    CHECK(!editor.set_script_text(program, 7, "[ .ID 7 ").applied);
+    CHECK(!editor.set_script_text(program, 7, "[ .ID 8 .ACCIONES { WEND } ]").applied); // ID taken
+    result = editor.set_script_text(program, 7, "[ .ID 7 .ACCIONES {\n WHILE (BOOL TRUE)\n} ]");
+    CHECK(result.applied && std::ranges::any_of(result.warnings, [](const std::string& w) {
+              return w.find("WEND") != std::string::npos;
+          }));
+    CHECK(editor.undo());
+    std::int32_t script_id{};
+    CHECK(editor.add_script(program, csf::MissionEditor::script_template(7, "NEW"), &script_id).applied);
+    CHECK(script_id == 9);
+    CHECK(editor.delete_script(program, 9).applied);
+    CHECK(!editor.delete_script(program, 7).applied); // run by actor 5
+    CHECK(editor.actor_script_choices().size() == 1);
+
+    // Cross-mission import copies records, files and index entries.
+    CHECK(!editor.set_actor_class(5, 40).applied);
+    result = editor.import_class(donor, 40);
+    CHECK(result.applied);
+    CHECK(!editor.objects().find_class(40).empty());
+    CHECK(editor.animations().find_id(300));
+    {
+        // Imported records keep the database sorted by ID.
+        const auto objects_tree = csf::Tree::from_document(
+            editor.document(*editor.file_of_kind(csf::MissionFileKind::objects)));
+        const auto& records = objects_tree.roots[0].child(".LISTADATOS")->children;
+        CHECK(records.size() == 4 && records.back().child(".ID")->as_int() == 40);
+    }
+    CHECK(editor.find_file("Models/Vehi/Tank.rpc") && editor.find_file("Models/Vehi/Tank.cmo"));
+    CHECK(editor.find_file("Models/Weap/Gun3.rpc") && editor.find_file("Anims/Vehi/tank.anm"));
+    CHECK(editor.find_file("Models/Vehi/Textures/tankskin.dds"));
+    {
+        const auto& m3d = editor.files()[*editor.file_of_kind(csf::MissionFileKind::model_index)].raw;
+        const std::string content(reinterpret_cast<const char*>(m3d.data()), m3d.size());
+        CHECK(content.find("Models\\Vehi\\Tank.dff") != std::string::npos);
+        const auto& txl = editor.files()[*editor.file_of_kind(csf::MissionFileKind::texture_index)].raw;
+        const std::string list(reinterpret_cast<const char*>(txl.data()), txl.size());
+        CHECK(list.find("tankskin.dds") != std::string::npos);
+    }
+    CHECK(!editor.import_class(donor, 40).applied);
+    CHECK(editor.set_actor_class(5, 40).applied);
+    CHECK(editor.undo() && editor.undo());
+    CHECK(!editor.find_file("Models/Vehi/Tank.rpc"));
+    CHECK(editor.redo() && editor.find_file("Models/Vehi/Tank.rpc"));
+
+    // Map scene instances are patched in place; undo keeps only changed runs.
+    {
+        std::vector<std::byte> map_bytes(64, std::byte{0x55});
+        const auto record = map_bytes.size();
+        append_header(map_bytes, 0x16FC0, 92 + 4);
+        for (int i = 0; i < 6; ++i) append_u32(map_bytes, 0);
+        append_header(map_bytes, 0x0D, 64);
+        append_header(map_bytes, 0x01, 52);
+        for (const float value : {1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 10.0F, 20.0F, 30.0F})
+            append_f32(map_bytes, value);
+        append_u32(map_bytes, 0);
+        append_u32(map_bytes, 4);
+        for (const auto c : std::string("box\0")) map_bytes.push_back(static_cast<std::byte>(c));
+        const auto map_file = std::ranges::find(editor.files(), csf::MissionFileKind::visual_map, &csf::MissionFile::kind);
+        CHECK(map_file == editor.files().end()); // No map in the synthetic package yet.
+        write_bytes(map / "world.rws", map_bytes);
+        std::vector<std::byte> vis;
+        append_csf_string(vis, "Maps\\M1\\world.rws", false);
+        write_bytes(map / "M1.vis", vis);
+        auto with_map = csf::MissionEditor::open(map / "M1.scn", package);
+        const auto index = with_map.file_of_kind(csf::MissionFileKind::visual_map);
+        CHECK(index.has_value());
+        CHECK(!with_map.set_map_instance_transform(record + 1, {}, {0, 0, 0}).applied);
+        const std::array<float, 9> turned{0, 0, -1, 0, 1, 0, 1, 0, 0};
+        CHECK(with_map.set_map_instance_transform(record, turned, {11, 22, 33}).applied);
+        const auto& edited = with_map.files()[*index].raw;
+        CHECK(std::bit_cast<float>(static_cast<std::uint32_t>(std::to_integer<std::uint32_t>(edited[record + 96]) |
+                                                              std::to_integer<std::uint32_t>(edited[record + 97]) << 8U |
+                                                              std::to_integer<std::uint32_t>(edited[record + 98]) << 16U |
+                                                              std::to_integer<std::uint32_t>(edited[record + 99]) << 24U)) == 11.0F);
+        CHECK(std::equal(edited.begin(), edited.begin() + static_cast<std::ptrdiff_t>(record), map_bytes.begin()));
+        CHECK(with_map.undo() && with_map.files()[*index].raw == map_bytes);
+        CHECK(with_map.redo() && with_map.modified_files().size() == 1);
+        std::filesystem::remove(map / "world.rws");
+        std::filesystem::remove(map / "M1.vis");
+    }
+
+    // Saving writes only changed files into a mod project, which reopens.
+    const auto workspace = root / "Project";
+    auto project = csf::ModProject::create(workspace, package, "Test");
+    const auto written = editor.save(project);
+    CHECK(!editor.dirty() && written.size() == editor.modified_files().size());
+    CHECK(project.validate().passed);
+    CHECK(std::filesystem::is_regular_file(workspace / "authored" / "Models" / "Vehi" / "Tank.rpc"));
+    auto reopened = csf::MissionEditor::open(map / "M1.scn", package, &project);
+    CHECK(reopened.scene().actors()[1].position->x == 160.0F);
+    CHECK(!reopened.objects().find_class(40).empty());
+    CHECK(reopened.find_file("Models/Vehi/Tank.rpc"));
+    CHECK(reopened.modified_files().size() == written.size());
+    // Undoing to the source content removes the file from the project on save.
+    while (editor.undo()) {
+    }
+    CHECK(editor.modified_files().empty());
+    CHECK(editor.save(project).empty() && project.files.empty());
+    std::filesystem::remove_all(root);
+}
+
 } // namespace
 
 // NOLINTNEXTLINE(bugprone-exception-escape): CHECK failures intentionally unwind
+void test_viewport_overlay_model() {
+    using namespace rwsman;
+    // Layer visibility helpers keep the list sorted and unique.
+    OverlayOptions options;
+    options.set_layer_hidden("nav_link", true);
+    options.set_layer_hidden("actor", true);
+    options.set_layer_hidden("actor", true);
+    CHECK((options.hidden_layers == std::vector<std::string>{"actor", "nav_link"}));
+    CHECK(options.layer_hidden("actor") && !options.layer_hidden("dummy"));
+    options.set_layer_hidden("actor", false);
+    CHECK(!options.layer_hidden("actor"));
+    CHECK(parse_overlay_labels("all") == OverlayOptions::Labels::all && !parse_overlay_labels("x"));
+    CHECK(parse_overlay_detail(overlay_detail_name(OverlayOptions::Detail::off)) ==
+          OverlayOptions::Detail::off);
+    const auto presets = builtin_overlay_presets();
+    CHECK(!presets.empty() && presets.front().name == "All" && presets.front().hidden_layers.empty());
+    for (const auto& preset : presets)
+        for (const auto& layer : preset.hidden_layers)
+            CHECK(std::ranges::find(overlay_layer_keys, layer) != overlay_layer_keys.end());
+
+    // Markers within the radius merge into the first one's cluster; pinned ones never do.
+    const std::array markers{ScreenMarker{10, 10}, ScreenMarker{13, 11}, ScreenMarker{40, 10},
+                             ScreenMarker{11, 10, true}, ScreenMarker{41, 12}, ScreenMarker{12, 9}};
+    const auto clusters = cluster_markers(markers, 6.0F);
+    CHECK(clusters.size() == 3);
+    CHECK((clusters[0].members == std::vector<std::uint32_t>{0, 1, 5}));
+    CHECK((clusters[1].members == std::vector<std::uint32_t>{2, 4}));
+    CHECK((clusters[2].members == std::vector<std::uint32_t>{3}) && clusters[2].x == 11.0F);
+    CHECK(cluster_markers(markers, 0.0F).size() == markers.size());
+    // Chains do not grow past the anchor's radius.
+    const std::array chain{ScreenMarker{0, 0}, ScreenMarker{5, 0}, ScreenMarker{10, 0}};
+    CHECK(cluster_markers(chain, 6.0F).size() == 2);
+
+    // Distance dimming starts at the scene's near side, or at the camera inside it.
+    const auto outside = marker_fade_range(500.0F, 100.0F, 3.0F);
+    CHECK(outside.near == 400.0F && outside.far == 700.0F);
+    CHECK(marker_distance_fade(outside, 390.0F) == 1.0F);
+    CHECK(marker_distance_fade(outside, 700.0F) == marker_fade_floor);
+    CHECK(marker_distance_fade(outside, 5000.0F) == marker_fade_floor);
+    CHECK(marker_distance_fade(outside, 450.0F) > marker_distance_fade(outside, 600.0F));
+    const auto inside = marker_fade_range(20.0F, 100.0F, 3.0F);
+    CHECK(inside.near == 0.0F && inside.far == 300.0F);
+    CHECK(marker_distance_fade(marker_fade_range(500.0F, 100.0F, 0.0F), 5000.0F) == 1.0F);
+    // Walls: none leaves a marker alone, each further one dims toward the limit.
+    CHECK(marker_wall_fade(0, 0.25F) == 1.0F);
+    CHECK(std::abs(marker_wall_fade(1, 0.25F) - 0.5F) < 1e-5F);
+    CHECK(marker_wall_fade(2, 0.25F) < marker_wall_fade(1, 0.25F));
+    CHECK(marker_wall_fade(3, 0.25F) > 0.25F);
+    CHECK(marker_wall_fade(1, 0.0F) == 0.0F && marker_wall_fade(4, 1.0F) == 1.0F);
+
+    // Labels avoid each other, obstacles, and the viewport edge; priority wins ties.
+    const ScreenRect bounds{0, 0, 200, 100};
+    const std::array requests{LabelRequest{50, 50, 40, 10, 1.0F}, LabelRequest{50, 50, 40, 10, 5.0F},
+                              LabelRequest{195, 50, 40, 10, 0.0F}, LabelRequest{50, 50, 40, 10, 0.5F},
+                              LabelRequest{50, 50, 40, 10, 0.2F}, LabelRequest{50, 50, 40, 10, 0.1F}};
+    const auto placed = place_labels(requests, bounds, 4.0F);
+    CHECK(placed[1] && placed[1]->x0 > 50.0F && placed[1]->y1 <= 50.0F); // Highest: right-above.
+    CHECK(placed[0] && placed[0]->x0 > 50.0F && placed[0]->y0 >= 50.0F);  // Next: right-below.
+    CHECK(placed[2] && placed[2]->x1 < 195.0F);                           // Flipped left at the edge.
+    CHECK(placed[3] && placed[4] && !placed[5]);                          // Four slots, then none.
+    for (std::size_t i = 0; i < placed.size(); ++i)
+        for (std::size_t j = i + 1; j < placed.size(); ++j)
+            if (placed[i] && placed[j]) CHECK(!placed[i]->overlaps(*placed[j]));
+    const std::array obstacle{ScreenRect{0, 0, 200, 100}};
+    CHECK(!place_labels(std::span(requests).first(1), bounds, 4.0F, obstacle)[0]);
+
+    // Off-screen indicators sit on the inset edge in the target's direction.
+    const auto right = edge_indicator(100, 0, {0, 0, 200, 100}, 10);
+    CHECK(right && right->x == 190.0F && right->y == 50.0F && right->angle == 0.0F);
+    const auto corner = edge_indicator(-1, -1, {0, 0, 200, 100}, 10);
+    CHECK(corner && corner->y == 10.0F && corner->x == 60.0F);
+    CHECK(!edge_indicator(0, 0, {0, 0, 200, 100}, 10));
+
+    // Filter terms: entry, kind, text; all must match.
+    const OverlayFilterSubject guard{"actor", "Actors", "Faction: Nazi", "Guard_Tower_01", 42};
+    CHECK(overlay_filter_matches("", guard) && overlay_filter_matches("   ", guard));
+    CHECK(overlay_filter_matches("#42", guard) && !overlay_filter_matches("#41", guard));
+    CHECK(overlay_filter_matches("kind:act tower", guard) && !overlay_filter_matches("kind:nav", guard));
+    CHECK(overlay_filter_matches("GUARD nazi", guard) && !overlay_filter_matches("guard sniper", guard));
+    CHECK(overlay_filter_matches("gtw", guard) == false);   // Too scattered for a fuzzy hit.
+    CHECK(overlay_filter_matches("grdtwr", guard));         // Compact abbreviations match.
+    CHECK(overlay_filter_matches("tow01", guard));
+    CHECK(!overlay_filter_matches("#abc", guard));
+
+    // Polygons: containment and ear clipping in both windings, concave included.
+    const std::array<Point2, 6> l_shape{{{0, 0}, {4, 0}, {4, 2}, {2, 2}, {2, 4}, {0, 4}}};
+    CHECK(point_in_polygon(l_shape, 1, 3) && !point_in_polygon(l_shape, 3, 3));
+    for (const bool reversed : {false, true}) {
+        auto polygon = l_shape;
+        if (reversed) std::ranges::reverse(polygon);
+        const auto triangles = triangulate_polygon(polygon);
+        CHECK(triangles.size() == 4);
+        float area = 0.0F;
+        for (const auto& t : triangles) {
+            const auto &a = polygon[t[0]], &b = polygon[t[1]], &c = polygon[t[2]];
+            area += std::abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * 0.5F;
+        }
+        CHECK(std::abs(area - 12.0F) < 1e-4F);
+    }
+    const std::array<Point2, 3> flat{{{0, 0}, {1, 1}, {2, 2}}};
+    CHECK(triangulate_polygon(flat).empty() && triangulate_polygon(std::span(flat).first(2)).empty());
+}
+
+void test_frame_pacing() {
+    using namespace rwsman;
+    const FramePacingSettings defaults;
+    FramePacingInput input;
+    input.now = 10.0;
+    input.last_input = 9.9;
+    // Recent input keeps frames coming; so does anything animating.
+    CHECK(!decide_frame_pacing(defaults, input).wait_for_events);
+    input.last_input = 1.0;
+    const auto idle = decide_frame_pacing(defaults, input);
+    CHECK(idle.wait_for_events && idle.wait_timeout == 0.5 && idle.min_frame_time == 0.0);
+    input.text_input = true;
+    CHECK(decide_frame_pacing(defaults, input).wait_timeout == 0.3);
+    input.background_work = true;
+    CHECK(decide_frame_pacing(defaults, input).wait_timeout == 0.1);
+    input.animating = true;
+    CHECK(!decide_frame_pacing(defaults, input).wait_for_events);
+    FramePacingSettings always{false, 0, 0};
+    input.animating = false;
+    CHECK(!decide_frame_pacing(always, input).wait_for_events);
+    // Caps: the slower of the foreground and (while unfocused) background limits.
+    FramePacingSettings capped{true, 120, 20};
+    input.animating = true;
+    CHECK(std::abs(decide_frame_pacing(capped, input).min_frame_time - 1.0 / 120) < 1e-12);
+    input.focused = false;
+    CHECK(std::abs(decide_frame_pacing(capped, input).min_frame_time - 1.0 / 20) < 1e-12);
+    input.iconified = true;
+    const auto hidden = decide_frame_pacing(capped, input);
+    CHECK(hidden.wait_for_events && hidden.wait_timeout == 0.25);
+
+    FrameRateCounter counter;
+    CHECK(counter.fps() == 0.0);
+    for (int i = 0; i < 40; ++i) counter.add(1.0 / 50);
+    counter.add(-1.0);
+    CHECK(std::abs(counter.fps() - 50.0) < 1e-6);
+    counter.reset();
+    counter.add(0.1);
+    CHECK(std::abs(counter.fps() - 10.0) < 1e-9);
+
+    ViewVolume perspective;
+    perspective.near_plane = 1.0F;
+    perspective.far_plane = 100.0F;
+    CHECK(sphere_in_view(perspective, 0, 0, -10, 1));
+    CHECK(!sphere_in_view(perspective, 0, 0, 10, 1));     // Behind the eye.
+    CHECK(!sphere_in_view(perspective, 0, 0, -200, 1));   // Past the far plane.
+    CHECK(sphere_in_view(perspective, 0, 0, -0.5F, 1));   // Straddles the near plane.
+    CHECK(!sphere_in_view(perspective, 20, 0, -10, 1));   // Far to the right.
+    CHECK(sphere_in_view(perspective, 5.3F, 0, -10, 1));  // Just touches the right plane.
+    CHECK(!sphere_in_view(perspective, 0, -20, -10, 1));  // Below.
+    CHECK(sphere_in_view(perspective, 0, 0, std::numeric_limits<float>::quiet_NaN(), 1));
+    ViewVolume ortho;
+    ortho.orthographic = true;
+    ortho.aspect = 2.0F;
+    ortho.orthographic_scale = 10.0F;
+    ortho.near_plane = -50.0F;
+    CHECK(sphere_in_view(ortho, 19, 0, 0, 0.5F) && !sphere_in_view(ortho, 21, 0, 0, 0.5F));
+    CHECK(sphere_in_view(ortho, 0, 10.4F, 0, 0.5F) && !sphere_in_view(ortho, 0, 11, 0, 0.5F));
+}
+
 int main() {
     test_fuzzy_matcher();
+    test_viewport_overlay_model();
     test_command_registry();
     test_navigation_history();
     test_settings_model();
+    test_frame_pacing();
     test_log_buffer();
     test_search_index();
     test_mission_index();
     test_mission_discovery();
     test_diagnostic_table();
     test_search_index_grouping();
+    test_csf_tree_and_source_text();
+    test_mission_editor();
+    test_actor_look();
     {
         const std::array primitives{csf::ScreenOverlayPrimitive{1, csf::OverlayPrimitiveKind::point,
                                                                 10, 10, 10, 10, 0, true, false},
@@ -2103,6 +2857,10 @@ int main() {
         CHECK(std::abs(hit->barycentric[0] - 0.5F) < 1.0e-5F);
         const std::array clips{rws::CollisionClipPlane{true, 0, true, 0.5F}};
         CHECK(!rws::pick_collision_worlds(worlds, document.bytes(), ray, clips));
+        // One surface between the ray origin and the target counts as one wall.
+        CHECK(rws::count_collision_walls(worlds, document.bytes(), ray, 2.0F, 0.01F) == 1);
+        CHECK(rws::count_collision_walls(worlds, document.bytes(), ray, 0.5F, 0.01F) == 0);
+        CHECK(rws::count_collision_walls(worlds, document.bytes(), ray, 2.0F, 0.01F, clips) == 0);
         const auto measurement = rws::measure_points({0, 0, 0}, {3, 4, 12});
         CHECK(measurement.distance == 13 && measurement.absolute_delta.y == 4);
         CHECK(std::equal(original.begin(), original.end(), document.bytes().begin()));

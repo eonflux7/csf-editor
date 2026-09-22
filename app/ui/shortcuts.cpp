@@ -15,7 +15,7 @@ std::optional<ImGuiKey> key_from_name(const std::string_view name) {
         if (c == ',') return ImGuiKey_Comma;
         if (c == '.') return ImGuiKey_Period;
         if (c == '/') return ImGuiKey_Slash;
-        if (c == '+') return ImGuiKey_Equal;
+        if (c == '+' || c == '=') return ImGuiKey_Equal;
         if (c == '-') return ImGuiKey_Minus;
     }
     if (name.size() >= 2 && name.size() <= 3 && (name[0] == 'F' || name[0] == 'f')) {

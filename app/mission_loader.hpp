@@ -6,7 +6,9 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <variant>
@@ -27,6 +29,15 @@ struct MissionLoadResult {
     MissionOverlays overlays;
     double seconds{};
 };
+
+// Resolves and loads the preview model of every actor that has exactly one
+// visual model, with its first resolvable third-person weapon. Prototypes are
+// shared through `cache`; `cancelled` is polled between actors.
+[[nodiscard]] std::vector<GeometryPreview::MissionActorModel>
+build_actor_models(const csf::MissionScene& scene, const std::vector<csf::ActorAssociation>& associations,
+                   const csf::WeaponDatabase& weapons, const csf::ResourceIndex& index,
+                   ActorModelCache& cache, const std::function<void(float)>& progress = {},
+                   const std::function<bool()>& cancelled = {});
 
 struct MissionLoadFailure {
     std::filesystem::path input;
@@ -56,8 +67,10 @@ public:
     MissionLoader(const MissionLoader&) = delete;
     MissionLoader& operator=(const MissionLoader&) = delete;
 
-    // Returns false when a load is already running.
-    bool start(const std::filesystem::path& scene, std::filesystem::path debug_log_directory);
+    // Returns false when a load is already running. With `project`, the mod
+    // project's authored files replace their source copies.
+    bool start(const std::filesystem::path& scene, std::filesystem::path debug_log_directory,
+               std::optional<std::filesystem::path> project = std::nullopt);
     void cancel();
     [[nodiscard]] LoadProgress progress() const;
     [[nodiscard]] bool busy() const noexcept { return running_.load(); }
@@ -67,7 +80,8 @@ public:
     Outcome poll();
 
 private:
-    void run(std::filesystem::path scene, std::filesystem::path debug_log_directory);
+    void run(std::filesystem::path scene, std::filesystem::path debug_log_directory,
+             std::optional<std::filesystem::path> project);
     void set_stage(int index, const char* text);
 
     std::thread worker_;

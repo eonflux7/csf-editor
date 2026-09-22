@@ -47,10 +47,8 @@ void draw_recent(AppState& state) {
         const auto pairings = state.settings.recent_pairings;
         for (const auto& pair : pairings) {
             const auto label = path_utf8(pair.main.filename()) + " + " + path_utf8(pair.collision.filename());
-            if (icon_row(label.c_str(), icons::LC_LINK, Token::text_dim, label.c_str(), false)) {
-                load_document(state, pair.main);
-                if (state.document) pair_collision(state, pair.collision, false);
-            }
+            if (icon_row(label.c_str(), icons::LC_LINK, Token::text_dim, label.c_str(), false))
+                open_pairing(state, pair);
         }
     }
 }
@@ -117,10 +115,8 @@ void draw_start_page(AppState& state) {
     ImGui::SetCursorPosX(std::max((ImGui::GetWindowWidth() - content_width) * 0.5F, 8.0F));
     ImGui::BeginGroup();
     ImGui::Dummy({0.0F, 24.0F * scale});
-    ImGui::PushFont(font(Font::sans_bold));
-    ImGui::SetWindowFontScale(1.6F);
+    ImGui::PushFont(font(Font::title));
     ImGui::TextUnformatted("CSF RWS Tools");
-    ImGui::SetWindowFontScale(1.0F);
     ImGui::PopFont();
     ImGui::PushStyleColor(ImGuiCol_Text, color(Token::accent));
     ImGui::TextUnformatted("// rws-man: chunk browser, mission explorer, 3D preview");
@@ -146,9 +142,15 @@ void draw_start_page(AppState& state) {
         draw_recent(state);
         ImGui::TableNextColumn();
         section("Missions");
-        ImGui::BeginChild("##start_missions", {0.0F, 360.0F * scale}, ImGuiChildFlags_None);
-        draw_missions(state);
-        ImGui::EndChild();
+        // Only a mission list needs its own scrolling region; the "set a resource
+        // root" prompt sizes to its text.
+        if (state.settings.resource_root.empty()) {
+            draw_missions(state);
+        } else {
+            ImGui::BeginChild("##start_missions", {0.0F, 360.0F * scale}, ImGuiChildFlags_None);
+            draw_missions(state);
+            ImGui::EndChild();
+        }
         ImGui::TableNextColumn();
         section("Keys");
         // Generated from the command registry, so it cannot drift from the bindings.

@@ -86,7 +86,6 @@ void draw_physics_volume(const rws::PhysicsVolumeInfo& volume, const char* label
 void draw_typed_details(AppState& state, const rws::Chunk& chunk,
                         const std::uint32_t parent_type) {
     auto& document = *state.document;
-    auto& status = state.status;
     const auto bytes = document.bytes();
     switch (chunk.type) {
     case 0x06: {
@@ -257,6 +256,7 @@ void draw_typed_details(AppState& state, const rws::Chunk& chunk,
             playing = false;
         }
         if (playing && clip.duration > 0) {
+            state.ui.animating = true;
             time += ImGui::GetIO().DeltaTime * speed;
             if (loop)
                 time = std::fmod(std::max(0.0F, time), clip.duration);

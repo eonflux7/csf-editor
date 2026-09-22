@@ -33,8 +33,8 @@ enum class Panel {
 [[nodiscard]] ImGuiID dockspace_id(Workspace workspace);
 
 // Builds the default layout for `workspace` when it has none yet, or when
-// `force` is set (View > Reset layout). Explorer 18%, Inspector 22%, bottom dock
-// 22%, viewport in the central node.
+// `force` is set (View > Reset layout). Explorer about 340 px, Inspector about
+// 400 px (scaled), bottom dock 22%, viewport in the central node.
 void ensure_layout(Workspace workspace, ImGuiID dockspace, ImVec2 size, bool force);
 
 // True for workspaces whose center panel is the 3D viewport.
