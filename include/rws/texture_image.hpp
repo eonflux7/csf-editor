@@ -19,4 +19,9 @@ bool decode_texture_image(const std::filesystem::path& path, int& width, int& he
 bool decode_png(std::span<const std::byte> bytes, int& width, int& height,
                 std::vector<std::uint8_t>& rgba, std::string& error);
 
+// Encode tightly packed, top-down RGBA8 pixels as a PNG file. Existing files are
+// never replaced: the caller chooses a new path. 'error' describes a failure.
+bool write_png_rgba(const std::filesystem::path& path, int width, int height,
+                    std::span<const std::uint8_t> rgba, std::string& error);
+
 } // namespace rws

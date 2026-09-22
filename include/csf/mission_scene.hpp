@@ -37,7 +37,50 @@ struct RawField {
 struct EnvironmentField {
     std::string name;
     CsfSourceId source;
+    std::variant<std::int32_t, float, std::string, Vec3> value;
+};
+
+struct MissionMetadata {
+    std::optional<std::string> sector_map;
+    std::optional<std::int32_t> maximum_score;
+    std::optional<std::int32_t> minimum_score;
+};
+
+struct SceneObjectAnimation {
+    CsfSourceId source;
+    std::optional<std::string> id;
+    std::optional<std::int32_t> animation_id;
+    std::optional<std::int32_t> offset_type;
+    std::optional<float> offset;
+    std::vector<RawField> unknown_fields;
+};
+
+struct BridgeControlPoint {
+    CsfSourceId source;
+    std::optional<std::int32_t> type;
+    std::optional<Vec3> p1;
+    std::optional<Vec3> p2;
+    std::optional<float> height;
+    std::optional<std::string> target_scene;
+};
+
+struct MissionBridge {
+    CsfSourceId source;
+    std::optional<std::string> visual_rws;
+    std::optional<std::string> physics_rws;
+    std::vector<BridgeControlPoint> control_points;
+};
+
+struct WaterField {
+    std::string name;
+    CsfSourceId source;
     std::variant<std::int32_t, float, std::string> value;
+};
+
+struct MissionWater {
+    CsfSourceId source;
+    std::vector<WaterField> fields;
+    std::vector<RawField> unknown_fields;
 };
 
 struct MissionActor {
@@ -166,6 +209,7 @@ public:
 
     [[nodiscard]] const std::filesystem::path& source_path() const noexcept { return source_path_; }
     [[nodiscard]] const PlayerMetadata& player() const noexcept { return player_; }
+    [[nodiscard]] const MissionMetadata& metadata() const noexcept { return metadata_; }
     [[nodiscard]] const std::vector<EnvironmentField>& environment() const noexcept {
         return environment_;
     }
@@ -186,6 +230,11 @@ public:
     [[nodiscard]] const std::vector<MissionLight>& lights() const noexcept { return lights_; }
     [[nodiscard]] const std::vector<MissionEffect>& effects() const noexcept { return effects_; }
     [[nodiscard]] const std::vector<FolderMembership>& folders() const noexcept { return folders_; }
+    [[nodiscard]] const std::vector<SceneObjectAnimation>& scene_objects() const noexcept {
+        return scene_objects_;
+    }
+    [[nodiscard]] const std::vector<MissionBridge>& bridges() const noexcept { return bridges_; }
+    [[nodiscard]] const std::vector<MissionWater>& waters() const noexcept { return waters_; }
     [[nodiscard]] const std::vector<TypedDiagnostic>& diagnostics() const noexcept {
         return diagnostics_;
     }
@@ -193,6 +242,7 @@ public:
 private:
     std::filesystem::path source_path_;
     PlayerMetadata player_;
+    MissionMetadata metadata_;
     std::vector<EnvironmentField> environment_;
     std::vector<MissionActor> actors_;
     std::vector<NavGroup> navigation_;
@@ -203,6 +253,9 @@ private:
     std::vector<MissionLight> lights_;
     std::vector<MissionEffect> effects_;
     std::vector<FolderMembership> folders_;
+    std::vector<SceneObjectAnimation> scene_objects_;
+    std::vector<MissionBridge> bridges_;
+    std::vector<MissionWater> waters_;
     std::vector<TypedDiagnostic> diagnostics_;
 };
 

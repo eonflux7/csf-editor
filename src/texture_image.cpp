@@ -1,6 +1,7 @@
 #include "rws/texture_image.hpp"
 
 #include <stb_image.h>
+#include <stb_image_write.h>
 
 #include <algorithm>
 #include <array>
@@ -287,6 +288,38 @@ bool decode_texture_image(const std::filesystem::path& path, int& width, int& he
     if (decode_png(bytes, width, height, rgba, error)) return true;
     error += " in " + path.string();
     return false;
+}
+
+bool write_png_rgba(const std::filesystem::path& path, const int width, const int height,
+                    const std::span<const std::uint8_t> rgba, std::string& error) {
+    if (width <= 0 || height <= 0 ||
+        rgba.size() != static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U) {
+        error = "PNG pixel buffer does not match the image dimensions";
+        return false;
+    }
+    std::error_code exists_error;
+    if (std::filesystem::exists(path, exists_error)) {
+        error = "Refusing to overwrite existing file " + path.string();
+        return false;
+    }
+    std::vector<std::uint8_t> encoded;
+    const auto append = [](void* context, void* data, const int size) {
+        auto& output = *static_cast<std::vector<std::uint8_t>*>(context);
+        const auto* bytes = static_cast<const std::uint8_t*>(data);
+        output.insert(output.end(), bytes, bytes + size);
+    };
+    if (stbi_write_png_to_func(append, &encoded, width, height, 4, rgba.data(), width * 4) == 0) {
+        error = "PNG encoding failed";
+        return false;
+    }
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(encoded.data()),
+                 static_cast<std::streamsize>(encoded.size()));
+    if (!output) {
+        error = "Could not write " + path.string();
+        return false;
+    }
+    return true;
 }
 
 } // namespace rws

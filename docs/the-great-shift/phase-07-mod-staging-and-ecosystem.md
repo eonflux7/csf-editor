@@ -4,9 +4,9 @@
 
 Turn validated edits into a reproducible mod project without copying or modifying
 the source corpus. Stage only changed/new files under their game-relative paths,
-validate the complete overlay, optionally invoke or implement a vetted PAK writer,
-and provide deployment/rollback metadata. Expand secondary-format support where it
-serves concrete mod workflows.
+validate the complete overlay, invoke the vetted `pak-man` CLI as the primary PAK
+packaging path, and provide deployment/rollback metadata. Expand secondary-format
+support where it serves concrete mod workflows.
 
 ## Dependencies
 
@@ -23,8 +23,8 @@ serves concrete mod workflows.
 - Conflict detection between two staged mods.
 - File hashes, intended relative paths, source provenance, tool version, and
   validation status.
-- Reproducible build command producing a distributable staging directory.
-- Optional PAK production after the chosen writer is independently validated.
+- Reproducible build command producing a transparent staging directory.
+- Primary PAK production through the independently validated `pakman-cli`.
 - Deployment to an explicitly selected disposable/test installation with preview,
   confirmation, backup/rollback, and exact target reporting.
 - Interoperability documentation for existing community tools.
@@ -95,15 +95,15 @@ from pre-existing source-corpus diagnostics.
 
 Support two output levels:
 
-1. **Staging directory:** the primary, transparent and testable artifact.
-2. **PAK archive:** optional derivative built from the staging directory.
+1. **PAK archive:** the primary distributable, built from changed/new files by
+   invoking `pakman-cli` and accepted only after full verification succeeds.
+2. **Staging directory:** the transparent and testable intermediate/fallback.
 
 Existing community evidence indicates that an uncompressed CSF PAK variant is
-accepted by the game, but this must be validated against controlled samples and
-the target game versions before integration. Prefer invoking a user-configured
-external tool initially if its license and command behavior are acceptable. If an
-internal writer is added, it needs independent list/extract/repack comparisons and
-must never use the source archive as its output path.
+accepted by the game. Use the user-configured CLI from the sibling `pak-man`
+project rather than duplicating its writer. Record the executable hash when its
+path is available, invoke it without a command shell, require its full post-create
+verification, and never use a source archive as an output path.
 
 ## Deployment and rollback
 
@@ -119,6 +119,11 @@ ordinary export:
 - support exact rollback from the deployment manifest;
 - never delete unrecognized files during rollback;
 - clearly distinguish loose-file deployment from PAK deployment.
+
+The primary deployment command installs a freshly reverified PAK at an explicit
+game-relative path. Loose-file deployment remains a separately named diagnostic
+fallback; both use the same dry-run, backup manifest, hash verification, and
+rollback safeguards.
 
 The first release may stop at producing a staging directory and instructions. A
 safe non-deployment workflow is preferable to an unreliable installer.
@@ -183,9 +188,9 @@ readers is a reverse-engineering task, not a packaging prerequisite.
 ### P07-04: PAK research/integration
 
 - Document archive variants and timestamps/compression behavior.
-- Validate an external tool or implement a bounded writer.
+- Integrate the validated `pakman-cli` command contract directly.
 - List/extract/repack controlled samples and compare file paths/content.
-- Keep staging-directory output usable without PAK support.
+- Keep staging-directory output usable for inspection and recovery.
 
 ### P07-05: deployment and rollback
 
@@ -248,7 +253,7 @@ installed game or the read-only reference corpus as a destructive test target.
 |---|---|
 | Mod package accidentally includes original resources | Changed/new-only staging plus manifest/license checks |
 | Source update makes binary edits stale | Record source hashes and refuse silent application on mismatch |
-| PAK writer produces subtly invalid archives | Keep transparent staging primary; independent repack/extract tests |
+| PAK writer produces subtly invalid archives | Retain transparent staging; require independent round-trip tests and full post-create verification |
 | Deployment damages an installation | Explicit disposable root, dry run, backup, verified writes, rollback |
 | Scope drifts into unrelated asset editors | Select secondary formats by concrete workflow and plugin boundaries |
 | Two mods alter the same structured file | Report path and semantic conflicts; never guess-merge binary output |
@@ -262,8 +267,9 @@ installed game or the read-only reference corpus as a destructive test target.
   staged precedence.
 - Conflicts between mod projects are detectable at least by path and, for supported
   CSFFBS edits, semantic target.
-- Staging remains a complete supported outcome even if PAK creation is unavailable.
-- Any integrated PAK path has controlled list/extract/repack validation and never
+- PAK creation through `pakman-cli` is the primary packaging outcome; staging
+  remains a complete inspection and recovery artifact.
+- The integrated PAK path requires full post-create verification and never
   overwrites source archives.
 - Any deployment path supports dry run, explicit targets, backups, verification,
   and exact rollback without deleting unrelated files.
@@ -271,4 +277,3 @@ installed game or the read-only reference corpus as a destructive test target.
   workflow.
 - An end-to-end tutorial demonstrates non-destructive inspect, edit, validate,
   stage, package/test, and rollback.
-

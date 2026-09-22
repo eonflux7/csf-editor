@@ -6,7 +6,7 @@ provides the `rws-man` graphical chunk browser and 3D scene preview, command-lin
 analysis tools, OBJ/glTF export, and a Blender add-on for inspecting and rebaking
 the game's lightmaps.
 
-![Assembled Commandos: Strike Force scene preview in rws-man](docs/images/csf-rws-tools-scene-preview.png)
+![The rws-man workbench: Explorer, 3D viewport, and Inspector showing a Commandos: Strike Force mission](docs/images/csf-rws-tools-scene-preview.png)
 
 The project is under active development. It understands many structures used by
 *Commandos: Strike Force*, but it is not a general-purpose RenderWare editor and
@@ -60,7 +60,8 @@ RenderWare rights holders.
 | `rws-corpus` | Recursively inventory a directory of `.rws` and `.rpc` files |
 | `rws_core` | Parser, typed decoders, and export library used by all tools |
 | `csf-info` | Summarize, validate, search, and inspect one `CSFFBS` document |
-| `csf_core` | Generic `CSFFBS` parser and immutable document model |
+| `csf-mod` | Guarded CSFFBS editing, changed-only staging, verified PAK packaging via `pakman-cli`, deployment, and rollback |
+| `csf_core` | Generic `CSFFBS` parser, typed views, lossless authoring, and mod-project model |
 | `tools/blender/rws_lightmaps` | Blender material, bake, and DDS staging add-on |
 
 Format notes live in [docs/rws-format.md](docs/rws-format.md), corpus results in
@@ -69,6 +70,8 @@ Format notes live in [docs/rws-format.md](docs/rws-format.md), corpus results in
 The generic container grammar is recorded in
 [docs/csffbs-format.md](docs/csffbs-format.md), with the mission-workbench plan in
 [docs/the-great-shift/README.md](docs/the-great-shift/README.md).
+The non-destructive edit-to-staging workflow is documented in
+[docs/guarded-authoring-and-mods.md](docs/guarded-authoring-and-mods.md).
 
 ## Requirements
 
@@ -95,10 +98,15 @@ Both platforms:
 - CMake 3.24 or newer, available on `PATH`.
 - Git, available on `PATH` (used to fetch the pinned dependencies).
 
-CMake downloads the pinned GLFW 3.4, Dear ImGui 1.91.9b, and stb_image sources
-the first time the build is configured. stb_image supplies portable PNG decoding,
-so no system image library is required on either platform. The core-only build
-does not require GLFW, ImGui, or OpenGL.
+CMake downloads the pinned GLFW 3.4, Dear ImGui 1.91.9b (the `-docking` tag),
+stb (`stb_image` and `stb_image_write`), and portable-file-dialogs sources the first
+time the build is configured. stb supplies portable PNG decoding and screenshot
+encoding, so no system image library is required on either platform. The GUI embeds
+its fonts (IBM Plex Sans/Mono and a Lucide icon subset; licenses are in
+`app/ui/fonts/LICENSES.md`) and needs no system fonts. On Linux, the native
+**Open** dialogs use `zenity` or `kdialog` when one is installed; without either you
+can still start from the command line or drag and drop. The core-only build does
+not require GLFW, ImGui, or OpenGL.
 
 ## Quick start
 
@@ -373,87 +381,103 @@ It is read-only: it does not modify the files it scans.
 
 ## GUI usage
 
-The GUI opens maximized and treats the 3D viewport as its main workspace. When a
-loaded document contains Clumps, scene instances, or a World, the assembled
-`Scene` workspace opens automatically; otherwise it falls back to a previewable
-`Geometry` and then to the `Inspector`. Use the top toolbar or the `1`, `2`, and
-`3` keys to switch workspaces. `Ctrl+Space` temporarily hides the optional side
-panels so the viewport uses the full application content area.
+`rws-man` is a workbench: a menu bar with workspace tabs across the top, an
+**Explorer** on the left, the **viewport** (or script listing, or hex view) in the
+middle, an **Inspector** on the right, an optional bottom dock (**Console**,
+**Diagnostics**, **References**, **Changes**, **Missions**), and a status bar. With
+no document open, a start page lists recent files, the missions under your resource
+root, and the key bindings.
 
-Open an SCN with `File > Open mission...` (`Ctrl+Shift+O`) or drop it on the
-window to enter the Mission workspace. The resolved visual and collision maps
-load together. Actors, navigation points/links, dummies, extruded areas,
-SCN-colored light-radius rings, and effects placed through referenced dummies
-share the existing 3D camera and work in perspective and all orthographic
-projections. Orientation and navigation arrows expose record direction. The
-`Overlays` menu controls each layer independently, while SCN folders can hide or
-show their dummy/light members. Clicking a marker or line selects its stable SCN
-entry; the right inspector shows typed details, its raw CSFFBS subtree, and exact
-class/name definition or candidate sites. The
-left mission tree provides case-insensitive search over names, IDs, class IDs,
-scripts, groups, and navigation points.
+- **Open** a mission with `File > Open mission...` (`Ctrl+Shift+O`), pick one from
+  the start page or the Missions tab, or drop an `.scn`, `.rpc`, `.rws`, or `.anm`
+  file on the window. Missions load on a worker thread with a progress overlay and
+  a **Cancel** button; the current mission stays untouched until the new one has
+  loaded completely. Set a **resource root** in `Edit > Preferences...` to list the
+  missions under it (`<root>/Maps/*/*.scn` or `<root>/<package>/Maps/*/*.scn`).
+- **Workspaces** are the tabs `MISSION SCRIPT ANIM SCENE GEOM HEX` (`Ctrl+1`...`Ctrl+6`;
+  bare `1`-`4` still work while the viewport is hovered). A loaded document opens in
+  `SCENE`, or `GEOM` and then `HEX` when it has no scene; a mission opens in
+  `MISSION`.
+- **Layout.** Panels dock, tab, resize, collapse, and float. Each workspace keeps its
+  own layout (the script workspace gives the listing more width), and the layouts
+  persist between launches. `View > Reset layout` restores the current workspace's
+  default. `Ctrl+B` / `Ctrl+I` / `Ctrl+J` toggle the Explorer, Inspector, and bottom
+  dock, and `Ctrl+Space` maximizes the viewport.
+- **Go to anything** (`Ctrl+P`) searches actors, navigation groups and points,
+  dummies, areas, lights, effects, scripts, variables, BDD classes, animations,
+  chunks, and resources. `0x2C79D6` jumps to an offset, `#17` to an entry index. The
+  **command palette** (`Ctrl+Shift+P`) searches every command the same way. Menus,
+  shortcuts, the palette, and `Help > Keyboard shortcuts` all read one command
+  registry, so they cannot drift apart.
+- **History.** `Alt+Left` / `Alt+Right` (and mouse buttons 4/5) walk back and forward
+  through selections, restoring the workspace and camera. Following a cross-reference
+  (a script operand to its actor, a "used by" row to the script instruction, a class
+  to its BDD record) pushes onto the history, so you can always return.
+- **Inspector.** Selection only. A breadcrumb (`Ambush.scn > Actors > Espia > class
+  0x37 > Objetos.bdd#1659`) shows where the record lives, and every segment is a
+  link. Values are shown in property grids: click a value to copy it, right-click an
+  integer for hex/decimal, an angle for degrees/radians, a vector for per-component
+  copy. Each value carries a **provenance badge**: green check = proven (parsed with
+  the expected type, or resolved uniquely), `~` cyan = inferred (candidate,
+  fallback, or non-exact resolution), `?` violet = unknown/raw (preserved, meaning not
+  decoded), and an amber triangle = diagnosed (missing or ambiguous). Hover a badge
+  for the evidence. The `01/10` button opens the raw CSFFBS bytes behind a value in
+  place. Pin the inspector to keep a record while you browse, or open a second
+  inspector to compare two records. Fields are read-only; the lock icon marks where
+  the guarded-authoring editors will attach.
+- **Explorer.** One frame for every workspace: a search prompt, filter chips
+  (kind, diagnostics, dirty), counts, then the tree. Rows show a kind icon,
+  a diagnostic marker, and a dirty marker. Right-click any row for Frame, Isolate,
+  Copy ID / identity / path, Show in hex, Show references, and Export. The mission
+  Explorer also lists the **Classes** in the object database and the **Resources**
+  of the mission graph (resolved, ambiguous, missing).
+- **Console and toasts.** Loads, exports, saves, screenshots, and settings problems
+  are logged with timestamps and severity in the Console (copy all, save to a new
+  file, filter by level). Export and save results also show a short toast with an
+  **Open folder** action. The status bar shows the latest line.
+- **Diagnostics** merges RWS, CSFFBS, mission, resource, object-database, animation,
+  and script diagnostics into one sortable, filterable table; clicking a row selects
+  its source.
+- **Screenshots** (`F12` or the camera button) save a PNG in `<settings>/screenshots`.
 
-`View > Scene tree` opens the parsed RenderWare tree and decoded CSF scene
-instances on the left. `View > Selection inspector` opens a compact selection
-summary on the right. Both panels start hidden and can also be toggled from the
-toolbar. Select a tree node or click visible scene geometry to synchronize the
-selection; the full `Inspector` workspace shows typed fields and the editable raw
-payload.
+Actors, navigation points/links, dummies, extruded areas, SCN-colored light-radius
+rings, and effects placed through referenced dummies share the existing 3D camera
+and work in perspective and all orthographic projections. Orientation and navigation
+arrows expose record direction. The viewport's floating toolbar holds shading,
+projection, **Frame**, **Layers** (with legend swatches for each overlay kind),
+**Measure**, **Clip**, a **View** popover, and screenshot. A stats HUD sits at the
+bottom left, an axis gizmo at the bottom right (click an axis to snap to an
+orthographic view), and hovering a marker names it before you click. The rarely
+needed rendering, texture/lightmap, collision-style, BSP, surface, and
+selected-triangle controls live in the dockable **Render settings** panel
+(`Tools > Open scene / collision tools`).
 
-The `File`, `View`, `Tools`, `Export`, and `Help` menus group document lifecycle,
-layout, preview utilities, export operations, and control reminders. `Ctrl+O`
-opens an RWS and `Ctrl+S` retains the safe save-copy behavior.
+For the parsed RenderWare tree, the Explorer in `SCENE`, `GEOM`, and `HEX` shows the
+chunk tree and decoded CSF scene instances. Chunk rows are colored by declared clump
+size (with a legend and an option to turn it off); truncated chunks are marked as
+errors. The `HEX` workspace shows typed fields and the editable raw payload.
 
-The scene itself has one compact viewport toolbar for visual/collision visibility,
-render style, projection, framing, measurement mode, and the **Tools** panel. Scene
-counts, geometry totals, collision totals, and camera distance appear as a small
-overlay inside the viewport rather than consuming rows above it. **Viewport tools**
-opens on the right and contains the less frequent rendering, texture/lightmap,
-collision-style, clipping, measurement, BSP, surface, and selected-triangle
-controls. The individual-Geometry workspace uses the same compact approach, with
-advanced options kept in its **Options** popup.
+The menus group document lifecycle, layout, preview utilities, export operations,
+and help. `Ctrl+O` opens an RWS and `Ctrl+S` retains the safe save-copy behavior.
 
-The preview offers textured, material-index, material-color, UV-checker,
-lightmap-UV, lightmap-only, combined base/lightmap, and wireframe views. Its DDS
-loader accepts legacy DXT1, DXT3, DXT5, 16-bit mask-based RGB/RGBA, and 32-bit
-mask-based RGB/RGBA images, and its portable PNG loader accepts standard PNG
-images. Base
-textures use UV1 (`TEXCOORD_0`) and MatFX lightmaps use UV2 (`TEXCOORD_1`). In a
-mission, DDS and PNG textures first use the package-relative paths listed by its
-`.txl`; the preview falls back to nearby `Textures` directories when no TXL
-entry matches. TXL `_AltNNN` families are selectable in **Viewport tools**, with
-per-texture fallback to the base image.
+### Settings, layouts, and logs
 
-When `NAME.rws` is opened, the GUI first checks for `NAME_col.rws` in the same
-directory. A valid companion remains a separate read-only document; a missing,
-invalid, or partially recovered companion never prevents the visual file from
-loading. Opening an `_col.rws` file directly provides collision-only viewing.
-The collision controls independently toggle visual and collision layers, select
-solid, solid-with-wire, wireframe, or X-ray rendering, choose surface,
-material-index, or single-color display, and adjust overlay opacity. Surface mode
-uses Pyro Material names/IDs when present and a deterministic palette otherwise.
-The translucent pass is intentionally unsorted in this first slice; it is stable
-and depth-tested but may show ordinary alpha-ordering artifacts in dense overlaps.
+Everything the GUI writes for itself lives in one per-user directory, never in the
+working directory or the repository:
+`%LOCALAPPDATA%\CSF RWS Tools\` on Windows, `$XDG_CONFIG_HOME/csf-rws-tools/` (or
+`~/.config/csf-rws-tools/`) on Linux. It holds `settings.ini` (resource root, UI
+scale, theme, recent files and pairings, panel visibility, viewport defaults, export
+policy, and camera bookmarks), `layout.ini` (dock layouts), `screenshots/`, and, in
+Debug builds, `rws-man-debug.log`. `settings.ini` is plain text and safe to edit; a
+missing file yields defaults, and a corrupted one falls back to defaults field by
+field and reports what it ignored in the Console.
 
-Use **Open RWS...** to choose a main document and **Open collision companion...**
-to pair an unusually named World. Pairing is transactional: cancellation or failed
-World recovery leaves the active companion unchanged. A bounded recent-pairing list
-stores normalized paths in the user's local application-data directory, never in
-the repository; recent entries are reloaded and validated before use.
-
-Clicking collision reports stable World/sector/triangle identities, byte offsets,
-material and raw surface label, vertices, hit position, geometric normal, and
-barycentric coordinates without adding synthetic nodes to the parsed tree. The
-selected triangle is highlighted independently of main-tree selection. Inspection
-tools provide source-space X/Y/Z clipping, two-hit distance and absolute-axis
-deltas, selection framing, coordinate copy, leaf/BSP status controls, and an
-explicit collision-picking preference. Fixed orthographic **Top (X/Z)**,
-**Front (X/Y)**, and **Side (Z/Y)** views share the collision picker; source RWS
-uses Y as the vertical map axis.
-
-Here, a level collision World is the static geometry stored in the sibling file.
-It is distinct from the Collision Plugin (`0x11D`) attached to some geometry and
-from RenderWare Physics body/ragdoll definitions (`0x907`/`0x909`).
+`Edit > Preferences...` sets the resource root, UI scale (80-200%, on top of the
+operating system's display scale; text is rasterized at the physical pixel size),
+theme (dark or high-contrast), viewport defaults, and the export policy. The
+default export policy is **new files only**: an export never replaces an existing
+file, it writes a numbered new one (`map.scene.2.gltf`). Choose *Confirm before
+overwriting* to write to the usual name and be asked first.
 
 ### Camera controls
 
@@ -467,6 +491,11 @@ from RenderWare Physics body/ragdoll definitions (`0x907`/`0x909`).
 | `W` / `A` / `S` / `D` | Move horizontally while the viewport is hovered |
 | `Q` / `E` | Move down/up |
 | `Shift` | Move faster |
+| `F` / `Home` | Frame the selection / frame everything (viewport hovered) |
+| Numpad `1` / `3` / `7`, `5` | Front, side, and top views; toggle perspective |
+| `Shift+1`...`9` | Recall camera bookmark (per mission) |
+| `Ctrl+Shift+1`...`9` | Store camera bookmark |
+| `F12` | Save a PNG screenshot |
 
 The whole-scene view also has a logarithmic movement-speed control for large maps.
 Orbit/look gestures are disabled in fixed orthographic views; pan and wheel zoom
@@ -474,9 +503,11 @@ remain available.
 
 ### Editing and saving
 
-The inspector permits raw payload-byte edits. Changes are kept in memory until
-you choose **Save copy**, which writes `<original>.edited.rws`. The GUI does not
-overwrite the loaded asset. **Reload edited bytes** refreshes the preview from the
+The `HEX` workspace permits raw payload-byte edits (type the new value and press
+`Enter` or leave the field). Edited bytes are highlighted, counted in the status bar,
+listed in the **Changes** panel, and marked in the Explorer. Changes are kept in
+memory until you choose **Save copy**, which writes `<original>.edited.rws` (or a
+numbered new file). The GUI does not overwrite the loaded asset. **Reload edited bytes** refreshes the preview from the
 current in-memory data.
 
 Raw editing can still create a game-invalid file. Work on copies and test modified
@@ -484,7 +515,7 @@ assets in a disposable game installation.
 
 ## Geometry and scene export
 
-Selecting a Geometry in the GUI exposes local-space OBJ export. The same operation
+Selecting a Geometry in the GUI exposes local-space OBJ export (in the Inspector's Decoded section). The same operation
 is available for every Geometry through `rws-info --export-obj`.
 
 **Export whole scene (glTF)** writes three sibling files:
@@ -552,7 +583,8 @@ DDS workflow.
 - Parsing and export behavior is based on the currently studied *Commandos:
   Strike Force* corpus; other RenderWare games and versions may differ.
 - Several game-specific fields and chunk types remain unidentified.
-- Hex edits are structural byte edits, not a schema-aware authoring system.
+- RWS hex edits remain structural byte edits; guarded schema-aware authoring is
+  currently limited to the reviewed CSFFBS field set exposed by `csf-mod`.
 - Scene glTF export does not package or convert external DDS textures.
 - Modified assets are not guaranteed to load in the game.
 

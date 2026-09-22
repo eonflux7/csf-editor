@@ -288,6 +288,9 @@ MissionScene MissionScene::project(const Document& document) {
     scene.player_.commando_start = scalar(".INICIO_COMMANDO");
     scene.player_.sniper_start = scalar(".INICIO_SNIPER");
     scene.player_.spy_start = scalar(".INICIO_SPY");
+    scene.metadata_.sector_map = string_value(document, root_field(document, ".MAPA_SECTORES"));
+    scene.metadata_.maximum_score = scalar(".PUNTUACION_MAXIMA");
+    scene.metadata_.minimum_score = scalar(".PUNTUACION_MINIMA");
 
     if (const auto* world = root_field(document, ".MUNDOVIS")) {
         for (const auto& item : world->children) {
@@ -300,6 +303,8 @@ MissionScene MissionScene::project(const Document& document) {
                 field.value = *real_value;
             else if (const auto text_value = string_value(document, &item))
                 field.value = *text_value;
+            else if (const auto vector_value = vec3(&item))
+                field.value = *vector_value;
             else
                 continue;
             scene.environment_.push_back(std::move(field));
@@ -518,6 +523,70 @@ MissionScene MissionScene::project(const Document& document) {
             collect_folders(document, *folders, "", scene.folders_);
     }
 
+    if (const auto* mesh = root_field(document, ".MALLA_SCENE_OBJS")) {
+        if (const auto* records = child(document, *mesh, ".SCENEOBJS")) {
+            for (const auto& record : records->children) {
+                SceneObjectAnimation value;
+                value.source = source(document, record);
+                value.id = string_value(document, child(document, record, ".ID"));
+                value.animation_id = integer(child(document, record, ".ANIMACION"));
+                value.offset_type = integer(child(document, record, ".TIPO_OFFSET"));
+                value.offset = real(child(document, record, ".OFFSET"));
+                validate_fields(document, record,
+                                {{".ID", ExpectedField::string},
+                                 {".ANIMACION", ExpectedField::integer},
+                                 {".TIPO_OFFSET", ExpectedField::integer},
+                                 {".OFFSET", ExpectedField::real}},
+                                value.unknown_fields, scene.diagnostics_);
+                scene.scene_objects_.push_back(std::move(value));
+            }
+        }
+    }
+
+    if (const auto* bridges = root_field(document, ".BRIDGES")) {
+        for (const auto& record : bridges->children) {
+            MissionBridge bridge;
+            bridge.source = source(document, record);
+            bridge.visual_rws = string_value(document, child(document, record, ".VISUALRWS"));
+            bridge.physics_rws = string_value(document, child(document, record, ".PHYSICRWS"));
+            if (const auto* points = child(document, record, ".CONTROL_POINTS")) {
+                for (const auto& item : points->children) {
+                    BridgeControlPoint point;
+                    point.source = source(document, item);
+                    point.type = integer(child(document, item, ".TYPE"));
+                    point.p1 = vec3(child(document, item, ".P1"));
+                    point.p2 = vec3(child(document, item, ".P2"));
+                    point.height = real(child(document, item, ".HEIGHT"));
+                    point.target_scene = string_value(document, child(document, item, ".SCN"));
+                    bridge.control_points.push_back(std::move(point));
+                }
+            }
+            scene.bridges_.push_back(std::move(bridge));
+        }
+    }
+
+    if (const auto* waters = root_field(document, ".AGUAS")) {
+        for (const auto& record : waters->children) {
+            MissionWater water;
+            water.source = source(document, record);
+            for (const auto& item : record.children) {
+                WaterField field{label(document, item), source(document, item), std::int32_t{}};
+                if (const auto* value = std::get_if<std::int32_t>(&item.scalar))
+                    field.value = *value;
+                else if (const auto* value = std::get_if<float>(&item.scalar))
+                    field.value = *value;
+                else if (const auto value = string_value(document, &item))
+                    field.value = *value;
+                else {
+                    water.unknown_fields.push_back({field.name, field.source});
+                    continue;
+                }
+                water.fields.push_back(std::move(field));
+            }
+            scene.waters_.push_back(std::move(water));
+        }
+    }
+
     auto& stats = scene.navigation_stats_;
     stats.groups = scene.navigation_.size();
     using Key = std::pair<std::int32_t, std::int32_t>;
@@ -732,6 +801,13 @@ std::string mission_scene_json(const MissionScene& scene) {
     out << ",\"spy_start\":";
     json_optional_number(out, scene.player().spy_start);
     out << '}';
+    out << ",\"metadata\":{\"sector_map\":";
+    json_optional_string(out, scene.metadata().sector_map);
+    out << ",\"maximum_score\":";
+    json_optional_number(out, scene.metadata().maximum_score);
+    out << ",\"minimum_score\":";
+    json_optional_number(out, scene.metadata().minimum_score);
+    out << '}';
     out << ",\"environment\":[";
     bool comma = false;
     for (const auto& field : scene.environment()) {
@@ -744,8 +820,18 @@ std::string mission_scene_json(const MissionScene& scene) {
             out << *integer_value;
         else if (const auto* real_value = std::get_if<float>(&field.value))
             json_number(out, *real_value);
-        else
-            out << '"' << json_escape(std::get<std::string>(field.value)) << '"';
+        else if (const auto* text_value = std::get_if<std::string>(&field.value))
+            out << '"' << json_escape(*text_value) << '"';
+        else {
+            const auto& vector_value = std::get<Vec3>(field.value);
+            out << '[';
+            json_number(out, vector_value.x);
+            out << ',';
+            json_number(out, vector_value.y);
+            out << ',';
+            json_number(out, vector_value.z);
+            out << ']';
+        }
         out << '}';
     }
     out << ']';
@@ -1008,6 +1094,78 @@ std::string mission_scene_json(const MissionScene& scene) {
         for (std::size_t i = 0; i < value.element_ids.size(); ++i) {
             if (i) out << ',';
             out << value.element_ids[i];
+        }
+        out << "]}";
+    }
+    out << "],\"scene_objects\":[";
+    comma = false;
+    for (const auto& value : scene.scene_objects()) {
+        if (comma) out << ',';
+        comma = true;
+        out << "{\"source\":";
+        json_source(out, value.source);
+        out << ",\"id\":";
+        json_optional_string(out, value.id);
+        out << ",\"animation_id\":";
+        json_optional_number(out, value.animation_id);
+        out << ",\"offset_type\":";
+        json_optional_number(out, value.offset_type);
+        out << ",\"offset\":";
+        json_optional_number(out, value.offset);
+        out << '}';
+    }
+    out << "],\"bridges\":[";
+    comma = false;
+    for (const auto& value : scene.bridges()) {
+        if (comma) out << ',';
+        comma = true;
+        out << "{\"source\":";
+        json_source(out, value.source);
+        out << ",\"visual_rws\":";
+        json_optional_string(out, value.visual_rws);
+        out << ",\"physics_rws\":";
+        json_optional_string(out, value.physics_rws);
+        out << ",\"control_points\":[";
+        for (std::size_t i = 0; i < value.control_points.size(); ++i) {
+            if (i) out << ',';
+            const auto& point = value.control_points[i];
+            out << "{\"source\":";
+            json_source(out, point.source);
+            out << ",\"type\":";
+            json_optional_number(out, point.type);
+            out << ",\"p1\":";
+            json_vec(out, point.p1);
+            out << ",\"p2\":";
+            json_vec(out, point.p2);
+            out << ",\"height\":";
+            json_optional_number(out, point.height);
+            out << ",\"target_scene\":";
+            json_optional_string(out, point.target_scene);
+            out << '}';
+        }
+        out << "]}";
+    }
+    out << "],\"waters\":[";
+    comma = false;
+    for (const auto& value : scene.waters()) {
+        if (comma) out << ',';
+        comma = true;
+        out << "{\"source\":";
+        json_source(out, value.source);
+        out << ",\"fields\":[";
+        for (std::size_t i = 0; i < value.fields.size(); ++i) {
+            if (i) out << ',';
+            const auto& field = value.fields[i];
+            out << "{\"name\":\"" << json_escape(field.name) << "\",\"source\":";
+            json_source(out, field.source);
+            out << ",\"value\":";
+            if (const auto* number_value = std::get_if<std::int32_t>(&field.value))
+                out << *number_value;
+            else if (const auto* real_value = std::get_if<float>(&field.value))
+                json_number(out, *real_value);
+            else
+                out << '"' << json_escape(std::get<std::string>(field.value)) << '"';
+            out << '}';
         }
         out << "]}";
     }

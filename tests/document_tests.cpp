@@ -6,6 +6,7 @@
 #include "csf/mission_scene.hpp"
 #include "csf/object_database.hpp"
 #include "csf/overlay.hpp"
+#include "csf/program.hpp"
 #include "rws/animation.hpp"
 #include "rws/decoded.hpp"
 #include "rws/document.hpp"
@@ -14,6 +15,15 @@
 #include "rws/scene_export.hpp"
 #include "rws/texture_image.hpp"
 #include "rws/world_recovery.hpp"
+#include "rwsman/commands.hpp"
+#include "rwsman/diagnostics.hpp"
+#include "rwsman/discovery.hpp"
+#include "rwsman/fuzzy.hpp"
+#include "rwsman/history.hpp"
+#include "rwsman/index_builders.hpp"
+#include "rwsman/log.hpp"
+#include "rwsman/search_index.hpp"
+#include "rwsman/settings.hpp"
 
 #include <algorithm>
 #include <array>
@@ -389,10 +399,412 @@ std::vector<std::byte> make_typed_scene(const bool with_unknown = false,
     return csf.bytes();
 }
 
+
+void test_fuzzy_matcher() {
+    using rwsman::fuzzy_match;
+    CHECK(fuzzy_match("", "anything") && fuzzy_match("", "anything")->score == 0);
+    CHECK(!fuzzy_match("xyz", "Guard_01"));
+    CHECK(!fuzzy_match("guardd", "guard"));
+    const auto camel = fuzzy_match("gs", "GuardSpawn");
+    CHECK(camel && camel->positions.size() == 2 && camel->positions[0] == 0 &&
+          camel->positions[1] == 5);
+    const auto separators = fuzzy_match("g1", "Guard_01");
+    CHECK(separators && separators->positions[1] == 7);
+    // Ranking: exact > prefix > word-start > scattered.
+    const auto exact = fuzzy_match("guard", "Guard");
+    const auto prefix = fuzzy_match("guard", "Guard_Post");
+    const auto inner = fuzzy_match("guard", "Big_Guard");
+    const auto scattered = fuzzy_match("guard", "Great_Umbrella_Array_Road_Dock");
+    CHECK(exact && prefix && inner && scattered);
+    CHECK(exact->score > prefix->score && prefix->score > inner->score &&
+          inner->score > scattered->score);
+    // Consecutive matches beat the same letters spread out.
+    const auto tight = fuzzy_match("lgt", "lgt");
+    const auto loose = fuzzy_match("lgt", "l_g_t");
+    CHECK(tight && loose && tight->score > loose->score);
+    // The matcher is case-insensitive and byte-position based.
+    CHECK(fuzzy_match("GUARD", "guard_01") && fuzzy_match("guard", "GUARD_01"));
+}
+
+void test_command_registry() {
+    using namespace rwsman;
+    const auto shortcut = parse_shortcut("ctrl+shift+p");
+    CHECK(shortcut && shortcut->ctrl && shortcut->shift && !shortcut->alt && shortcut->key == "P");
+    CHECK(format_shortcut(*shortcut) == "Ctrl+Shift+P");
+    CHECK(parse_shortcut("Alt+Left")->key == "Left" && parse_shortcut("F12")->key == "F12");
+    CHECK(parse_shortcut("Ctrl++") && parse_shortcut("Ctrl++")->key == "+");
+    CHECK(!parse_shortcut("") && !parse_shortcut("Ctrl+") && !parse_shortcut("Ctrl+Shift") &&
+          !parse_shortcut("A+B"));
+
+    CommandRegistry registry;
+    int ran = 0;
+    bool enabled = true;
+    const auto add = [&](const char* id, const char* keys,
+                         ShortcutScope scope = ShortcutScope::global) {
+        Command command;
+        command.id = id;
+        command.label = id;
+        command.category = "Test";
+        command.shortcut = keys;
+        command.scope = scope;
+        command.enabled = [&] { return enabled; };
+        command.run = [&] { ++ran; };
+        return registry.add(std::move(command));
+    };
+    CHECK(add("a", "Ctrl+P"));
+    CHECK(!add("a", "Ctrl+Q")); // Duplicate id.
+    CHECK(add("b", "Ctrl+Shift+P"));
+    CHECK(add("c", "1", ShortcutScope::viewport));
+    CHECK(add("d", "1"));         // Same key, different scope: no conflict.
+    CHECK(registry.conflicts().empty());
+    CHECK(add("e", "ctrl+p")); // Same binding as "a" once normalized.
+    CHECK(add("f", "Ctrl+"));  // Malformed binding.
+    const auto conflicts = registry.conflicts();
+    CHECK(conflicts.size() == 2);
+    CHECK(conflicts[0].first == "a" && conflicts[0].second == "e" &&
+          conflicts[0].shortcut == "Ctrl+P");
+    CHECK(conflicts[1].first == "f" && conflicts[1].second.empty());
+
+    CHECK(registry.run("b") && ran == 1);
+    enabled = false;
+    CHECK(!registry.run("b") && ran == 1 && !registry.is_enabled("b"));
+    CHECK(!registry.run("missing") && registry.find("missing") == nullptr);
+    CHECK(registry.by_category().size() == 1 && registry.by_category()[0].second.size() == 6);
+}
+
+void test_navigation_history() {
+    using namespace rwsman;
+    NavigationHistory history(4);
+    CHECK(history.current() == nullptr && !history.can_back() && !history.back());
+    const auto entry = [](int workspace, std::uint64_t offset) {
+        HistoryEntry value;
+        value.workspace = workspace;
+        value.selection = SelectionRef::chunk(offset);
+        return value;
+    };
+    history.push(entry(0, 1));
+    history.push(entry(0, 2));
+    history.push(entry(0, 3));
+    CHECK(history.size() == 3 && history.current()->selection.a == 3);
+    CHECK(history.back()->selection.a == 2 && history.back()->selection.a == 1 && !history.back());
+    CHECK(history.forward()->selection.a == 2 && history.can_forward());
+    // Same workspace and selection refreshes the camera instead of adding an entry.
+    auto refreshed = entry(0, 2);
+    refreshed.camera.yaw = 1.5F;
+    refreshed.camera.valid = true;
+    history.push(refreshed);
+    CHECK(history.size() == 3 && history.current()->camera.yaw == 1.5F);
+    // A new destination discards the forward stack.
+    history.push(entry(1, 9));
+    CHECK(history.size() == 3 && !history.can_forward() && history.current()->workspace == 1);
+    // The stack is bounded; the oldest entries fall off.
+    history.push(entry(1, 10));
+    history.push(entry(1, 11));
+    history.push(entry(1, 12));
+    CHECK(history.size() == 4 && history.back() && history.back() && history.back());
+    CHECK(history.current()->selection.a == 9 && !history.can_back());
+    // Selections of different kinds are different destinations.
+    CHECK(SelectionRef::chunk(4) != SelectionRef::scene_instance(4));
+    CHECK(SelectionRef::program_script(1, 2) == SelectionRef::program_script(1, 2));
+}
+
+void test_settings_model() {
+    using namespace rwsman;
+    Settings settings;
+    settings.resource_root = "/games/CSF unpacked/with\ttab";
+    settings.ui_scale = 1.25F;
+    settings.theme = "dark";
+    settings.workspace = "mission";
+    settings.show_bottom_dock = true;
+    settings.show_hud = false;
+    settings.invert_y = true;
+    settings.move_speed = 2.5F;
+    settings.default_view_style = 2;
+    settings.export_policy = ExportPolicy::confirm_overwrite;
+    settings.add_recent_file("/maps/FR01.scn", true);
+    settings.add_recent_file("/models/back\\slash\nnewline.rpc", false);
+    settings.add_recent_file("/maps/FR01.scn", true); // Moves to the front, no duplicate.
+    settings.add_recent_pairing("/a/main.rws", "/a/main_col.rws");
+    CameraBookmark bookmark;
+    bookmark.slot = 3;
+    bookmark.camera = {0.5F,  -0.25F, 100.0F, 2.0F, 1.0F, 2.0F, {3.0F, 4.0F, 5.0F},
+                       {6.0F, 7.0F,   8.0F},   9.0F, 1,    true};
+    settings.set_bookmark("sig:1234", bookmark);
+    bookmark.slot = 1;
+    settings.set_bookmark("sig:1234", bookmark);
+    CHECK(settings.recent_files.size() == 2 && settings.recent_files[0].path == "/maps/FR01.scn");
+    CHECK(settings.bookmark("sig:1234", 3) && !settings.bookmark("sig:1234", 2) &&
+          !settings.bookmark("other", 1));
+
+    const auto text = serialize_settings(settings);
+    const auto loaded = parse_settings(text);
+    CHECK(loaded.warnings.empty() && loaded.existed);
+    CHECK(loaded.settings == settings);
+    CHECK(serialize_settings(loaded.settings) == text);
+
+    // A settings file on disk survives a save/load cycle and never leaves a temp file.
+    const auto directory = std::filesystem::temp_directory_path() / "rwsman-settings-test";
+    std::filesystem::remove_all(directory);
+    const auto file = directory / "nested" / "settings.ini";
+    CHECK(save_settings(file, settings).empty());
+    CHECK(!std::filesystem::exists(file.string() + ".tmp"));
+    CHECK(load_settings(file).settings == settings);
+    // Missing file: defaults, not an error.
+    const auto missing = load_settings(directory / "none.ini");
+    CHECK(!missing.existed && missing.warnings.empty() && missing.settings == Settings{});
+
+    // Corrupted content falls back to defaults field by field and reports warnings.
+    const auto corrupt = parse_settings(
+        "version = 1\nui_scale = banana\nshow_hud = maybe\nthis line has no equals\n"
+        "recent_file = mission\nbookmark = sig\t99\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n"
+        "future_key = whatever\nmove_speed = 3\n");
+    CHECK(corrupt.warnings.size() == 5);
+    CHECK(corrupt.settings.ui_scale == 1.0F && corrupt.settings.show_hud &&
+          corrupt.settings.move_speed == 3.0F && corrupt.settings.recent_files.empty() &&
+          corrupt.settings.bookmarks.empty());
+    const std::string binary("\x01\x02\0garbage", 10);
+    const auto garbage = parse_settings(binary);
+    CHECK(garbage.settings == Settings{} && garbage.warnings.size() == 1);
+    // Out-of-range values are clamped instead of trusted.
+    const auto clamped = parse_settings("ui_scale = 40\nmove_speed = -2\n");
+    CHECK(clamped.settings.ui_scale == 2.0F && clamped.settings.move_speed == 1.0F);
+    // A newer file version still yields the values this version understands.
+    const auto newer = parse_settings("version = 99\ntheme = light\n");
+    CHECK(newer.settings.theme == "light" && newer.warnings.size() == 1);
+    // The export policy defaults to never replacing files.
+    CHECK(Settings{}.export_policy == ExportPolicy::new_files_only);
+    std::filesystem::remove_all(directory);
+
+#ifndef _WIN32
+    const auto xdg = config_directory([](const char* name) -> const char* {
+        return std::string_view(name) == "XDG_CONFIG_HOME" ? "/cfg" : nullptr;
+    });
+    CHECK(xdg == std::filesystem::path("/cfg/csf-rws-tools"));
+    const auto home = config_directory([](const char* name) -> const char* {
+        return std::string_view(name) == "HOME" ? "/home/u" : "";
+    });
+    CHECK(home == std::filesystem::path("/home/u/.config/csf-rws-tools"));
+    CHECK(config_directory([](const char*) -> const char* { return nullptr; }).empty());
+#endif
+}
+
+void test_log_buffer() {
+    using namespace rwsman;
+    LogBuffer log(3);
+    const auto start = log.revision();
+    log.push(LogLevel::info, "one");
+    log.push(LogLevel::warn, "two");
+    log.push(LogLevel::error, "three");
+    log.push(LogLevel::ok, "four");
+    CHECK(log.size() == 3 && log.snapshot().front().message == "two");
+    CHECK(log.latest()->message == "four" && log.count(LogLevel::info) == 0 &&
+          log.count(LogLevel::error) == 1);
+    CHECK(log.revision() == start + 4);
+    const auto text = log.to_text();
+    CHECK(text.find("warn  two\n") != std::string::npos && text.find("one") == std::string::npos);
+    log.clear();
+    CHECK(log.size() == 0 && !log.latest() && log.revision() == start + 5);
+}
+
+void test_search_index() {
+    using namespace rwsman;
+    SearchIndex index;
+    const auto add = [&](SymbolKind kind, const char* label, const char* detail, std::uint64_t id,
+                         std::uint64_t offset, std::uint64_t end = 0) {
+        SearchEntry entry;
+        entry.kind = kind;
+        entry.label = label;
+        entry.detail = detail;
+        entry.target = SelectionRef::mission_entry(static_cast<std::uint32_t>(id));
+        entry.offset = offset;
+        if (end) entry.end_offset = end;
+        entry.id = id;
+        index.add(std::move(entry));
+    };
+    add(SymbolKind::actor, "Guard_01", "class 55, ID 1", 17, 0x2C79D6);
+    add(SymbolKind::actor, "Guard_02", "class 55, ID 2", 18, 0x2C7A00);
+    add(SymbolKind::script, "GuardPatrol", "(root) · ID 4", 40, 0x3000);
+    add(SymbolKind::chunk, "Clump", "0x1000", 0, 0x1000, 0x5000);
+    add(SymbolKind::chunk, "Geometry", "0x1100", 0, 0x1100, 0x1800);
+    CHECK(index.entries().size() == 5 && index.size() == 5);
+    {
+        // A rebuild to the same size still changes the generation, so cached entry
+        // pointers are known to be stale.
+        SearchIndex rebuilt;
+        SearchEntry entry;
+        entry.label = "one";
+        rebuilt.add(entry);
+        const auto before = rebuilt.generation();
+        rebuilt.clear();
+        rebuilt.add(entry);
+        CHECK(rebuilt.size() == 1 && rebuilt.generation() != before);
+    }
+
+    auto results = index.query("guard", 10);
+    CHECK(results.size() == 3);
+    CHECK(results[0].entry->label == "Guard_01" || results[0].entry->label == "Guard_02");
+    CHECK(!results[0].label_positions.empty());
+    // Word-start abbreviations still find the script.
+    results = index.query("gp", 10);
+    CHECK(!results.empty() && results[0].entry->label == "GuardPatrol");
+    // "#17" is an entry lookup and returns nothing else.
+    results = index.query("#17", 10);
+    CHECK(results.size() == 1 && results[0].entry->label == "Guard_01");
+    // A bare number ranks the exact id first.
+    results = index.query("17", 10);
+    CHECK(!results.empty() && results[0].entry->label == "Guard_01");
+    // Offsets: exact first, then the smallest containing range.
+    results = index.query("0x1100", 10);
+    CHECK(results.size() == 2 && results[0].entry->label == "Geometry" &&
+          results[1].entry->label == "Clump");
+    results = index.query("0x1200", 10);
+    CHECK(results.size() == 2 && results[0].entry->label == "Geometry");
+    CHECK(index.query("0x9999", 10).empty() && index.query("   ", 10).empty() &&
+          index.query("zzzz", 10).empty());
+    CHECK(index.query("guard", 1).size() == 1);
+    // Explorer filters are substring matches on precomputed lowercase text.
+    CHECK(index.contains(0, "guard_01") && index.contains(0, "class 55") &&
+          !index.contains(0, "patrol") && index.contains(0, ""));
+    CHECK(parse_hex_offset("0x2C79D6") == 0x2C79D6 && !parse_hex_offset("0x") &&
+          !parse_hex_offset("2C79D6") && !parse_hex_offset("0xZZ"));
+}
+
+void test_mission_index() {
+    using namespace rwsman;
+    const auto document = csf::Document::from_bytes(make_typed_scene());
+    const auto scene = csf::MissionScene::project(document);
+    SearchIndex index;
+    MissionIndexInputs inputs;
+    inputs.scene = &scene;
+    index_mission(index, inputs);
+    CHECK(index.size() >= scene.actors().size() + scene.dummies().size() + scene.lights().size() +
+                              scene.effects().size() + scene.areas().size());
+    const auto results = index.query("sparks", 5);
+    CHECK(!results.empty() && results[0].entry->kind == SymbolKind::effect);
+    const auto* entry = results[0].entry;
+    CHECK(entry->target.kind == SelectionRef::Kind::mission_entry && entry->offset &&
+          entry->id && entry->target.a == *entry->id);
+    // Both actors share a name; both stay reachable and distinct by entry index.
+    const auto actors = index.query("duplicate", 5);
+    CHECK(actors.size() >= 2 && actors[0].entry->kind == SymbolKind::actor &&
+          actors[1].entry->kind == SymbolKind::actor &&
+          actors[0].entry->id != actors[1].entry->id);
+}
+
+
+void test_mission_discovery() {
+    using namespace rwsman;
+    const auto root = std::filesystem::temp_directory_path() / "rwsman-discovery-test";
+    std::filesystem::remove_all(root);
+    const auto touch = [](const std::filesystem::path& path) {
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream(path) << "x";
+    };
+    touch(root / "Ambush" / "Maps" / "ST08" / "Ambush.scn");
+    touch(root / "Convoy" / "Maps" / "FR03" / "Convoy.SCN");
+    touch(root / "Convoy" / "Maps" / "FR03" / "readme.txt");
+    touch(root / "Convoy" / "Maps" / "FR03" / "nested" / "Deep.scn"); // Not scanned.
+    touch(root / "Other" / "Data" / "Hidden.scn");                     // Not under Maps.
+    touch(root / "Maps" / "TEST" / "Direct.scn");                      // The root is a package itself.
+    const auto found = discover_missions(root);
+    CHECK(found.size() == 3);
+    // Sorted by package, then map, then name, ignoring case.
+    CHECK(found[0].package == "Ambush" && found[0].map == "ST08" && found[0].name == "Ambush");
+    CHECK(found[1].package == "Convoy" && found[1].map == "FR03" && found[1].name == "Convoy");
+    CHECK(found[2].package == "rwsman-discovery-test" && found[2].name == "Direct");
+    CHECK(discover_missions(root, 1).size() == 1);
+    CHECK(discover_missions(root / "missing").empty() && discover_missions({}).empty());
+    std::filesystem::remove_all(root);
+}
+
+void test_diagnostic_table() {
+    using namespace rwsman;
+    std::vector<DiagnosticRow> rows;
+    const auto add = [&](DiagnosticSeverity severity, const char* source, const char* file, std::optional<std::uint32_t> entry,
+                         std::optional<std::uint64_t> offset, const char* message) {
+        DiagnosticRow row;
+        row.severity = severity;
+        row.source = source;
+        row.file = file;
+        row.entry = entry;
+        row.offset = offset;
+        row.message = message;
+        rows.push_back(row);
+    };
+    add(DiagnosticSeverity::warning, "RWS", "ST08.rws", std::nullopt, 0x3EE5C, "Chunk payload is truncated");
+    add(DiagnosticSeverity::error, "CSFFBS", "Ambush.scn", 12, 0x100, "Unexpected entry type");
+    add(DiagnosticSeverity::note, "Resources", "Armas.bdd", 5, 0x50, "Reference spelling differs");
+    add(DiagnosticSeverity::error, "Mission", "Ambush.scn", 3, 0x40, "Actor has no .POS");
+    DiagnosticFilter filter;
+    // Severity order: errors first when ascending, and ties keep the input order.
+    auto order = select_diagnostics(rows, filter, DiagnosticColumn::severity, true);
+    CHECK((order == std::vector<std::size_t>{1, 3, 0, 2}));
+    order = select_diagnostics(rows, filter, DiagnosticColumn::offset, true);
+    CHECK((order == std::vector<std::size_t>{3, 2, 1, 0}));
+    order = select_diagnostics(rows, filter, DiagnosticColumn::offset, false);
+    CHECK((order == std::vector<std::size_t>{0, 1, 2, 3}));
+    order = select_diagnostics(rows, filter, DiagnosticColumn::entry, true);
+    CHECK(order.front() == 3 && order.back() == 0); // Rows without an entry sort last.
+    filter.errors = false;
+    CHECK(select_diagnostics(rows, filter, DiagnosticColumn::message, true).size() == 2);
+    filter = {};
+    filter.text = "ambush";
+    CHECK(select_diagnostics(rows, filter, DiagnosticColumn::file, true).size() == 2);
+    filter = {};
+    filter.source = "RWS";
+    CHECK(select_diagnostics(rows, filter, DiagnosticColumn::file, true).size() == 1);
+    // Collecting from a projected mission reports the scene's own diagnostics with a target.
+    const auto document = csf::Document::from_bytes(make_typed_scene(true));
+    const auto scene = csf::MissionScene::project(document);
+    DiagnosticInputs inputs;
+    inputs.scene = &scene;
+    inputs.scene_document = &document;
+    const auto collected = collect_diagnostics(inputs);
+    CHECK(!collected.empty());
+    CHECK(std::ranges::any_of(collected, [](const DiagnosticRow& row) { return row.source == "CSFFBS"; }));
+    CHECK(std::ranges::any_of(collected, [](const DiagnosticRow& row) {
+        return row.source == "Mission" && row.target.kind == SelectionRef::Kind::mission_entry;
+    }));
+}
+
+void test_search_index_grouping() {
+    using namespace rwsman;
+    SearchIndex index;
+    SearchEntry group;
+    group.kind = SymbolKind::navigation_group;
+    group.label = "Patrol";
+    index.add(group);
+    SearchEntry point;
+    point.kind = SymbolKind::navigation_point;
+    point.label = "Stop 1";
+    point.parent = 0;
+    index.add(point);
+    SearchEntry script;
+    script.kind = SymbolKind::script;
+    script.label = "Init";
+    script.group = "Setup/Alarms";
+    index.add(script);
+    CHECK(index.indices_of(SymbolKind::navigation_point).size() == 1 &&
+          index.entries()[index.indices_of(SymbolKind::navigation_point)[0]].parent == 0);
+    CHECK(index.indices_of(SymbolKind::script).size() == 1 && index.indices_of(SymbolKind::actor).empty());
+    index.clear();
+    CHECK(index.size() == 0 && index.indices_of(SymbolKind::script).empty());
+}
+
 } // namespace
 
 // NOLINTNEXTLINE(bugprone-exception-escape): CHECK failures intentionally unwind
 int main() {
+    test_fuzzy_matcher();
+    test_command_registry();
+    test_navigation_history();
+    test_settings_model();
+    test_log_buffer();
+    test_search_index();
+    test_mission_index();
+    test_mission_discovery();
+    test_diagnostic_table();
+    test_search_index_grouping();
     {
         const std::array primitives{csf::ScreenOverlayPrimitive{1, csf::OverlayPrimitiveKind::point,
                                                                 10, 10, 10, 10, 0, true, false},
@@ -705,6 +1117,113 @@ int main() {
         CHECK(graph.uses(map / "WORLD.RWS").size() == 1);
         CHECK(graph.textures().resolve("mission") ==
               package / "Models" / "Weap" / "Textures" / "mission.dds");
+    }
+    {
+        // Regressions found by opening the CSF_unpacks corpus: unset VIS fields, security
+        // files named by the scene, and texture lists that live in another package.
+        const auto regression = mission_test_root / "Regression";
+        std::vector<std::byte> empty_csf;
+        append_csf_header(empty_csf, 0, 0, 0);
+        const auto write_package = [&](const std::filesystem::path& package, const std::string& map_name,
+                                       const std::string& scene, const std::vector<std::string>& strings,
+                                       const std::vector<std::string>& vis_fields) {
+            const auto map = package / "Maps" / map_name;
+            std::vector<std::byte> scene_bytes;
+            append_csf_header(scene_bytes, 0, 0, static_cast<std::uint32_t>(strings.size()));
+            for (const auto& value : strings) append_csf_string(scene_bytes, value);
+            write_bytes(map / (scene + ".scn"), scene_bytes);
+            write_bytes(map / (scene + ".gsc"), empty_csf);
+            write_bytes(map / (scene + ".csc"), empty_csf);
+            std::vector<std::byte> vis;
+            for (const auto& field : vis_fields) append_length_string(vis, field);
+            write_bytes(map / (scene + ".vis"), vis);
+            for (const auto* name : {"Anims.bdd", "Armas.bdd", "Efectos.bdd", "Materiales.bdd",
+                                     "Objetos.bdd", "Sonidos.bdd"})
+                write_bytes(package / "BDD" / name, empty_csf);
+            return map / (scene + ".scn");
+        };
+        const auto has_edge = [](const csf::MissionGraph& graph, const std::string& reference,
+                                 const csf::ResolutionStatus status) {
+            return std::ranges::any_of(graph.edges(), [&](const auto& edge) {
+                return edge.status == status &&
+                       edge.original_reference.find(reference) != std::string::npos;
+            });
+        };
+
+        // An empty VIS field is an unset reference, not a missing one.
+        std::vector<std::byte> vis_with_unset_sky;
+        append_length_string(vis_with_unset_sky, "Maps/M1/world.rws");
+        append_length_string(vis_with_unset_sky, "Maps/M1/world_col.rws");
+        append_length_string(vis_with_unset_sky, "Maps/M1/Textures/");
+        append_length_string(vis_with_unset_sky, "");
+        write_bytes(regression / "unset.vis", vis_with_unset_sky);
+        const auto unset = csf::read_vis(regression / "unset.vis");
+        CHECK(unset.references.size() == 3);
+        CHECK(std::ranges::none_of(unset.references, [](const auto& reference) {
+            return reference.kind == csf::DependencyKind::sky_model;
+        }));
+
+        // The scene names its security file; a shared one must resolve, not be guessed.
+        const auto home_scene = write_package(regression / "Home", "M1", "Level",
+                                              {"Maps\\Secs\\Shared.sec"},
+                                              {"Maps/M1/world.rws", "Maps/M1/world_col.rws",
+                                               "Maps/M1/Textures/", ""});
+        write_bytes(regression / "Home" / "Maps" / "Secs" / "Shared.sec", {std::byte{0}});
+        // The visual map and its texture list only exist in a sibling package.
+        write_bytes(regression / "Other" / "Maps" / "M1" / "world.rws", {std::byte{0}});
+        write_bytes(regression / "Other" / "Maps" / "M1" / "world_col.rws", {std::byte{0}});
+        const std::string other_txl_text = "Maps\\M1\\Textures/lightmap.dds\r\n";
+        std::vector<std::byte> other_txl;
+        for (const auto character : other_txl_text) other_txl.push_back(static_cast<std::byte>(character));
+        write_bytes(regression / "Other" / "Maps" / "M1" / "world.txl", other_txl);
+        write_bytes(regression / "Other" / "Maps" / "M1" / "Textures" / "lightmap.dds",
+                    {std::byte{2}});
+        const auto home = csf::MissionGraph::load({home_scene, regression / "Home", {}});
+        CHECK(std::ranges::none_of(home.edges(), [](const auto& edge) {
+            return edge.status == csf::ResolutionStatus::missing &&
+                   (edge.kind == csf::DependencyKind::sky_model ||
+                    edge.original_reference.empty() ||
+                    edge.original_reference.find(".sec") != std::string::npos);
+        }));
+        CHECK(has_edge(home, "Shared.sec", csf::ResolutionStatus::exact));
+        CHECK(!has_edge(home, "Level.sec", csf::ResolutionStatus::missing));
+        CHECK(home.uses(regression / "Home" / "Maps" / "Secs" / "Shared.sec").size() == 1);
+        CHECK(std::ranges::none_of(home.diagnostics(), [](const auto& diagnostic) {
+            return diagnostic.message.find(".sec") != std::string::npos;
+        }));
+
+        // The texture list is inferred from the visual map in the other package.
+        CHECK(home.uses(regression / "Other" / "Maps" / "M1" / "world.txl").size() == 1);
+        CHECK(home.textures().resolve("lightmap") ==
+              regression / "Other" / "Maps" / "M1" / "Textures" / "lightmap.dds");
+
+        // A texture list already found next to the scene is not added twice.
+        const auto local_scene = write_package(regression / "Local", "M2", "Level2", {},
+                                               {"Maps/M2/world2.rws", "", "", ""});
+        write_bytes(regression / "Local" / "Maps" / "M2" / "world2.rws", {std::byte{0}});
+        write_bytes(regression / "Local" / "Maps" / "M2" / "world2.txl", other_txl);
+        const auto local = csf::MissionGraph::load({local_scene, regression / "Local", {}});
+        CHECK(local.uses(regression / "Local" / "Maps" / "M2" / "world2.txl").size() == 1);
+
+        // A guessed "<scene>.sec" is dropped, but a security file the scene names and that
+        // does not exist is still reported.
+        const auto absent_scene = write_package(regression / "Absent", "M3", "Level3",
+                                                {"Maps\\Secs\\Absent.sec"}, {"", "", "", ""});
+        const auto absent = csf::MissionGraph::load({absent_scene, regression / "Absent", {}});
+        CHECK(has_edge(absent, "Absent.sec", csf::ResolutionStatus::missing));
+        CHECK(!has_edge(absent, "Level3.sec", csf::ResolutionStatus::missing));
+
+        // A scene linked by path (a bridge target) is an edge, but it is not read, so the
+        // linked mission's own references do not join this mission's graph.
+        const auto bridge_scene = write_package(regression / "Bridge", "M4", "Start",
+                                                {"Maps/M5/Next.scn"}, {"", "", "", ""});
+        write_package(regression / "Bridge", "M5", "Next", {"Models/NextOnly.rpc"},
+                      {"", "", "", ""});
+        const auto bridge = csf::MissionGraph::load({bridge_scene, regression / "Bridge", {}});
+        CHECK(has_edge(bridge, "Next.scn", csf::ResolutionStatus::exact));
+        CHECK(std::ranges::none_of(bridge.edges(), [](const auto& edge) {
+            return edge.original_reference.find("NextOnly") != std::string::npos;
+        }));
     }
     std::filesystem::remove_all(mission_test_root);
     {
@@ -1976,21 +2495,149 @@ int main() {
         CHECK(!clip.supported() && clip.keyframes.empty() && !clip.trailing_bytes.empty());
     }
     {
+        SyntheticCsf data;
+        data.container("", 7, 2);
+        data.container(".MUNDOVIS", 1, 2);
+        data.container(".MTACTICO_ORIGEN", 3);
+        data.real("", 1);
+        data.real("", 2);
+        data.real("", 3);
+        data.string(".MAPA_SECTORES", "Maps/Test.png");
+        data.integer(".PUNTUACION_MAXIMA", 100);
+        data.integer(".PUNTUACION_MINIMA", 10);
+        data.container(".MALLA_SCENE_OBJS", 1, 2);
+        data.container(".SCENEOBJS", 1);
+        data.container("", 4, 2);
+        data.string(".ID", "WINDMILL");
+        data.integer(".ANIMACION", 1378);
+        data.integer(".TIPO_OFFSET", 2);
+        data.real(".OFFSET", 0.25F);
+        data.container(".BRIDGES", 1);
+        data.container("", 3, 2);
+        data.string(".VISUALRWS", "Maps/Test.rws");
+        data.string(".PHYSICRWS", "Maps/Test_col.rws");
+        data.container(".CONTROL_POINTS", 1);
+        data.container("", 5, 2);
+        data.integer(".TYPE", 1);
+        data.container(".P1", 3);
+        data.real("", 1); data.real("", 2); data.real("", 3);
+        data.container(".P2", 3);
+        data.real("", 4); data.real("", 5); data.real("", 6);
+        data.real(".HEIGHT", 50);
+        data.string(".SCN", "Maps/Other.scn");
+        data.container(".AGUAS", 1);
+        data.container("", 2, 2);
+        data.string(".NOMBRE", "water");
+        data.string(".AGUA_TEXNM", "Gfx/normal.png");
+        const auto scene = csf::MissionScene::project(csf::Document::from_bytes(data.bytes()));
+        CHECK(scene.environment().size() == 1 &&
+              std::get<csf::Vec3>(scene.environment()[0].value).z == 3);
+        CHECK(scene.metadata().sector_map == "Maps/Test.png" &&
+              scene.metadata().maximum_score == 100 && scene.metadata().minimum_score == 10);
+        CHECK(scene.scene_objects().size() == 1 &&
+              scene.scene_objects()[0].animation_id == 1378 &&
+              scene.scene_objects()[0].offset_type == 2);
+        CHECK(scene.bridges().size() == 1 && scene.bridges()[0].control_points.size() == 1 &&
+              scene.bridges()[0].control_points[0].target_scene == "Maps/Other.scn");
+        CHECK(scene.waters().size() == 1 && scene.waters()[0].fields.size() == 2);
+        const auto json = csf::mission_scene_json(scene);
+        CHECK(json.find("scene_objects") != std::string::npos &&
+              json.find("Maps/Other.scn") != std::string::npos);
+    }
+    {
+        // Programs retain every ordered and nested operand and use lexical variable scope.
+        SyntheticCsf data;
+        data.container("", 2, 2);
+        data.container(".VARIABLES", 1);
+        data.container("", 4, 2);
+        data.integer(".ID", 7);
+        data.string(".TYPE", "NUMERO");
+        data.string(".NOMBRE", "global");
+        data.real(".VALOR", 1.5F);
+        data.container(".SCRIPTS", 1);
+        data.container("", 8, 2);
+        data.integer(".ID", 99);
+        data.string(".NOMBRE", "sample");
+        data.string(".CARPETA", "Folder/Case");
+        data.container(".FLAGS", 3, 2);
+        data.integer(".TRIGGER", 1);
+        data.integer(".ENABLED", 0);
+        data.integer(".VALIDO", 1);
+        data.container(".VARIABLES", 1);
+        data.container("", 5, 2);
+        data.integer(".ID", 7);
+        data.integer(".ARRAY", 1);
+        data.string(".TYPE", "BICHO");
+        data.string(".NOMBRE", "local");
+        data.integer(".VALOR", 10);
+        data.container(".EVENTOS", 1);
+        data.container("", 1);
+        data.string("", "START_GAME");
+        data.container(".CONDICIONES", 1);
+        data.container("", 2);
+        data.string("", "IF");
+        data.container("", 2);
+        data.string("", "VAR");
+        data.integer("", 7);
+        data.container(".ACCIONES", 3);
+        data.container("", 4);
+        data.string("", "PLAY_SONIDOID");
+        data.container("", 2);
+        data.string("", "SONIDO_BDD");
+        data.integer("", 123);
+        data.container("", 2);
+        data.string("", "NUMERO");
+        data.real("", 0.5F);
+        data.container("", 2);
+        data.string("", "NUMERO");
+        data.real("", 0.75F);
+        data.container("", 1);
+        data.string("", "ENDIF");
+        data.container("", 2);
+        data.string("", "CAMARA_EN_DUMMY");
+        data.container("", 2);
+        data.string("", "DUMMY");
+        data.integer("", 20);
+        const auto program = csf::ProgramDocument::project(csf::Document::from_bytes(data.bytes()));
+        CHECK(program.global_variables().size() == 1 && program.scripts().size() == 1);
+        const auto& script = program.scripts()[0];
+        CHECK(script.id == 99 && script.folder == "Folder/Case" && script.flags.trigger == true &&
+              script.flags.enabled == false && script.local_variables.size() == 1 &&
+              script.events[0].name == "START_GAME");
+        CHECK(script.actions.size() == 3 && script.actions[0].operands.size() == 3 &&
+              script.actions[0].operands[1].tag == "NUMERO" &&
+              script.actions[0].operands[2].tag == "NUMERO");
+        const auto json = csf::program_json(program);
+        CHECK(json.find("Folder/Case") != std::string::npos &&
+              json.find("PLAY_SONIDOID") != std::string::npos);
+        csf::ProgramReferenceIndex references;
+        references.add_program(program);
+        CHECK(std::ranges::any_of(references.references(), [](const auto& value) {
+            return value.kind == csf::ProgramReferenceKind::variable &&
+                   value.status == csf::ProgramReferenceStatus::resolved &&
+                   value.targets.size() == 1;
+        }));
+    }
+    {
         SyntheticCsf animations;
         animations.container("", 1, 2);
         animations.container(".ANIMACIONES", 1);
-        animations.container("", 6, 2);
+        animations.container("", 7, 2);
         animations.integer(".ID", 1378);
         animations.string(".NOMBRE", "walk");
         animations.string(".FICHERO_ANIM", "Anims/Walk.anm");
         animations.integer(".LOOP", 1);
         animations.real(".BLEND_IN", 0.2F);
         animations.string(".MODELO", "Guard.rpc");
+        animations.integer(".SNDID", 7); // Outside FILES: kept on the record only.
         const auto catalog_document = csf::Document::from_bytes(animations.bytes());
         const auto catalog = csf::AnimationCatalog::project(catalog_document);
         CHECK(catalog.records().size() == 1 && catalog.records()[0].id == 1378 &&
               catalog.records()[0].logical_name == "walk" &&
               catalog.records()[0].variants.size() == 1 && catalog.records()[0].loop == true);
+        CHECK(catalog.records()[0].sounds.size() == 1 &&
+              catalog.records()[0].sounds[0].logical_id == "7" &&
+              catalog.records()[0].variants[0].sounds.empty());
         CHECK(catalog.find_id(1378) == &catalog.records()[0]);
         CHECK(catalog.compatible("Models/Guard.rpc").size() == 1);
         CHECK(catalog.compatible("Models/Other.rpc").empty());

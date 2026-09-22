@@ -4,6 +4,7 @@
 #include "rws/animation.hpp"
 #include "rws/document.hpp"
 #include "rws/world_recovery.hpp"
+#include "rwsman/history.hpp"
 
 #include <imgui.h>
 
@@ -18,6 +19,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace rwsman {
@@ -80,6 +82,31 @@ public:
     void select_mission_entry(const std::uint32_t entry) noexcept {
         selected_mission_entry_ = entry;
     }
+    void clear_mission_selection() noexcept { selected_mission_entry_.reset(); }
+    // True while the pointer is over the 3D canvas (bare-key viewport shortcuts).
+    [[nodiscard]] bool viewport_hovered() const noexcept { return canvas_hovered_; }
+    [[nodiscard]] bool isolate_selected_actor() const noexcept { return isolate_selected_actor_; }
+    void set_isolate_selected_actor(const bool value) noexcept { isolate_selected_actor_ = value; }
+    void frame_all();
+    // Projection: 0 perspective, 1 top (X/Z), 2 front (X/Y), 3 side (Z/Y).
+    void set_projection(int projection) noexcept;
+    [[nodiscard]] int projection() const noexcept { return projection_; }
+    // Numpad 5: switch between perspective and the last orthographic view.
+    void toggle_perspective() noexcept;
+    void set_show_hud(const bool value) noexcept { show_hud_ = value; }
+    [[nodiscard]] bool show_hud() const noexcept { return show_hud_; }
+    void set_view_style(const int style) noexcept { view_style_ = style; }
+    void set_navigation_speed(const float speed) noexcept { navigation_speed_ = speed; }
+    void set_invert_y(const bool value) noexcept { invert_y_ = value; }
+    // True once after the toolbar's screenshot button is pressed.
+    [[nodiscard]] bool take_screenshot_request() noexcept {
+        return std::exchange(screenshot_requested_, false);
+    }
+    // Frames the selected mission record, or the scene chunk at `chunk_offset`
+    // when no mission record is selected. Returns whether anything was framed.
+    bool frame_selection(std::optional<std::uint64_t> chunk_offset);
+    [[nodiscard]] rwsman::CameraSnapshot camera() const;
+    void set_camera(const rwsman::CameraSnapshot& snapshot);
     void set_mission_entries_visible(std::span<const std::uint32_t> entries, bool visible);
     [[nodiscard]] bool mission_entry_visible(std::uint32_t entry) const noexcept;
     void draw(const rws::Chunk& geometry_chunk, std::span<const std::byte> bytes,
@@ -172,7 +199,17 @@ private:
     [[nodiscard]] std::optional<ImVec2> project_point(rws::Vec3 point) const;
     static void render_callback(const ImDrawList*, const ImDrawCmd* command);
     void render_gpu();
+    bool draw_viewport_toolbar(ImVec2 origin, ImVec2 size, bool has_visual, bool has_collision);
+    void draw_viewport_hud(ImDrawList* draw_list, ImVec2 origin, ImVec2 size,
+                           std::string_view collision_status);
+    void draw_axis_gizmo(ImDrawList* draw_list, ImVec2 origin, ImVec2 size);
+    // Returns the projection to switch to when `mouse` is over an axis of the
+    // gizmo (0 = center: back to perspective), or -1.
+    [[nodiscard]] int axis_gizmo_hit(ImVec2 origin, ImVec2 size, ImVec2 mouse) const;
+    void draw_overlay_hover_tooltip();
+    void draw_measure_panel(ImVec2 origin, ImVec2 size);
     bool create_gpu_resources();
+    void release_geometry();
     void destroy_gpu_resources();
 
     std::uint64_t chunk_offset_{~std::uint64_t{}};
@@ -233,6 +270,9 @@ private:
     float navigation_speed_{1.0F};
     float lightmap_intensity_{2.0F};
     float canvas_x_{}, canvas_y_{}, canvas_width_{}, canvas_height_{};
+    bool canvas_hovered_{};
+    bool show_hud_{true}, invert_y_{}, screenshot_requested_{}, gizmo_press_{};
+    int last_orthographic_projection_{2};
     int view_style_{};
     std::size_t selected_uv_set_{};
     bool wireframe_{true};

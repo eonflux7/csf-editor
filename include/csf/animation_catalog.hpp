@@ -11,17 +11,18 @@
 
 namespace csf {
 
+struct AnimationSoundEvent {
+    CsfSourceId source;
+    std::optional<float> time;
+    std::string logical_id;
+};
+
 struct AnimationVariant {
     CsfSourceId source;
     std::string field;
     std::string reference;
     std::optional<Resolution> resolution;
-};
-
-struct AnimationSoundEvent {
-    CsfSourceId source;
-    std::optional<float> time;
-    std::string logical_id;
+    std::vector<AnimationSoundEvent> sounds;
 };
 
 struct AnimationRecord {
@@ -40,6 +41,14 @@ struct AnimationRecord {
     std::vector<std::string> model_context;
     std::vector<std::string> item_context;
     std::vector<std::string> hand_context;
+    std::optional<std::string> model3d_item;
+    std::optional<std::string> mano_item;
+    std::optional<std::int32_t> num_anims_ps2;
+    std::optional<std::int32_t> num_anims_xbox;
+    std::optional<std::int32_t> sound_pc;
+    std::optional<std::int32_t> sound_ps2;
+    std::optional<std::int32_t> sound_xbox;
+    // Compatibility aggregate. Each event is also retained on its owning file variant.
     std::vector<AnimationSoundEvent> sounds;
     std::vector<RawField> unknown_fields;
 };

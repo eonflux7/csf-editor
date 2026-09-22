@@ -26,13 +26,16 @@ endif()
 
 add_library(csf_core
     src/csf_animation_catalog.cpp
+    src/csf_authoring.cpp
     src/csf_cmo.cpp
     src/csf_document.cpp
     src/csf_export.cpp
     src/csf_mission.cpp
     src/csf_mission_scene.cpp
+    src/csf_mod_project.cpp
     src/csf_object_database.cpp
     src/csf_overlay.cpp
+    src/csf_program.cpp
 )
 add_library(csf::core ALIAS csf_core)
 target_include_directories(csf_core PUBLIC include)
@@ -41,6 +44,32 @@ if(MSVC)
     target_compile_options(csf_core PRIVATE /W4 /permissive-)
 else()
     target_compile_options(csf_core PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+# GUI-free helpers behind the workbench: settings, command registry, fuzzy
+# search, navigation history, the operation log, and symbol indexes. It has no
+# ImGui, GLFW, or OpenGL dependency, so the core-only build and the tests cover it.
+add_library(rwsman_ui_model STATIC
+    src/ui_model_chunks.cpp
+    src/ui_model_commands.cpp
+    src/ui_model_diagnostics.cpp
+    src/ui_model_discovery.cpp
+    src/ui_model_fuzzy.cpp
+    src/ui_model_history.cpp
+    src/ui_model_index_builders.cpp
+    src/ui_model_log.cpp
+    src/ui_model_mission_lookup.cpp
+    src/ui_model_search.cpp
+    src/ui_model_settings.cpp
+)
+add_library(rwsman::ui_model ALIAS rwsman_ui_model)
+target_include_directories(rwsman_ui_model PUBLIC include)
+target_compile_features(rwsman_ui_model PUBLIC cxx_std_20)
+target_link_libraries(rwsman_ui_model PUBLIC rws::core csf::core)
+if(MSVC)
+    target_compile_options(rwsman_ui_model PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(rwsman_ui_model PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 include(FetchContent)
@@ -54,7 +83,7 @@ FetchContent_Declare(stb
 )
 FetchContent_MakeAvailable(stb)
 
-add_library(stb_image STATIC src/stb_image_impl.cpp)
+add_library(stb_image STATIC src/stb_image_impl.cpp src/stb_image_write_impl.cpp)
 target_include_directories(stb_image PUBLIC ${stb_SOURCE_DIR})
 
 add_library(rws_image STATIC src/texture_image.cpp)
@@ -77,6 +106,9 @@ target_link_libraries(rws-corpus PRIVATE rws::core)
 add_executable(csf-info app/csf_info.cpp)
 target_link_libraries(csf-info PRIVATE csf::core)
 
+add_executable(csf-mod app/csf_mod.cpp)
+target_link_libraries(csf-mod PRIVATE csf::core)
+
 if(RWSMAN_BUILD_GUI)
     set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -89,10 +121,18 @@ if(RWSMAN_BUILD_GUI)
     )
     FetchContent_Declare(imgui
         GIT_REPOSITORY https://github.com/ocornut/imgui.git
-        GIT_TAG v1.91.9b
+        GIT_TAG v1.91.9b-docking
         GIT_SHALLOW TRUE
     )
-    FetchContent_MakeAvailable(glfw imgui)
+    # portable-file-dialogs: single-header native file dialogs (zenity/kdialog on
+    # Linux, Win32/COM on Windows). Pinned to an exact commit; it publishes no tags.
+    FetchContent_Declare(pfd
+        GIT_REPOSITORY https://github.com/samhocevar/portable-file-dialogs.git
+        GIT_TAG c12ea8c9a727f5320a2b4570aee863bbede2a204
+        # Only the header is used; skip the project's own (very old) CMakeLists.
+        SOURCE_SUBDIR header-only
+    )
+    FetchContent_MakeAvailable(glfw imgui pfd)
 
     find_package(OpenGL REQUIRED)
     add_library(imgui_backend STATIC
@@ -110,8 +150,45 @@ if(RWSMAN_BUILD_GUI)
     target_link_libraries(imgui_backend PUBLIC glfw OpenGL::GL)
     target_compile_features(imgui_backend PUBLIC cxx_std_20)
 
-    add_executable(rws-man WIN32 app/main.cpp app/geometry_preview.cpp)
-    target_link_libraries(rws-man PRIVATE rws::core csf::core rws::image imgui_backend)
+    add_executable(rws-man WIN32
+        app/main.cpp
+        app/app_actions.cpp
+        app/commands.cpp
+        app/file_dialogs.cpp
+        app/geometry_preview.cpp
+        app/mission_loader.cpp
+        app/mission_overlays.cpp
+        app/navigation.cpp
+        app/references.cpp
+        app/screenshot.cpp
+        app/ui/actor_animation.cpp
+        app/ui/center.cpp
+        app/ui/chunk_details.cpp
+        app/ui/console.cpp
+        app/ui/diagnostics.cpp
+        app/ui/explorer.cpp
+        app/ui/fonts.cpp
+        app/ui/hex_view.cpp
+        app/ui/inspector.cpp
+        app/ui/layout.cpp
+        app/ui/menus.cpp
+        app/ui/property_grid.cpp
+        app/ui/mission_details.cpp
+        app/ui/overlays.cpp
+        app/ui/preferences.cpp
+        app/ui/palette.cpp
+        app/ui/panels.cpp
+        app/ui/script_view.cpp
+        app/ui/shell.cpp
+        app/ui/shortcuts.cpp
+        app/ui/start_page.cpp
+        app/ui/status_bar.cpp
+        app/ui/theme.cpp
+        app/ui/widgets.cpp
+    )
+    target_include_directories(rws-man PRIVATE app ${pfd_SOURCE_DIR})
+    target_compile_definitions(rws-man PRIVATE RWSMAN_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(rws-man PRIVATE rws::core csf::core rws::image rwsman::ui_model imgui_backend)
     if(WIN32)
         target_link_libraries(rws-man PRIVATE Shell32 Comdlg32)
     endif()
@@ -120,6 +197,11 @@ endif()
 if(RWSMAN_BUILD_TESTS)
     enable_testing()
     add_executable(rws_core_tests tests/document_tests.cpp)
-    target_link_libraries(rws_core_tests PRIVATE rws::core csf::core rws::image)
+    target_link_libraries(rws_core_tests PRIVATE rws::core csf::core rws::image rwsman::ui_model)
     add_test(NAME rws_core_tests COMMAND rws_core_tests)
+    add_executable(csf_authoring_tests tests/authoring_tests.cpp)
+    target_link_libraries(csf_authoring_tests PRIVATE csf::core)
+    add_executable(fake_pakman tests/fake_pakman.cpp)
+    target_compile_features(fake_pakman PRIVATE cxx_std_20)
+    add_test(NAME csf_authoring_tests COMMAND csf_authoring_tests $<TARGET_FILE:fake_pakman>)
 endif()

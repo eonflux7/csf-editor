@@ -689,10 +689,13 @@ AdapterResult read_vis(const std::filesystem::path& path) {
         const auto text_offset = cursor + 4;
         std::string value(*length, '\0');
         if (*length) std::memcpy(value.data(), bytes.data() + text_offset, *length);
-        result.references.push_back(
-            {std::move(value),
-             kinds[field],
-             {path, text_offset, *length, static_cast<std::uint32_t>(field), "vis"}});
+        // A zero-length field means the reference is unset (for example a level without
+        // a sky model). It is not a dependency, so it must not surface as "missing".
+        if (!value.empty())
+            result.references.push_back(
+                {std::move(value),
+                 kinds[field],
+                 {path, text_offset, *length, static_cast<std::uint32_t>(field), "vis"}});
         cursor = text_offset + *length;
     }
     result.unknown_tail_offset = cursor;
@@ -999,15 +1002,48 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
         }
     };
 
+    // A visual map is paired with a texture list of the same name ("FR02_A.rws" with
+    // "FR02_A.txl"). When the map comes from another package of the same game, the scene's
+    // own directory has no such list, so the list is inferred from the map reference. It is
+    // a guess: it is added only when it resolves to exactly one file the graph does not
+    // already have an edge to.
+    auto texture_list_reference = [&](const std::uint64_t source,
+                                      const AdapterReference& visual_map) {
+        AdapterReference reference{replace_extension(visual_map.path, ".txl"),
+                                   DependencyKind::package_member,
+                                   visual_map.source};
+        const auto edges_before = graph.edges_.size();
+        const auto nodes_before = graph.nodes_.size();
+        const auto diagnostics_before = graph.diagnostics_.size();
+        add_reference(source, reference);
+        const auto& edge = graph.edges_.back();
+        const bool resolved = edge.status != ResolutionStatus::missing &&
+                              edge.status != ResolutionStatus::ambiguous &&
+                              edge.status != ResolutionStatus::outside_root;
+        const bool duplicate =
+            resolved && std::ranges::any_of(graph.edges_ | std::views::take(edges_before),
+                                            [&](const DependencyEdge& other) {
+                                                return other.target == edge.target;
+                                            });
+        if (!resolved || duplicate) {
+            graph.edges_.pop_back();
+            if (graph.nodes_.size() > nodes_before) graph.nodes_.resize(nodes_before);
+            graph.diagnostics_.resize(diagnostics_before);
+        }
+    };
+
     const auto sibling = graph.scene_path_.parent_path() / graph.scene_path_.stem();
     for (const auto* extension : {".gsc", ".csc", ".vis"}) {
         auto sidecar = sibling;
         sidecar += extension;
         package_reference(sidecar, true);
     }
+    // The security file is named by the scene's own strings (some missions share one,
+    // e.g. Ransom uses Parachutes.sec). "<scene>.sec" is only a convention, so a guess
+    // that finds nothing is dropped instead of reported as a missing reference.
     auto security_filename = graph.scene_path_.filename();
     security_filename.replace_extension(".sec");
-    package_reference(graph.package_root_ / "Maps" / "Secs" / security_filename, true);
+    package_reference(graph.package_root_ / "Maps" / "Secs" / security_filename, false);
     for (const auto* name :
          {"Anims.bdd", "Armas.bdd", "Efectos.bdd", "Materiales.bdd", "Objetos.bdd", "Sonidos.bdd"})
         package_reference(graph.package_root_ / "BDD" / name, true);
@@ -1070,10 +1106,17 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
         if (adapted) {
             graph.diagnostics_.insert(graph.diagnostics_.end(), adapter.diagnostics.begin(),
                                       adapter.diagnostics.end());
-            for (const auto& reference : adapter.references)
+            for (const auto& reference : adapter.references) {
                 add_reference(node.id, reference);
+                if (node.kind == ResourceKind::visual_index &&
+                    reference.kind == DependencyKind::visual_map)
+                    texture_list_reference(node.id, reference);
+            }
         }
-        if (node.kind == ResourceKind::mission_scene || node.kind == ResourceKind::mission_script ||
+        // Scenes linked from this one (bridge targets and the like) stay as edges, but only
+        // the selected scene is read, so other missions' dependencies are not pulled in.
+        if ((node.kind == ResourceKind::mission_scene && node.id == scene_id) ||
+            node.kind == ResourceKind::mission_script ||
             node.kind == ResourceKind::cutscene_script || node.kind == ResourceKind::database) {
             try {
                 const auto document = Document::load(node.resolved_path);
@@ -1101,7 +1144,7 @@ MissionGraph MissionGraph::load(const MissionOptions& options) {
                     auto text = value.display_utf8();
                     static const std::set<std::string> path_extensions{
                         ".anm", ".bdd", ".cmo", ".csc", ".dds", ".dff",
-                        ".gsc", ".png", ".rpc", ".rws", ".tga", ".wad"};
+                        ".gsc", ".png", ".rpc", ".rws", ".scn", ".sec", ".tga", ".wad"};
                     if (!plausible_path(text, path_extensions) ||
                         (text.find('/') == std::string::npos &&
                          text.find('\\') == std::string::npos))

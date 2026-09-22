@@ -5,6 +5,7 @@
 #include "csf/mission.hpp"
 #include "csf/mission_scene.hpp"
 #include "csf/object_database.hpp"
+#include "csf/program.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -29,6 +31,7 @@
 namespace {
 
 std::string lower_extension(const std::filesystem::path& path);
+std::string lower_filename(const std::filesystem::path& path);
 
 std::string escaped(const std::string_view value) {
     std::ostringstream output;
@@ -129,15 +132,265 @@ void usage() {
            "       csf-info cmo <file.cmo>\n"
            "       csf-info animations <Anims.bdd> [--root <resource-root>]\n"
            "       csf-info script-animations <file.gsc>\n"
-           "       csf-info cutscene <file.csc>\n"
+           "       csf-info program <file.gsc|file.csc> [--summary|--scripts|--script <id>\n"
+           "                            |--references|--diagnostics|--json -]\n"
+           "       csf-info program-corpus <directory>\n"
+           "       csf-info cutscene <file.csc> [--references]\n"
            "       csf-info mission <scene-or-directory> "
-           "[--summary|--dependencies|--missing|--objects|--navigation|--spatial|--associations]\n"
+           "[--summary|--dependencies|--missing|--objects|--navigation|--spatial|--associations\n"
+           "                        |--scene-objects|--bridges|--water|--metadata]\n"
            "                       [--graph <new-json>] [--package-root <directory>] "
            "[--duplicates]\n"
            "                       [--scene-json <new-json>] [--symbols <exact-name>]\n"
+           "                       [--script-uses <actor|dummy|area>:<id>]\n"
            "                       [--root <resource-root>]\n"
            "       csf-info uses <asset> --root <resource-root>\n"
            "       csf-info compare <scene-a> <scene-b>\n";
+}
+
+std::string program_scalar(const csf::ProgramOperand& operand) {
+    return std::visit(
+        [](const auto& value) -> std::string {
+            using T = std::decay_t<decltype(value)>;
+            if constexpr (std::is_same_v<T, std::monostate>) return "-";
+            else if constexpr (std::is_same_v<T, std::string>) return value;
+            else return std::to_string(value);
+        },
+        operand.value);
+}
+
+void print_program_operand(const csf::ProgramOperand& operand, const unsigned depth) {
+    std::cout << std::string(depth * 2, ' ') << "OPERAND\tentry=" << operand.source.entry_index
+              << "\toffset=" << operand.source.range.offset << "\ttag=" << operand.tag
+              << "\tvalue=" << program_scalar(operand) << '\n';
+    for (const auto& child : operand.children) print_program_operand(child, depth + 1);
+}
+
+void print_program_instructions(const std::vector<csf::ProgramInstruction>& instructions,
+                                const char* section) {
+    for (const auto& row : csf::program_structure(instructions)) {
+        const auto& instruction = *row.instruction;
+        std::cout << section << "\tdepth=" << row.depth
+                  << "\tentry=" << instruction.source.entry_index
+                  << "\toffset=" << instruction.source.range.offset
+                  << "\topcode=" << instruction.opcode
+                  << "\toperands=" << instruction.operands.size() << '\n';
+        for (const auto& operand : instruction.operands) print_program_operand(operand, 1);
+    }
+}
+
+void print_program_script(const csf::ProgramScript& script) {
+    const auto flag = [](const std::optional<bool> value) {
+        return value ? (*value ? "1" : "0") : "-";
+    };
+    std::cout << "SCRIPT\tentry=" << script.source.entry_index << "\toffset="
+              << script.source.range.offset << "\tid=" << script.id << "\tname=" << script.name
+              << "\tfolder=" << script.folder << "\ttrigger=" << flag(script.flags.trigger)
+              << "\tenabled=" << flag(script.flags.enabled) << "\tvalid="
+              << flag(script.flags.valid) << "\tlocals=" << script.local_variables.size()
+              << "\tevents=" << script.events.size() << "\tconditions="
+              << script.conditions.size() << "\tactions=" << script.actions.size() << '\n';
+    for (const auto& variable : script.local_variables)
+        std::cout << "VARIABLE\tscope=" << script.id << "\tentry=" << variable.source.entry_index
+                  << "\tid=" << variable.id << "\ttype=" << variable.type << "\tname="
+                  << variable.name << "\tarray=" << variable.is_array
+                  << "\tvalue=" << program_scalar(variable.initial_value) << '\n';
+    for (const auto& event : script.events)
+        std::cout << "EVENT\tentry=" << event.source.entry_index << "\tname=" << event.name << '\n';
+    print_program_instructions(script.conditions, "CONDITION");
+    print_program_instructions(script.actions, "ACTION");
+}
+
+int program_command(const int argc, char** argv) {
+    if (argc < 3) {
+        usage();
+        return 1;
+    }
+    const auto document = csf::Document::load(argv[2]);
+    const auto program = csf::ProgramDocument::project(document);
+    const std::string_view mode = argc >= 4 ? argv[3] : "--summary";
+    if (mode == "--summary") {
+        std::size_t locals{}, events{}, conditions{}, actions{}, operands{};
+        const auto count_operand = [&](const auto& self, const csf::ProgramOperand& value) -> void {
+            ++operands;
+            for (const auto& child : value.children) self(self, child);
+        };
+        for (const auto& script : program.scripts()) {
+            locals += script.local_variables.size();
+            events += script.events.size();
+            conditions += script.conditions.size();
+            actions += script.actions.size();
+            for (const auto* list : {&script.conditions, &script.actions})
+                for (const auto& instruction : *list)
+                    for (const auto& operand : instruction.operands)
+                        count_operand(count_operand, operand);
+        }
+        std::cout << "PROGRAM\tstate=" << csf::parse_state_name(document.state())
+                  << "\tresources=" << program.resources().size()
+                  << "\tglobals=" << program.global_variables().size()
+                  << "\tscripts=" << program.scripts().size() << "\tlocals=" << locals
+                  << "\tevents=" << events << "\tconditions=" << conditions
+                  << "\tactions=" << actions << "\toperands=" << operands
+                  << "\tdiagnostics=" << program.diagnostics().size() << '\n';
+    } else if (mode == "--scripts") {
+        for (const auto& list : program.resources())
+            std::cout << "RESOURCE\tentry=" << list.source.entry_index << "\tname=" << list.name
+                      << "\tvalues=" << list.values.size() << '\n';
+        for (const auto& variable : program.global_variables())
+            std::cout << "VARIABLE\tscope=global\tentry=" << variable.source.entry_index
+                      << "\tid=" << variable.id << "\ttype=" << variable.type << "\tname="
+                      << variable.name << "\tarray=" << variable.is_array
+                      << "\tvalue=" << program_scalar(variable.initial_value) << '\n';
+        for (const auto& script : program.scripts()) print_program_script(script);
+    } else if (mode == "--script") {
+        if (argc != 5) throw std::runtime_error("--script requires a numeric script ID");
+        std::size_t used{};
+        const auto id = std::stoll(argv[4], &used);
+        if (used != std::string_view(argv[4]).size())
+            throw std::runtime_error("Invalid script ID");
+        const auto* script = program.find_script(static_cast<std::int32_t>(id));
+        if (!script) throw std::runtime_error("Script ID is missing or ambiguous");
+        print_program_script(*script);
+    } else if (mode == "--references") {
+        csf::ProgramReferenceIndex references;
+        references.add_program(program);
+        for (const auto& reference : references.references())
+            std::cout << "REFERENCE\tentry=" << reference.source.entry_index
+                      << "\tscript=" << reference.owner_script << "\tkind="
+                      << csf::program_reference_kind_name(reference.kind) << "\ttag="
+                      << reference.tag << "\tvalue=" << reference.display_value << "\tstatus="
+                      << csf::program_reference_status_name(reference.status)
+                      << "\ttargets=" << reference.targets.size() << '\n';
+    } else if (mode == "--diagnostics") {
+        for (const auto& diagnostic : program.diagnostics())
+            std::cout << "DIAGNOSTIC\tentry=" << diagnostic.source.entry_index << "\tcode="
+                      << diagnostic.code << "\tmessage=" << diagnostic.message << '\n';
+    } else if (mode == "--json") {
+        if (argc != 5 || std::string_view(argv[4]) != "-")
+            throw std::runtime_error("Read-only program JSON requires --json -");
+        std::cout << csf::program_json(program) << '\n';
+    } else {
+        throw std::runtime_error("Unknown program option: " + std::string(mode));
+    }
+    return document.has_errors() ? 2 : 0;
+}
+
+struct ProgramCorpusStats {
+    std::size_t files{}, scripts{}, action_scripts{}, actions{}, conditions{}, events{}, globals{},
+        locals{}, operands{};
+    std::map<std::string, std::size_t> opcodes;
+    std::map<std::string, std::size_t> operand_tags;
+    std::map<std::string, std::size_t> variable_types;
+    std::map<std::string, std::size_t> flag_combinations;
+    std::map<std::string, std::size_t> resources;
+};
+
+void add_program_stats(ProgramCorpusStats& stats, const csf::ProgramDocument& program) {
+    ++stats.files;
+    stats.globals += program.global_variables().size();
+    const auto variable = [&](const csf::ProgramVariable& value) { ++stats.variable_types[value.type]; };
+    for (const auto& value : program.global_variables()) variable(value);
+    const auto add_operand = [&](const auto& self, const csf::ProgramOperand& value) -> void {
+        ++stats.operands;
+        ++stats.operand_tags[value.tag.empty() ? "(anonymous)" : value.tag];
+        for (const auto& child : value.children) self(self, child);
+    };
+    for (const auto& script : program.scripts()) {
+        ++stats.scripts;
+        if (!script.actions.empty()) ++stats.action_scripts;
+        stats.actions += script.actions.size();
+        stats.conditions += script.conditions.size();
+        stats.events += script.events.size();
+        stats.locals += script.local_variables.size();
+        for (const auto& value : script.local_variables) variable(value);
+        const auto flag = [](const std::optional<bool> value) {
+            return value ? (*value ? '1' : '0') : '-';
+        };
+        std::string flags;
+        flags += flag(script.flags.trigger);
+        flags += flag(script.flags.enabled);
+        flags += flag(script.flags.valid);
+        ++stats.flag_combinations[flags];
+        for (const auto* list : {&script.conditions, &script.actions})
+            for (const auto& instruction : *list) {
+                ++stats.opcodes[instruction.opcode];
+                for (const auto& operand : instruction.operands) add_operand(add_operand, operand);
+            }
+    }
+    for (const auto& list : program.resources()) stats.resources[list.name] += list.values.size();
+}
+
+void print_program_corpus_stats(const char* scope, const ProgramCorpusStats& value) {
+    std::cout << "TOTAL\t" << scope << "\tfiles=" << value.files << "\tscripts="
+              << value.scripts << "\taction-scripts=" << value.action_scripts << "\tactions="
+              << value.actions << "\tconditions=" << value.conditions << "\tevents="
+              << value.events << "\tglobals=" << value.globals << "\tlocals=" << value.locals
+              << "\toperands=" << value.operands << '\n';
+}
+
+int program_corpus_command(const int argc, char** argv) {
+    if (argc != 3) {
+        usage();
+        return 1;
+    }
+    const std::filesystem::path root = argv[2];
+    if (!std::filesystem::is_directory(root))
+        throw std::runtime_error("Program corpus path is not a directory");
+    std::vector<std::filesystem::path> paths;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             root, std::filesystem::directory_options::skip_permission_denied)) {
+        const auto extension = lower_extension(entry.path());
+        if (entry.is_regular_file() && (extension == ".gsc" || extension == ".csc"))
+            paths.push_back(entry.path());
+    }
+    std::ranges::sort(paths);
+    ProgramCorpusStats path_stats, distinct_stats;
+    std::map<std::string, std::vector<std::filesystem::path>> contents;
+    std::map<std::string, std::size_t> sections;
+    for (const auto& path : paths) {
+        const auto document = csf::Document::load(path);
+        if (document.state() == csf::ParseState::non_csffbs) continue;
+        const auto program = csf::ProgramDocument::project(document);
+        add_program_stats(path_stats, program);
+        for (const auto& root_node : document.roots())
+            for (const auto& section : root_node.children)
+                ++sections[node_label(document, section)];
+        const auto bytes = document.bytes();
+        std::string key(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        auto& copies = contents[key];
+        if (copies.empty()) add_program_stats(distinct_stats, program);
+        copies.push_back(path);
+        std::cout << "FILE\t" << path.string() << "\tstate="
+                  << csf::parse_state_name(document.state()) << "\tscripts="
+                  << program.scripts().size() << "\tdiagnostics=" << program.diagnostics().size()
+                  << '\n';
+    }
+    print_program_corpus_stats("paths", path_stats);
+    print_program_corpus_stats("distinct", distinct_stats);
+    for (const auto& [name, count] : sections) std::cout << "SECTION\t" << name << '\t' << count << '\n';
+    for (const auto& [name, count] : path_stats.opcodes)
+        std::cout << "OPCODE\t" << name << "\tpaths=" << count
+                  << "\tdistinct=" << distinct_stats.opcodes[name] << '\n';
+    for (const auto& [name, count] : path_stats.operand_tags)
+        std::cout << "OPERAND\t" << name << "\tpaths=" << count
+                  << "\tdistinct=" << distinct_stats.operand_tags[name] << '\n';
+    for (const auto& [name, count] : path_stats.variable_types)
+        std::cout << "VARIABLE-TYPE\t" << name << "\tpaths=" << count
+                  << "\tdistinct=" << distinct_stats.variable_types[name] << '\n';
+    for (const auto& [name, count] : path_stats.flag_combinations)
+        std::cout << "FLAGS\t" << name << "\tpaths=" << count
+                  << "\tdistinct=" << distinct_stats.flag_combinations[name] << '\n';
+    for (const auto& [name, count] : path_stats.resources)
+        std::cout << "RESOURCE\t" << name << "\tpaths=" << count
+                  << "\tdistinct=" << distinct_stats.resources[name] << '\n';
+    for (const auto& [content, copies] : contents) {
+        (void)content;
+        if (copies.size() < 2) continue;
+        std::cout << "DUPLICATE\t" << copies.size();
+        for (const auto& path : copies) std::cout << '\t' << path.string();
+        std::cout << '\n';
+    }
+    return 0;
 }
 
 int animations_command(const int argc, char** argv) {
@@ -167,12 +420,18 @@ int animations_command(const int argc, char** argv) {
                   << "\tblend=" << (record.blend_in ? std::to_string(*record.blend_in) : "unknown")
                   << "\tvariants=" << record.variants.size() << "\tsounds=" << record.sounds.size()
                   << '\n';
-        for (const auto& variant : record.variants)
+        for (const auto& variant : record.variants) {
             std::cout << "  FILE\t" << variant.reference << "\t"
                       << (variant.resolution
                               ? csf::resolution_status_name(variant.resolution->status)
                               : "not-resolved")
-                      << "\tentry=" << variant.source.entry_index << '\n';
+                      << "\tentry=" << variant.source.entry_index
+                      << "\tsounds=" << variant.sounds.size() << '\n';
+            for (const auto& sound : variant.sounds)
+                std::cout << "    SOUND\t" << sound.logical_id << "\ttime="
+                          << (sound.time ? std::to_string(*sound.time) : "runtime/unknown")
+                          << '\n';
+        }
         for (const auto& sound : record.sounds)
             std::cout << "  SOUND\t" << sound.logical_id
                       << "\ttime=" << (sound.time ? std::to_string(*sound.time) : "runtime/unknown")
@@ -201,11 +460,23 @@ int script_animations_command(const int argc, char** argv) {
 }
 
 int cutscene_command(const int argc, char** argv) {
-    if (argc != 3) {
+    if (argc != 3 && !(argc == 4 && std::string_view(argv[3]) == "--references")) {
         usage();
         return 1;
     }
     const auto document = csf::Document::load(argv[2]);
+    if (argc == 4) {
+        const auto program = csf::ProgramDocument::project(document);
+        csf::ProgramReferenceIndex references;
+        references.add_program(program);
+        for (const auto& reference : references.references())
+            std::cout << "REFERENCE\tentry=" << reference.source.entry_index
+                      << "\tscript=" << reference.owner_script << "\tkind="
+                      << csf::program_reference_kind_name(reference.kind) << "\tvalue="
+                      << reference.display_value << "\tstatus="
+                      << csf::program_reference_status_name(reference.status) << '\n';
+        return 0;
+    }
     const auto timeline = csf::CutsceneTimeline::project(document);
     std::cout << "CUTSCENES\tscripts=" << timeline.scripts().size()
               << "\tdiagnostics=" << timeline.diagnostics().size() << '\n';
@@ -340,11 +611,8 @@ void print_scene_objects(const csf::MissionScene& scene) {
 
 void print_actor_associations(const csf::MissionScene& scene, const csf::MissionGraph& graph) {
     const auto object_node = std::ranges::find_if(graph.nodes(), [](const auto& node) {
-        auto name = node.resolved_path.filename().string();
-        std::ranges::transform(name, name.begin(), [](const unsigned char c) {
-            return static_cast<char>(std::tolower(c));
-        });
-        return name == "objetos.bdd" && node.state == csf::LoadState::available;
+        return lower_filename(node.resolved_path) == "objetos.bdd" &&
+               node.state == csf::LoadState::available;
     });
     if (object_node == graph.nodes().end()) {
         std::cout << "DIAGNOSTIC\tObjetos.bdd is unresolved\n";
@@ -442,6 +710,58 @@ void print_spatial(const csf::MissionScene& scene) {
                   << "\telements=" << value.element_ids.size() << '\n';
 }
 
+void print_remaining_scene_records(const csf::MissionScene& scene, const std::string_view mode,
+                                   const csf::AnimationCatalog* animations = nullptr) {
+    if (mode == "--metadata") {
+        std::cout << "METADATA\tsector-map=" << scene.metadata().sector_map.value_or("")
+                  << "\tmaximum-score=" << scene.metadata().maximum_score.value_or(0)
+                  << "\tminimum-score=" << scene.metadata().minimum_score.value_or(0) << '\n';
+        for (const auto& field : scene.environment())
+            if (const auto* value = std::get_if<csf::Vec3>(&field.value))
+                std::cout << "VECTOR\tentry=" << field.source.entry_index << "\tname="
+                          << field.name << "\tvalue=" << value->x << ',' << value->y << ','
+                          << value->z << '\n';
+    } else if (mode == "--scene-objects") {
+        for (const auto& value : scene.scene_objects())
+            std::cout << "SCENE-OBJECT\tentry=" << value.source.entry_index
+                      << "\tid=" << value.id.value_or("")
+                      << "\tanimation=" << value.animation_id.value_or(-1)
+                      << "\toffset-type=" << value.offset_type.value_or(-1)
+                      << "\toffset=" << value.offset.value_or(0) << "\tresolution="
+                      << (!value.animation_id || !animations
+                              ? "not-loaded"
+                              : animations->find_id(*value.animation_id) ? "resolved" : "missing")
+                      << '\n';
+    } else if (mode == "--bridges") {
+        for (const auto& value : scene.bridges()) {
+            std::cout << "BRIDGE\tentry=" << value.source.entry_index
+                      << "\tvisual=" << value.visual_rws.value_or("")
+                      << "\tphysics=" << value.physics_rws.value_or("")
+                      << "\tpoints=" << value.control_points.size() << '\n';
+            for (const auto& point : value.control_points) {
+                std::cout << "  CONTROL\tentry=" << point.source.entry_index
+                          << "\ttype=" << point.type.value_or(-1)
+                          << "\theight=" << point.height.value_or(0)
+                          << "\ttarget=" << point.target_scene.value_or("");
+                if (point.p1) std::cout << "\tp1=" << point.p1->x << ',' << point.p1->y << ',' << point.p1->z;
+                if (point.p2) std::cout << "\tp2=" << point.p2->x << ',' << point.p2->y << ',' << point.p2->z;
+                std::cout << '\n';
+            }
+        }
+    } else if (mode == "--water") {
+        for (const auto& value : scene.waters()) {
+            std::cout << "WATER\tentry=" << value.source.entry_index
+                      << "\tfields=" << value.fields.size() << '\n';
+            for (const auto& field : value.fields) {
+                std::cout << "  FIELD\tentry=" << field.source.entry_index << "\tname="
+                          << field.name << "\tvalue=";
+                std::visit([](const auto& item) { std::cout << item; }, field.value);
+                std::cout << '\n';
+            }
+        }
+    }
+}
+
 void write_new_file(const std::filesystem::path& path, const std::string_view contents) {
     if (std::filesystem::exists(path))
         throw std::runtime_error("Output already exists: " + path.string());
@@ -502,6 +822,7 @@ int mission_command(const int argc, char** argv) {
     std::optional<std::filesystem::path> graph_output;
     std::optional<std::filesystem::path> scene_output;
     std::optional<std::string> symbol;
+    std::optional<std::string> script_use;
     const auto set_mode = [&](const std::string_view requested) {
         if (mode_was_set) throw std::runtime_error("Mission output modes are mutually exclusive");
         mode = requested;
@@ -530,9 +851,15 @@ int mission_command(const int argc, char** argv) {
             if (++argument >= argc) throw std::runtime_error("--symbols requires an exact symbol");
             symbol = argv[argument];
             set_mode("--symbols");
+        } else if (value == "--script-uses") {
+            if (++argument >= argc)
+                throw std::runtime_error("--script-uses requires category:id");
+            script_use = argv[argument];
+            set_mode("--script-uses");
         } else if (value == "--summary" || value == "--dependencies" || value == "--missing" ||
                    value == "--objects" || value == "--navigation" || value == "--spatial" ||
-                   value == "--associations") {
+                   value == "--associations" || value == "--scene-objects" ||
+                   value == "--bridges" || value == "--water" || value == "--metadata") {
             set_mode(value);
         } else
             throw std::runtime_error("Unknown mission option: " + std::string(value));
@@ -541,7 +868,9 @@ int mission_command(const int argc, char** argv) {
     std::optional<csf::Document> scene_document;
     std::optional<csf::MissionScene> scene;
     if (mode == "--objects" || mode == "--navigation" || mode == "--spatial" ||
-        mode == "--associations" || mode == "--scene-json" || mode == "--symbols") {
+        mode == "--associations" || mode == "--scene-json" || mode == "--symbols" ||
+        mode == "--scene-objects" || mode == "--bridges" || mode == "--water" ||
+        mode == "--metadata" || mode == "--script-uses") {
         scene_document = csf::Document::load(graph.scene_path());
         scene = csf::MissionScene::project(*scene_document);
     }
@@ -557,6 +886,59 @@ int mission_command(const int argc, char** argv) {
         print_spatial(*scene);
     else if (mode == "--associations")
         print_actor_associations(*scene, graph);
+    else if (mode == "--scene-objects" || mode == "--bridges" || mode == "--water" ||
+             mode == "--metadata") {
+        std::optional<csf::AnimationCatalog> animations;
+        if (mode == "--scene-objects") {
+            const auto found = std::ranges::find_if(graph.nodes(), [](const auto& node) {
+                return lower_filename(node.resolved_path) == "anims.bdd" &&
+                       node.state == csf::LoadState::available;
+            });
+            if (found != graph.nodes().end())
+                animations = csf::AnimationCatalog::project(csf::Document::load(found->resolved_path),
+                                                            &graph.index());
+        }
+        print_remaining_scene_records(*scene, mode, animations ? &*animations : nullptr);
+    } else if (mode == "--script-uses") {
+        const auto separator = script_use->find(':');
+        if (separator == std::string::npos)
+            throw std::runtime_error("--script-uses requires category:id");
+        const auto category = script_use->substr(0, separator);
+        const auto id = static_cast<std::int32_t>(std::stol(script_use->substr(separator + 1)));
+        const csf::CsfSourceId* target{};
+        if (category == "actor") {
+            const auto found = std::ranges::find_if(scene->actors(),
+                                                    [&](const auto& value) { return value.id == id; });
+            if (found != scene->actors().end()) target = &found->source;
+        } else if (category == "dummy") {
+            const auto found = std::ranges::find_if(scene->dummies(),
+                                                    [&](const auto& value) { return value.id == id; });
+            if (found != scene->dummies().end()) target = &found->source;
+        } else if (category == "area") {
+            const auto found = std::ranges::find_if(scene->areas(),
+                                                    [&](const auto& value) { return value.id == id; });
+            if (found != scene->areas().end()) target = &found->source;
+        } else {
+            throw std::runtime_error("Unsupported script-use category: " + category);
+        }
+        if (!target) throw std::runtime_error("Mission object is missing or ambiguous");
+        csf::ProgramReferenceIndex references;
+        for (const auto& node : graph.nodes()) {
+            if (node.state != csf::LoadState::available ||
+                (node.kind != csf::ResourceKind::mission_script &&
+                 node.kind != csf::ResourceKind::cutscene_script))
+                continue;
+            const auto document = csf::Document::load(node.resolved_path);
+            references.add_program(csf::ProgramDocument::project(document), &*scene);
+        }
+        const auto uses = references.uses(*target);
+        for (const auto* use : uses)
+            std::cout << "SCRIPT-USE\tscript=" << use->owner_script << "\tkind="
+                      << csf::program_reference_kind_name(use->kind) << "\tvalue="
+                      << use->display_value << "\tfile=" << use->source.file.string()
+                      << "\tentry=" << use->source.entry_index << '\n';
+        std::cout << "USES\t" << uses.size() << '\n';
+    }
     else if (mode == "--scene-json")
         write_new_file(*scene_output, csf::mission_scene_json(*scene));
     else if (mode == "--symbols") {
@@ -689,6 +1071,15 @@ std::string lower_extension(const std::filesystem::path& path) {
     return extension.empty() ? "<none>" : extension;
 }
 
+// Resource names are matched without case, as the mission loader does.
+std::string lower_filename(const std::filesystem::path& path) {
+    auto name = path.filename().string();
+    std::ranges::transform(name, name.begin(), [](const unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return name;
+}
+
 int scan_corpus(const std::filesystem::path& root) {
     if (!std::filesystem::is_directory(root))
         throw std::runtime_error("Corpus path is not a directory: " + root.string());
@@ -782,6 +1173,9 @@ int main(const int argc, char** argv) {
         if (std::string_view(argv[1]) == "mission") return mission_command(argc, argv);
         if (std::string_view(argv[1]) == "cmo") return cmo_command(argc, argv);
         if (std::string_view(argv[1]) == "animations") return animations_command(argc, argv);
+        if (std::string_view(argv[1]) == "program") return program_command(argc, argv);
+        if (std::string_view(argv[1]) == "program-corpus")
+            return program_corpus_command(argc, argv);
         if (std::string_view(argv[1]) == "script-animations")
             return script_animations_command(argc, argv);
         if (std::string_view(argv[1]) == "cutscene") return cutscene_command(argc, argv);

@@ -207,14 +207,32 @@ AnimationCatalog AnimationCatalog::project(const Document& document, const Resou
         if (!record.velocity) record.velocity = vector(document, *node, "VELOCIDAD");
         record.translation = vector(document, *node, "TRANSLATION");
         record.rotation = vector(document, *node, "ROTATION");
+        if (const auto* value = find(document, *node, {"NUMANIMSPS2"}))
+            record.num_anims_ps2 = integer_value(*value);
+        if (const auto* value = find(document, *node, {"NUMANIMSXBOX"}))
+            record.num_anims_xbox = integer_value(*value);
+        if (const auto* value = find(document, *node, {"SONIDOPC"}))
+            record.sound_pc = integer_value(*value);
+        if (const auto* value = find(document, *node, {"SONIDOPS2"}))
+            record.sound_ps2 = integer_value(*value);
+        if (const auto* value = find(document, *node, {"SONIDOXBOX"}))
+            record.sound_xbox = integer_value(*value);
+        if (const auto* value = find(document, *node, {"MODEL3DITEM"}))
+            record.model3d_item = text(document, *value);
+        if (const auto* value = find(document, *node, {"MANOITEM"}))
+            record.mano_item = text(document, *value);
         for (const auto& child : node->children) {
             const auto name = label(document, child), key = norm(name);
             if (const auto text_value = text(document, child)) {
                 if (has_anm(*text_value)) {
                     AnimationVariant variant{source(document, child), name, *text_value,
-                                             std::nullopt};
+                                             std::nullopt, {}};
                     if (resources) variant.resolution = resources->resolve(*text_value, preferred);
                     record.variants.push_back(std::move(variant));
+                } else if (key == "MODEL3DITEM") {
+                    if (!text_value->empty()) record.model_context.push_back(*text_value);
+                } else if (key == "MANOITEM") {
+                    if (!text_value->empty()) record.hand_context.push_back(*text_value);
                 } else if ((key.find("ITEM") != std::string::npos ||
                             key.find("OBJETO") != std::string::npos ||
                             key.find("ARMA") != std::string::npos) &&
@@ -256,7 +274,7 @@ AnimationCatalog AnimationCatalog::project(const Document& document, const Resou
                     return variant.source.entry_index == item->entry_index;
                 })) {
                 AnimationVariant variant{source(document, *item), label(document, *item), value,
-                                         std::nullopt};
+                                         std::nullopt, {}};
                 if (resources) variant.resolution = resources->resolve(value, preferred);
                 record.variants.push_back(std::move(variant));
             } else if ((key.find("ITEM") != std::string::npos ||
@@ -276,8 +294,21 @@ AnimationCatalog AnimationCatalog::project(const Document& document, const Resou
                      std::ranges::find(record.hand_context, value) == record.hand_context.end())
                 record.hand_context.push_back(value);
         }
+        // The aggregate keeps every event in the record, including ones outside FILES or
+        // on a FILE entry that has no matching variant; variants get only their own events.
         record.sounds.clear();
         collect_sound_events(document, *node, record.sounds);
+        if (const auto* files = find(document, *node, {"FILES"})) {
+            for (const auto& file_record : files->children) {
+                const auto* file_node = find(document, file_record, {"FILE"});
+                if (!file_node) continue;
+                const auto match = std::ranges::find_if(record.variants, [&](const auto& value) {
+                    return value.source.entry_index == file_node->entry_index;
+                });
+                if (match == record.variants.end()) continue;
+                collect_sound_events(document, file_record, match->sounds);
+            }
+        }
         if (record.variants.empty())
             result.diagnostics_.push_back({Diagnostic::Severity::warning, record.source,
                                            "animation-without-file",
