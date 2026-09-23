@@ -17,7 +17,7 @@ import hashlib
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "docs" / "csffbs"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools" / "csffbs"))
 import csffbs  # noqa: E402
 
 
