@@ -117,8 +117,9 @@ recompilable text form (below). **Apply** (**Ctrl+Enter**) replaces the script a
 reports, without refusing:
 
 - opcodes, operand tags, argument counts and argument shapes that no shipped
-  script uses (from a table of 557 signatures generated from all 30 distinct
-  shipped programs by `tools/generate_script_signatures.py`);
+  script uses (from a table of 557 corpus signatures plus the engine-known
+  opcodes the corpus never uses, generated from all 30 distinct shipped programs
+  by `tools/generate_script_signatures.py`);
 - actors, dummies, areas, navigation points, animations and scripts named by ID
   that do not exist in the mission (`0` is the conventional "none");
 - unbalanced `IF`/`ELSE`/`ENDIF`, `WHILE`/`WEND` and `FOREACH`/`ENDFOR` markers.
