@@ -252,6 +252,20 @@ the camp, routes and zones visible, send it, and see rws-man rebuild; every
 placement keeps its position, and the height report lists what the hill now
 covers or lifts.
 
+**Done (2026-09-25).** `tools/blender/csf_authoring` (guide:
+[blender-authoring.md](../guides/blender-authoring.md)); the `.csfworld`
+exporter moved into it (`export_csf_world.py` wraps it and exports hello
+world's terrain unchanged). rws-man adds `csf-mod project-reference` (built map
+glTF, actor class models, markers JSON) and `project-asset`, and reloads a
+project whose `project.csfproj` another tool changed.
+`tools/blender/csf_authoring_test.py` passes headless (reference loaded and
+never exported, unchanged terrain re-sends identically, a building exports about
+its origin and registers, a raise is reported). Live: with rws-man open, a
+Blender send of a 50 cm raise rebuilt and reloaded the map and opened the height
+report with 44 findings. Limits: reference models come from rws-info's scene
+export, which spreads the parts of the burnt truck (class 93); the reference
+World is shown as wire.
+
 ### 4. Mission structure, placement and behavior presets
 
 - "New mission from slot" (see the gap table).
@@ -352,5 +366,5 @@ v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
 the earlier confirmed fallback. Stage 1 is done. Stage 2: the project format,
 hello world's migration, the sector map, the ground query, the height report
-and rebuilding from the editor are done. Its acceptance playtest (change the hill
-in Blender, play) is open; next is stage 3, the Blender add-on.
+and rebuilding from the editor are done; stage 3, the Blender add-on, is done.
+The stage 2 acceptance playtest (change the hill in Blender, play) is open.

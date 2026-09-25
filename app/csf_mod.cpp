@@ -1,11 +1,14 @@
 #include "csf/authoring.hpp"
 #include "csf/authoring_project.hpp"
 #include "csf/mission_edit.hpp"
+#include "csf/mission.hpp"
 #include "csf/mod_project.hpp"
+#include "csf/object_database.hpp"
 #include "csf/source_text.hpp"
 #include "csf/tree.hpp"
 #include "rws/document.hpp"
 #include "rws/map_assembly.hpp"
+#include "rws/scene_export.hpp"
 #include "rws/world_model.hpp"
 #include "rws/world_queries.hpp"
 #include "rws/world_source.hpp"
@@ -39,6 +42,8 @@ void usage() {
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod project-build <project-dir> [--force]\n"
            "  csf-mod project-heights <project-dir> [--resnap]\n"
+           "  csf-mod project-reference <project-dir> <out-dir>\n"
+           "  csf-mod project-asset <project-dir> <id> <terrain|building> <blend> <export>\n"
            "  csf-mod sector-build <source.csfworld> <new.sec> [--overwrite]\n"
            "  csf-mod world-ground <source.csfworld> <x> <z> [<x> <z>]...\n"
            "  csf-mod init <workspace> <source-root> <name>\n"
@@ -114,6 +119,24 @@ std::vector<std::byte> read_bytes(const std::filesystem::path& path) {
     input.seekg(0);
     input.read(reinterpret_cast<char*>(result.data()), static_cast<std::streamsize>(result.size()));
     if (!input && !result.empty()) throw std::runtime_error("Cannot read complete file");
+    return result;
+}
+
+// An authoring project's mission, opened through its workspace (mission/), if it
+// has one.
+struct ProjectMission {
+    std::optional<csf::ModProject> workspace;
+    std::optional<csf::MissionEditor> editor;
+};
+
+ProjectMission open_project_mission(const csf::AuthoringProject& project) {
+    ProjectMission result;
+    const auto workspace = project.directory / "mission";
+    if (const auto info = csf::read_mission_project_info(workspace)) {
+        result.workspace = csf::ModProject::load(workspace);
+        result.editor = csf::MissionEditor::open(project.package_root() / info->scene, project.package_root(),
+                                                 &*result.workspace);
+    }
     return result;
 }
 
@@ -245,17 +268,12 @@ int main(int argc, char** argv) try {
         const bool resnap = argc == 4 && std::string_view(argv[3]) == "--resnap";
         if (argc == 4 && !resnap) throw std::runtime_error("Unknown project-heights option: " + std::string(argv[3]));
         auto project = csf::AuthoringProject::load(argv[2]);
-        const auto workspace = project.directory / "mission";
-        std::optional<csf::ModProject> mod;
-        std::optional<csf::MissionEditor> editor;
+        auto [mod, editor] = open_project_mission(project);
         csf::ActorPositions actors;
-        if (const auto info = csf::read_mission_project_info(workspace)) {
-            mod = csf::ModProject::load(workspace);
-            editor = csf::MissionEditor::open(project.package_root() / info->scene, project.package_root(), &*mod);
+        if (editor)
             for (const auto& actor : editor->scene().actors())
                 if (actor.id && actor.position)
                     actors[*actor.id] = {actor.position->x, actor.position->y, actor.position->z};
-        }
         const auto findings = project.height_report(actors);
         for (const auto& finding : findings) {
             std::cout << "height\t" << (finding.subject == csf::HeightFinding::Subject::actor ? "actor" : "placement")
@@ -288,6 +306,60 @@ int main(int argc, char** argv) try {
             return f.subject == csf::HeightFinding::Subject::placement && f.resolved;
         });
         std::cout << "resnapped\t" << placements << " placements\t" << moved << " actors\n";
+        return 0;
+    }
+    if (command == "project-reference") {
+        // What a modelling tool shows around its sources: the built map with its
+        // props (world.gltf), one model per actor class (models/<class>.gltf)
+        // and markers.json (placements, actors, navigation, areas, dummies).
+        if (argc != 4) { usage(); return 1; }
+        const auto project = csf::AuthoringProject::load(argv[2]);
+        const std::filesystem::path out = argv[3];
+        std::filesystem::create_directories(out / "models");
+        const auto map = rws::Document::load(project.directory / "build" / project.donor_map.visual);
+        const auto world = rws::export_scene_gltf(map.chunks(), map.scene_instances(), map.bytes(), out / "world.gltf");
+        std::cout << "world\t" << (out / "world.gltf").generic_string() << '\t' << world.triangles << " triangles\n";
+        auto [mod, editor] = open_project_mission(project);
+        std::map<std::int32_t, std::string> models;
+        if (editor) {
+            csf::ResourceIndex package;
+            package.add_root(project.package_root());
+            package.build();
+            const auto resources = editor->resource_index(package);
+            for (const auto& association : csf::associate_actors(editor->scene(), editor->objects(), resources)) {
+                if (!association.class_id || models.contains(*association.class_id) ||
+                    association.visual_models.size() != 1 || !association.visual_models.front().resolved_path)
+                    continue;
+                try {
+                    const auto model = rws::Document::load(*association.visual_models.front().resolved_path);
+                    const auto name = "models/" + std::to_string(*association.class_id) + ".gltf";
+                    (void)rws::export_scene_gltf(model.chunks(), model.scene_instances(), model.bytes(), out / name);
+                    models[*association.class_id] = name;
+                } catch (const std::exception& error) {
+                    std::cout << "note\tclass " << *association.class_id << ": " << error.what() << '\n';
+                }
+            }
+        }
+        const auto markers = csf::reference_markers_json(project, editor ? &editor->scene() : nullptr, models);
+        std::ofstream(out / "markers.json", std::ios::binary) << markers;
+        std::cout << "models\t" << models.size() << "\nmarkers\t" << (out / "markers.json").generic_string() << '\n';
+        return 0;
+    }
+    if (command == "project-asset") {
+        // Registers (or updates) a Blender asset of an authoring project.
+        if (argc != 7) { usage(); return 1; }
+        auto project = csf::AuthoringProject::load(argv[2]);
+        const std::string id = argv[3], kind = argv[4];
+        if (kind != "terrain" && kind != "building") throw std::runtime_error("Asset kind must be terrain or building");
+        auto asset = std::ranges::find(project.assets, id, &csf::ProjectAsset::id);
+        if (asset == project.assets.end()) asset = project.assets.insert(project.assets.end(), csf::ProjectAsset{});
+        asset->id = id;
+        asset->kind = kind == "terrain" ? csf::ProjectAsset::Kind::terrain : csf::ProjectAsset::Kind::building;
+        asset->blend = argv[5];
+        asset->export_path = argv[6];
+        if (const auto problems = project.check(); !problems.empty()) throw std::runtime_error(problems.front());
+        project.save();
+        std::cout << "asset\t" << id << '\t' << kind << '\n';
         return 0;
     }
     if (command == "sector-build" || command == "world-ground") {

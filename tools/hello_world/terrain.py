@@ -88,7 +88,8 @@ def build():
                 uv.uv[loop].vector = (x / UV_TILE, -z / UV_TILE)
     mesh.shade_smooth()
     obj = bpy.data.objects.new("Terrain", mesh)
-    obj["csf_asset_id"] = "terrain"
+    obj["csf_asset_id"] = "terrain"  # the project's terrain asset (csf_authoring add-on)
+    obj["csf_asset_kind"] = "terrain"
     bpy.context.scene.collection.objects.link(obj)
     if any(face_normal_down(mesh)):
         raise SystemExit("terrain faces point down")

@@ -1,6 +1,7 @@
 #include "csf/authoring_project.hpp"
 
 #include "csf/authoring.hpp"
+#include "csf/mission_scene.hpp"
 #include "csf/mod_project.hpp"
 #include "rws/world_queries.hpp"
 #include "rws/world_source.hpp"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstdio>
 #include <cmath>
 #include <functional>
 #include <fstream>
@@ -619,6 +621,127 @@ void AuthoringProject::resnap(const std::vector<HeightFinding>& findings) {
         const auto placement = std::ranges::find(placements, finding.id, &ProjectPlacement::id);
         if (placement != placements.end()) placement->position.y = *finding.resolved;
     }
+}
+
+namespace {
+
+std::string json_string(const std::string_view text) {
+    std::string out = "\"";
+    for (const unsigned char c : text) {
+        if (c == '"' || c == '\\') out += '\\', out += static_cast<char>(c);
+        else if (c < 0x20) {
+            char buffer[8];
+            std::snprintf(buffer, sizeof(buffer), "\\u%04x", c);
+            out += buffer;
+        } else out += static_cast<char>(c);
+    }
+    return out + '"';
+}
+
+std::string json_vec(const float x, const float y, const float z) {
+    return "[" + text_of(x) + "," + text_of(y) + "," + text_of(z) + "]";
+}
+
+std::string json_vec(const csf::Vec3& v) { return json_vec(v.x, v.y, v.z); }
+
+} // namespace
+
+std::string reference_markers_json(const AuthoringProject& project, const MissionScene* scene,
+                                   const std::map<std::int32_t, std::string>& actor_models) {
+    std::string out = "{\n\"format\":\"csf-reference-1\",\n\"units\":\"game centimetres, Y up\",\n\"placements\":[";
+    const auto kind_name = [](const ProjectPlacement::Kind kind) {
+        return kind == ProjectPlacement::Kind::building ? "building" : kind == ProjectPlacement::Kind::piece ? "piece" : "prop";
+    };
+    for (std::size_t i = 0; i < project.placements.size(); ++i) {
+        const auto& p = project.placements[i];
+        out += std::string(i ? ",\n" : "\n") + "{\"id\":" + json_string(p.id) + ",\"kind\":\"" + kind_name(p.kind) +
+               "\",\"position\":" + json_vec(p.position.x, p.position.y, p.position.z) + ",\"yaw\":" + text_of(p.yaw_degrees);
+        if (!p.asset.empty()) out += ",\"asset\":" + json_string(p.asset);
+        if (p.kind == ProjectPlacement::Kind::piece)
+            out += ",\"box\":[" + json_vec(p.box_min.x, p.box_min.y, p.box_min.z) + "," +
+                   json_vec(p.box_max.x, p.box_max.y, p.box_max.z) + "]";
+        out += "}";
+    }
+    out += "\n],\n\"actors\":[";
+    if (scene) {
+        bool first = true;
+        for (const auto& actor : scene->actors()) {
+            const auto position = scene->actor_spawn_position(actor);
+            if (!actor.id || !position) continue;
+            out += std::string(first ? "\n" : ",\n") + "{\"id\":" + std::to_string(*actor.id) +
+                   ",\"name\":" + json_string(actor.name.value_or("")) +
+                   ",\"class\":" + std::to_string(actor.class_id.value_or(-1)) + ",\"position\":" + json_vec(*position) +
+                   ",\"heading\":" + text_of(actor.heading.value_or(0));
+            if (actor.class_id)
+                if (const auto model = actor_models.find(*actor.class_id); model != actor_models.end())
+                    out += ",\"model\":" + json_string(model->second);
+            out += "}";
+            first = false;
+        }
+    }
+    out += "\n],\n\"navigation\":[";
+    if (scene) {
+        bool first_group = true;
+        for (const auto& group : scene->navigation()) {
+            if (!group.id) continue;
+            out += std::string(first_group ? "\n" : ",\n") + "{\"id\":" + std::to_string(*group.id) +
+                   ",\"name\":" + json_string(group.name.value_or("")) + ",\"type\":" + std::to_string(group.type.value_or(0)) +
+                   ",\"points\":[";
+            bool first = true;
+            for (const auto& point : group.points) {
+                if (!point.id || !point.position) continue;
+                out += std::string(first ? "" : ",") + "{\"id\":" + std::to_string(*point.id) +
+                       ",\"position\":" + json_vec(*point.position) + "}";
+                first = false;
+            }
+            out += "],\"links\":[";
+            first = true;
+            for (const auto& link : group.connections) {
+                if (!link.origin_point || !link.destination_point) continue;
+                out += std::string(first ? "" : ",") + "[" + std::to_string(*link.origin_point) + "," +
+                       std::to_string(*link.destination_point) + "]";
+                first = false;
+            }
+            out += "]}";
+            first_group = false;
+        }
+    }
+    out += "\n],\n\"links\":[";
+    if (scene) {
+        bool first = true;
+        for (const auto& link : scene->cross_group_connections()) {
+            if (!link.origin_group || !link.origin_point || !link.destination_group || !link.destination_point) continue;
+            out += std::string(first ? "\n" : ",\n") + "[" + std::to_string(*link.origin_group) + "," +
+                   std::to_string(*link.origin_point) + "," + std::to_string(*link.destination_group) + "," +
+                   std::to_string(*link.destination_point) + "]";
+            first = false;
+        }
+    }
+    out += "\n],\n\"areas\":[";
+    if (scene) {
+        bool first = true;
+        for (const auto& area : scene->areas()) {
+            if (!area.id) continue;
+            out += std::string(first ? "\n" : ",\n") + "{\"id\":" + std::to_string(*area.id) +
+                   ",\"name\":" + json_string(area.name.value_or("")) + ",\"height\":" + text_of(area.height.value_or(0)) +
+                   ",\"points\":[";
+            for (std::size_t i = 0; i < area.points.size(); ++i) out += (i ? "," : "") + json_vec(area.points[i]);
+            out += "]}";
+            first = false;
+        }
+    }
+    out += "\n],\n\"dummies\":[";
+    if (scene) {
+        bool first = true;
+        for (const auto& dummy : scene->dummies()) {
+            if (!dummy.id || !dummy.position) continue;
+            out += std::string(first ? "\n" : ",\n") + "{\"id\":" + std::to_string(*dummy.id) +
+                   ",\"name\":" + json_string(dummy.name.value_or("")) + ",\"position\":" + json_vec(*dummy.position) +
+                   ",\"heading\":" + text_of(dummy.heading.value_or(0)) + "}";
+            first = false;
+        }
+    }
+    return out + "\n]\n}\n";
 }
 
 } // namespace csf

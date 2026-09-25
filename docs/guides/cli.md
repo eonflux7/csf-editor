@@ -236,6 +236,10 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 ./build/Release/csf-mod project-build ~/dev/csf-mods/hello-world-project [--force]
 # Placements and anchored actors off their height rules (> 1 cm), and the resnap.
 ./build/Release/csf-mod project-heights ~/dev/csf-mods/hello-world-project [--resnap]
+# What the Blender add-on loads as reference, and how it registers an asset.
+./build/Release/csf-mod project-reference ~/dev/csf-mods/hello-world-project out/reference
+./build/Release/csf-mod project-asset ~/dev/csf-mods/hello-world-project hut building \
+    sources/buildings/hut.blend sources/buildings/hut.csfworld
 
 # The mission's sector map (Maps/Secs/<Mission>.sec) from the same source's
 # collision faces, and the ground height and normal under points.

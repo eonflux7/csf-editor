@@ -130,6 +130,9 @@ struct AuthoringSession {
     std::unique_ptr<csf::AuthoringProject> project;
     // Export modification times the last build saw, to notice new exports.
     std::map<std::filesystem::path, std::filesystem::file_time_type> export_times;
+    // project.csfproj as rws-man last read or wrote it; another writer (the
+    // Blender add-on registering an asset) makes it reload the project.
+    std::filesystem::file_time_type project_time;
     double next_check{};
     struct Outcome {
         std::optional<csf::AuthoringProject> project;

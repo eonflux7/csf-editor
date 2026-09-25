@@ -23,6 +23,11 @@ std::map<std::filesystem::path, std::filesystem::file_time_type> export_times(co
     return times;
 }
 
+std::filesystem::file_time_type project_time(const csf::AuthoringProject& project) {
+    std::error_code error;
+    return std::filesystem::last_write_time(project.directory / "project.csfproj", error);
+}
+
 csf::ActorPositions actor_positions(const AppState& state) {
     csf::ActorPositions actors;
     if (!state.mission.scene) return actors;
@@ -71,6 +76,7 @@ void finish_job(AppState& state, AuthoringSession::Outcome outcome) {
     *session.project = std::move(*outcome.project);
     try {
         session.project->save();
+        session.project_time = project_time(*session.project);
     } catch (const std::exception& error) {
         state.notify(LogLevel::error, std::string("Project not saved: ") + error.what());
     }
@@ -118,6 +124,7 @@ void set_authoring_project(AppState& state, const std::filesystem::path& folder)
     if (folder.empty() || !std::filesystem::is_regular_file(folder / "project.csfproj")) return;
     try {
         session.project = std::make_unique<csf::AuthoringProject>(csf::AuthoringProject::load(folder));
+        session.project_time = project_time(*session.project);
         session.next_check = now_seconds() + 1.0;
         // A check, not a forced build: rebuilds only what is stale.
         queue_job(state, false);
@@ -154,6 +161,19 @@ void poll_authoring(AppState& state) {
     }
     if (now_seconds() < session.next_check) return;
     session.next_check = now_seconds() + 1.0;
+    if (project_time(*session.project) != session.project_time) {
+        try {
+            auto reloaded = csf::AuthoringProject::load(session.project->directory);
+            *session.project = std::move(reloaded);
+            session.project_time = project_time(*session.project);
+            state.info("Project: project.csfproj changed; checking the map");
+            queue_job(state, false);
+        } catch (const std::exception& error) {
+            // Possibly half written; try again on the next check.
+            state.warn(std::string("Project file unreadable: ") + error.what());
+        }
+        return;
+    }
     if (export_times(*session.project) != session.export_times) {
         state.info("Project: an asset export changed; rebuilding the map");
         queue_job(state, false);
@@ -167,6 +187,12 @@ void resnap_authoring_heights(AppState& state) {
     if (!session.project || authoring_pending(state)) return;
     std::size_t placements = 0, actors = 0;
     session.project->resnap(session.findings);
+    try {
+        session.project->save();
+        session.project_time = project_time(*session.project);
+    } catch (const std::exception& error) {
+        state.notify(LogLevel::error, std::string("Project not saved: ") + error.what());
+    }
     for (const auto& finding : session.findings) {
         if (!finding.resolved) continue;
         if (finding.subject == csf::HeightFinding::Subject::placement) {

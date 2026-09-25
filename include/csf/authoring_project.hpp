@@ -146,4 +146,13 @@ private:
 
 [[nodiscard]] const char* height_mode_name(HeightRule::Mode mode) noexcept;
 
+class MissionScene;
+
+// The reference a modelling tool shows around its sources (the Blender
+// add-on's "Load reference"), as JSON in game units: the project's placements,
+// and the scene's actors (with `actor_models`: class ID -> model file name),
+// navigation groups and links, areas and dummies. Nothing in it is edited.
+[[nodiscard]] std::string reference_markers_json(const AuthoringProject& project, const MissionScene* scene,
+                                                 const std::map<std::int32_t, std::string>& actor_models);
+
 } // namespace csf
