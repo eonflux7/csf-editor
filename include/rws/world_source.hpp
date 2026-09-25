@@ -52,6 +52,9 @@ struct WorldSource {
     std::vector<WorldSourceMaterial> materials;
     std::vector<WorldBuildVertex> vertices;
     std::vector<bool> has_second_uv;  // per vertex: the v line gave u1 v1
+    // Per vertex: the position as written, before rounding to float (the
+    // sector map's planes are computed from these).
+    std::vector<std::array<double, 3>> exact_positions;
     std::vector<WorldSourceFace> faces;
     std::vector<PlacedProp> props;
     std::vector<WorldPiece> pieces;

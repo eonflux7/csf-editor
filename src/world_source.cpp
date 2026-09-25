@@ -109,7 +109,10 @@ DecodeResult<WorldSource> parse_world_source(const std::string_view text) {
             vertex.normal = {values[3], values[4], values[5]};
             vertex.texcoords[0] = {values[6], values[7]};
             vertex.texcoords[1] = {values[8], values[9]};
+            std::array<double, 3> exact{};
+            for (std::size_t i = 0; i < 3; ++i) number(parts[1 + i], exact[i]);
             source.vertices.push_back(vertex);
+            source.exact_positions.push_back(exact);
             source.has_second_uv.push_back(parts.size() == 11);
         } else if (parts[0] == "f") {
             if (parts.size() != 6) return fail("f <a> <b> <c> <material> <visual|collision|both>");

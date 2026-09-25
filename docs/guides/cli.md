@@ -230,6 +230,11 @@ blender --background --factory-startup --python tools/blender/make_test_terrain.
 blender --background scene.blend --python tools/blender/export_csf_world.py -- out/scene.csfworld
 ./build/Release/csf-mod world-build out/terrain.csfworld \
     ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.rws [--keep-props]
+
+# The mission's sector map (Maps/Secs/<Mission>.sec) from the same source's
+# collision faces, and the ground height and normal under points.
+./build/Release/csf-mod sector-build out/terrain.csfworld out/Convoy.sec
+./build/Release/csf-mod world-ground out/terrain.csfworld 0 0 2500 -2000
 ```
 
 `--keep-props` keeps the donor's Clumps and scene-instance records in the new

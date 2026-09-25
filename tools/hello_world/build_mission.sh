@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the hello-world mission archive in Convoy's slot (decision D1): the map
-# from build_world.sh, its sector map (build_sec.py) and a scene and scripts
+# from build_world.sh, its sector map (`csf-mod sector-build`) and a scene and scripts
 # written from scratch by scene.py. Only Convoy's environment (.MUNDOVIS) and
 # databases are reused; the doberman is imported from Ransom and the
 # radio's ghost behavior and supporting crate from Escape.
@@ -17,7 +17,7 @@ scene="$corpus/Convoy/Maps/FR03/Convoy.scn"
 [ ! -e "$ws" ] || { echo "workspace exists: $ws" >&2; exit 1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 tools/hello_world/build_world.sh "$tmp/world" "$corpus"
-python3 tools/hello_world/build_sec.py "$tmp/world/hello.csfworld" "$tmp/Convoy.sec"
+"$csfmod" sector-build "$tmp/world/hello.csfworld" "$tmp/Convoy.sec"
 "$csfmod" decompile "$scene" "$tmp/convoy.scn.txt" >/dev/null
 python3 tools/hello_world/scene.py "$tmp/convoy.scn.txt" "$tmp/world/hello.csfworld" "$tmp/scene"
 "$csfmod" compile "$tmp/scene/Convoy.scn.txt" "$scene" "$tmp/Convoy.scn"

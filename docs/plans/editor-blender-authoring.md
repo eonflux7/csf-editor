@@ -10,7 +10,7 @@ implemented yet.
 ## Goal and reference
 
 The reference is `tools/hello_world/` at the v13 commit. `terrain.py` builds
-the map, `build_sec.py` the sector map, `scene.py` the scene and every script,
+the map, `csf-mod sector-build` (formerly `build_sec.py`) the sector map, `scene.py` the scene and every script,
 `texts.py` the objective strings, and `build.sh` both archives. `scene.py` is
 the working specification of each recipe the editor needs.
 
@@ -31,7 +31,7 @@ a shipped mission's slot; registering extra missions is not a goal.
 |---|---|---|---|
 | New mission in a donor slot, donor content removed | `scene.py` writes the scene; `build_mission.sh` deletes every donor script | open a donor mission; delete actors and scripts one by one | "new mission from slot" operation: keep `.MUNDOVIS`, databases and classes; clear actors, dummies, areas, navigation and scripts |
 | Terrain, house piece, trees, plants | `terrain.py` → `.csfworld` → `world-build` | none in the GUI | World import and rebuild; props and pieces as project placements (see stage 2) |
-| Sector map | `build_sec.py` pairs terrain triangles into convex polygons | none | a core operation in `rws_core`, tested |
+| Sector map | `build_sec.py` paired terrain triangles into convex polygons | done: `rws::build_sector_map`, `csf-mod sector-build`, byte-identical to v13 | |
 | Actors, prop actors, pickups | `ACTORS`, `prop_actors()` | add, duplicate, delete, class, look, faction, scripts, animations | ground height (stage 2) and presets |
 | Donor classes and animations | `--import-class`, `--import-anim` | `import_class`, `import_animation` | asset browser with provenance (stage 3) |
 | Walk grid (`MALLA`) and its links to routes | `walk_grid()`, `navigation()` | move, add, delete, link and unlink points in existing groups | add and delete navigation groups; generate a walk grid that avoids obstacles |
@@ -152,8 +152,12 @@ project: textured crate and doberman, and the generated 16-sector collision.
 - Move `piece`/`prop` records into project placements and migrate hello world.
 - Add a ground query to `rws_core`: height and normal at (x, z), and a
   downward ray against the collision World. Snapping, floating/buried reports
-  and route checks all need it.
-- Port `build_sec.py` to a tested core sector-map operation.
+  and route checks all need it. **Done:** `rws::GroundQuery` over a World
+  source's collision faces (`highest`, and `below` a height for floors under
+  roofs), `csf-mod world-ground`. Placements do not use it yet.
+- Port `build_sec.py` to a tested core sector-map operation. **Done:**
+  `rws::build_sector_map` (`csf-mod sector-build`) reproduces v13's
+  `Convoy.sec` byte for byte; `build_sec.py` is removed.
 - Build both archives (mission and GlobalEK) from the project, with rollback
   records, replacing `build.sh`.
 

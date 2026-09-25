@@ -20,6 +20,7 @@
 #include "rws/scene_export.hpp"
 #include "rws/texture_image.hpp"
 #include "rws/world_model.hpp"
+#include "rws/world_queries.hpp"
 #include "rws/world_source.hpp"
 #include "rws/world_recovery.hpp"
 #include "rwsman/commands.hpp"
@@ -3621,6 +3622,38 @@ int main() {
         broken = *parsed.value;
         broken.sectors[0].triangles[0].vertices[0] = 99;
         CHECK(!rws::check_world_model(broken).empty());
+    }
+    {
+        // Sector map and ground heights of a World source's collision faces: a
+        // slope y = x / 2 and, for the ground, a floor at 200 above half of it.
+        const std::string slope =
+            "csfworld 1\nmaterial GROUND Tierra\n"
+            "v 0 0 0 0 1 0 0 0\nv 0 0 100 0 1 0 0 1\nv 100 50 100 0 1 0 1 1\nv 100 50 0 0 1 0 1 0\n"
+            "f 0 1 2 0 both\nf 0 2 3 0 both\n";
+        const auto source = rws::parse_world_source(slope);
+        CHECK(source.value.has_value());
+        const auto map = rws::build_sector_map(*source.value);
+        const auto read_u32 = [](const std::vector<std::byte>& bytes, const std::size_t offset) {
+            std::uint32_t value{};
+            for (int i = 3; i >= 0; --i) value = value << 8U | std::to_integer<std::uint32_t>(bytes.at(offset + i));
+            return value;
+        };
+        // The two triangles pair into one convex quad without neighbours.
+        CHECK(map.vertex_count == 4 && map.sector_count == 1 && map.bytes.size() == 8 + 4 * 12 + 4 + 12 + 44 + 4 * 12);
+        CHECK(read_u32(map.bytes, 8 + 4 * 12 + 4) == 4 && read_u32(map.bytes, map.bytes.size() - 4) == 0xFFFFFFFFU);
+        const auto floored = rws::parse_world_source(
+            slope + "v 0 200 0 0 1 0 0 0\nv 0 200 100 0 1 0 0 1\nv 50 200 0 0 1 0 1 0\n"
+                    "f 4 5 6 0 collision\nv 0 300 0 0 1 0 0 0\nv 0 300 100 0 1 0 0 1\nv 60 300 0 0 1 0 1 0\n"
+                    "f 7 8 9 0 visual\n");
+        CHECK(floored.value.has_value());
+        const rws::GroundQuery ground(*floored.value);
+        const auto hit = ground.highest(20, 20);
+        CHECK(hit && std::abs(hit->height - 200.0F) < 1e-3F);  // the floor; the visual face is ignored
+        const auto under = ground.below(20, 150, 20);
+        CHECK(under && std::abs(under->height - 10.0F) < 1e-3F);
+        CHECK(under->normal.y > 0 && under->normal.x < 0);
+        CHECK(std::abs(ground.highest(80, 50)->height - 40.0F) < 1e-3F);
+        CHECK(!ground.highest(150, 50) && !ground.highest(-1, 50));
     }
     {
         // .csfworld: parse errors name the line; compile resolves donor materials

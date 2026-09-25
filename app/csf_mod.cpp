@@ -6,6 +6,7 @@
 #include "rws/document.hpp"
 #include "rws/map_assembly.hpp"
 #include "rws/world_model.hpp"
+#include "rws/world_queries.hpp"
 #include "rws/world_source.hpp"
 #include "rws/world_recovery.hpp"
 
@@ -35,6 +36,8 @@ void usage() {
            "  csf-mod world-rebuild <map.rws> <new-map.rws> [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod world-build <source.csfworld> <donor-map.rws> <new-map.rws>\n"
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
+           "  csf-mod sector-build <source.csfworld> <new.sec> [--overwrite]\n"
+           "  csf-mod world-ground <source.csfworld> <x> <z> [<x> <z>]...\n"
            "  csf-mod init <workspace> <source-root> <name>\n"
            "  csf-mod add <workspace> <game-relative-path> <authored-file> [change-manifest]\n"
            "              [--target <semantic-target>]...\n"
@@ -216,6 +219,42 @@ int main(int argc, char** argv) try {
             if (!file) throw std::runtime_error("Cannot write " + to.generic_string());
             std::cout << "rebuilt\t" << to.generic_string() << '\t' << built.value->triangle_count << " triangles\t"
                       << source.world_sector_count << " -> " << built.value->world_sector_count << " sectors\n";
+        }
+        return 0;
+    }
+    if (command == "sector-build" || command == "world-ground") {
+        if (argc < 4) { usage(); return 1; }
+        const std::filesystem::path source_path = argv[2];
+        std::ifstream input(source_path, std::ios::binary);
+        if (!input) throw std::runtime_error("Cannot read " + source_path.generic_string());
+        const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        const auto source = rws::parse_world_source(text);
+        if (!source) throw std::runtime_error(source_path.generic_string() + ": " + source.error);
+        if (command == "sector-build") {
+            // The sector map of the source's collision faces (props excluded).
+            const std::filesystem::path output = argv[3];
+            const bool overwrite = argc > 4 && std::string_view(argv[4]) == "--overwrite";
+            if (argc > 4 && !overwrite) throw std::runtime_error("Unknown sector-build option: " + std::string(argv[4]));
+            if (!overwrite && std::filesystem::exists(output))
+                throw std::runtime_error("Output exists (pass --overwrite): " + output.generic_string());
+            const auto map = rws::build_sector_map(*source.value);
+            std::ofstream file(output, std::ios::binary);
+            file.write(reinterpret_cast<const char*>(map.bytes.data()), static_cast<std::streamsize>(map.bytes.size()));
+            if (!file) throw std::runtime_error("Cannot write " + output.generic_string());
+            std::cout << "sec\t" << output.generic_string() << '\t' << map.vertex_count << " vertices\t"
+                      << map.sector_count << " sectors\n";
+            return 0;
+        }
+        // Ground height and normal under each (x, z) of the source's collision faces.
+        if ((argc - 3) % 2 != 0) { usage(); return 1; }
+        const rws::GroundQuery ground(*source.value);
+        for (int i = 3; i + 1 < argc; i += 2) {
+            const auto x = std::stof(argv[i]), z = std::stof(argv[i + 1]);
+            std::cout << "ground\t" << x << '\t' << z << '\t';
+            if (const auto hit = ground.highest(x, z))
+                std::cout << hit->height << '\t' << hit->normal.x << ' ' << hit->normal.y << ' ' << hit->normal.z << '\n';
+            else
+                std::cout << "-\n";
         }
         return 0;
     }
