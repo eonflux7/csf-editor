@@ -38,6 +38,7 @@ void usage() {
            "  csf-mod world-build <source.csfworld> <donor-map.rws> <new-map.rws>\n"
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod project-build <project-dir> [--force]\n"
+           "  csf-mod project-heights <project-dir> [--resnap]\n"
            "  csf-mod sector-build <source.csfworld> <new.sec> [--overwrite]\n"
            "  csf-mod world-ground <source.csfworld> <x> <z> [<x> <z>]...\n"
            "  csf-mod init <workspace> <source-root> <name>\n"
@@ -234,6 +235,59 @@ int main(int argc, char** argv) try {
         const auto report = project.build_world(force);
         project.save();
         for (const auto& line : report.lines) std::cout << line << '\n';
+        return 0;
+    }
+    if (command == "project-heights") {
+        // Placements and anchored actors whose height rules no longer match the
+        // ground; --resnap stores the resolved heights (placements in the
+        // project, actors in its mission workspace).
+        if (argc < 3 || argc > 4) { usage(); return 1; }
+        const bool resnap = argc == 4 && std::string_view(argv[3]) == "--resnap";
+        if (argc == 4 && !resnap) throw std::runtime_error("Unknown project-heights option: " + std::string(argv[3]));
+        auto project = csf::AuthoringProject::load(argv[2]);
+        const auto workspace = project.directory / "mission";
+        std::optional<csf::ModProject> mod;
+        std::optional<csf::MissionEditor> editor;
+        csf::ActorPositions actors;
+        if (const auto info = csf::read_mission_project_info(workspace)) {
+            mod = csf::ModProject::load(workspace);
+            editor = csf::MissionEditor::open(project.package_root() / info->scene, project.package_root(), &*mod);
+            for (const auto& actor : editor->scene().actors())
+                if (actor.id && actor.position)
+                    actors[*actor.id] = {actor.position->x, actor.position->y, actor.position->z};
+        }
+        const auto findings = project.height_report(actors);
+        for (const auto& finding : findings) {
+            std::cout << "height\t" << (finding.subject == csf::HeightFinding::Subject::actor ? "actor" : "placement")
+                      << '\t' << finding.id << "\tstored " << finding.position.y << '\t';
+            if (finding.resolved)
+                std::cout << "resolved " << *finding.resolved << '\t' << std::showpos
+                          << *finding.resolved - finding.position.y << std::noshowpos << '\n';
+            else
+                std::cout << finding.problem << '\n';
+        }
+        std::cout << findings.size() << " height findings\n";
+        if (!resnap) return 0;
+        project.resnap(findings);
+        project.save();
+        std::size_t moved = 0;
+        for (const auto& finding : findings) {
+            if (finding.subject != csf::HeightFinding::Subject::actor || !finding.resolved || !editor) continue;
+            const auto actor = std::ranges::find_if(editor->scene().actors(), [&](const auto& a) {
+                return a.id == finding.actor_id;
+            });
+            if (actor == editor->scene().actors().end()) continue;
+            const csf::ActorPlacement placement{{actor->position->x, *finding.resolved, actor->position->z},
+                                               actor->heading.value_or(0), actor->pitch.value_or(0)};
+            if (!editor->set_actor_placement(finding.actor_id, placement).applied)
+                throw std::runtime_error("Cannot move actor " + finding.id);
+            ++moved;
+        }
+        if (moved) (void)editor->save(*mod);
+        const auto placements = std::ranges::count_if(findings, [](const csf::HeightFinding& f) {
+            return f.subject == csf::HeightFinding::Subject::placement && f.resolved;
+        });
+        std::cout << "resnapped\t" << placements << " placements\t" << moved << " actors\n";
         return 0;
     }
     if (command == "sector-build" || command == "world-ground") {

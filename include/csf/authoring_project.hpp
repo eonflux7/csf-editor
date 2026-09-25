@@ -1,9 +1,11 @@
 #pragma once
 
 #include "rws/decoded.hpp"
+#include "rws/world_source.hpp"
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -64,6 +66,21 @@ struct ProjectLocal {
     std::filesystem::path blender, test_install;
 };
 
+// A placement or anchored actor whose height rule resolves to a height more
+// than 1 cm from its stored one, or does not resolve at all.
+struct HeightFinding {
+    enum class Subject : std::uint8_t { placement, actor };
+    Subject subject{Subject::placement};
+    std::string id;           // placement ID, or the actor ID as text
+    std::int32_t actor_id{};  // for actors
+    rws::Vec3 position;       // stored
+    std::optional<float> resolved;
+    std::string problem;      // why it did not resolve
+};
+
+// Scene actor positions by gameplay ID (for anchors and `on actor` supports).
+using ActorPositions = std::map<std::int32_t, rws::Vec3>;
+
 struct ProjectBuildReport {
     bool rebuilt{};
     std::vector<std::string> lines;  // one per output: what was built or why it was kept
@@ -113,6 +130,18 @@ public:
     // source). Outputs are rebuilt only when their inputs or files changed (or
     // `force`); their records are updated in memory, so save() afterwards.
     ProjectBuildReport build_world(bool force = false);
+
+    // Resolves every height rule against the ground: the collision faces of
+    // the terrain and building assets (props and pieces are not ground), and
+    // `on` supports at their resolved heights. Returns what is off by more than
+    // 1 cm or unresolved; absolute placements and unanchored actors are skipped.
+    [[nodiscard]] std::vector<HeightFinding> height_report(const ActorPositions& actors = {}) const;
+    // Stores the resolved height of each placement finding. Actor findings are
+    // left to the caller, which moves the actors in the mission.
+    void resnap(const std::vector<HeightFinding>& findings);
+
+private:
+    [[nodiscard]] rws::WorldSource merged_source(bool with_donor_placements) const;
 };
 
 [[nodiscard]] const char* height_mode_name(HeightRule::Mode mode) noexcept;

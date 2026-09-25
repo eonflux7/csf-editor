@@ -234,8 +234,17 @@ A mission project is a `csf-mod` project (see
 `.csf-mission` file naming the scene and the shipped archive. Its `authored/`
 folder holds each changed file at its package path with a `.changes.json`
 manifest; files that are edited back to their original content leave the
-project on the next save. `csf-mod validate`, `conflicts`, `build` and `package`
-work on it as on any project.
+project on the next save. A file added from elsewhere with `csf-mod add` (for
+example an authoring project's `build/` map) stays where it is: saving copies it
+into `authored/` only when an edit in the editor changed it. `csf-mod validate`,
+`conflicts`, `build` and `package` work on it as on any project.
+
+An [authoring project](../plans/editor-project-format.md) keeps its mission
+workspace in `mission/`. After a terrain change, `csf-mod project-heights
+<project>` lists the placements and anchored actors that no longer stand where
+their height rule says, and `--resnap` moves them (placements in the project,
+actors in the mission); `csf-mod project-build <project>` then rebuilds the map
+and updates the workspace's records of it.
 
 ## Format findings used by the editor
 

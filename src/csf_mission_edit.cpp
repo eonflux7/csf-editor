@@ -2590,9 +2590,21 @@ std::vector<std::filesystem::path> MissionEditor::save(ModProject& project) {
                 throw std::runtime_error("Refusing to save: area " + std::to_string(area.id.value_or(-1)) + " " +
                                          problems.front() + " (the game crashes loading it)");
     std::set<std::string> keep;
+    const auto authored_root = std::filesystem::weakly_canonical(project.workspace_root / "authored");
     for (const auto index : modified) {
         const auto& file = files_[index];
         const auto bytes = file.bytes();
+        // A file the project takes from elsewhere (an authoring project's
+        // build/, `csf-mod add`) stays there unless an edit here changed it.
+        const auto external = std::ranges::find_if(project.files, [&](const ModFile& value) {
+            if (path_key(value.relative_path) != path_key(file.relative_path)) return false;
+            const auto relative = std::filesystem::weakly_canonical(value.authored_path).lexically_relative(authored_root);
+            return relative.empty() || *relative.begin() == "..";
+        });
+        if (external != project.files.end() && (file.revision == 0 || sha256(bytes) == external->output_sha256)) {
+            keep.insert(path_key(file.relative_path));
+            continue;
+        }
         if (file.tree) {
             const auto check = Document::from_bytes(bytes);
             if (check.has_errors() || check.state() != ParseState::exact)

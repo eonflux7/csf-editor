@@ -4,7 +4,8 @@
     scene.py <donor scene source text> <hello.csfworld> <out dir>
 
 Writes <out dir>/Convoy.scn.txt and Convoy.csc.txt (compile them with Convoy's
-files as templates) and
+files as templates), anchors.csfproj (the actors' height relations, for the
+project) and
 <out dir>/scripts/<id>.txt, one `csf-mod mission-edit --add-script` file per
 script. Only the donor's `.MUNDOVIS` environment (sky, fog, textures, minimap)
 is kept; actors, navigation, dummies, areas and lights are all written here
@@ -492,6 +493,18 @@ def cutscene() -> str:
     return "[\n  .SCRIPTS (\n" + body + "  )\n  .POOL ()\n]\n"
 
 
+def anchors() -> str:
+    """Project `anchor` records (docs/plans/editor-project-format.md): every
+    actor and prop actor stands on the ground, the radio on its crate. Camera
+    helpers keep their absolute heights."""
+    crate = next(30 + k for k, (_, name, *_rest) in enumerate(PROPS) if name == "RADIO_CRATE")
+    lines = ["", "# Height relations of mission actors (scene.py)"]
+    for ident, *_ in ACTORS + prop_actors():
+        rule = f"on actor {crate} {RADIO_LIFT}" if ident == RADIO_GHOST else "ground 0"
+        lines.append(f"anchor actor {ident} {rule}")
+    return "\n".join(lines) + "\n"
+
+
 def main(argv: list[str]) -> int:
     global TERRAIN
     donor = Path(argv[1]).read_text(encoding="utf-8")
@@ -502,6 +515,7 @@ def main(argv: list[str]) -> int:
     (out / "Convoy.csc.txt").write_text(cutscene(), encoding="utf-8")
     for ident, text in scripts().items():
         (out / "scripts" / f"{ident}.txt").write_text(text, encoding="utf-8")
+    (out / "anchors.csfproj").write_text(anchors(), encoding="utf-8", newline="\n")
     return 0
 
 

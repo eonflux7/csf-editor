@@ -1,4 +1,5 @@
 #include "csf/animation_catalog.hpp"
+#include "csf/authoring.hpp"
 #include "csf/authoring_project.hpp"
 #include "csf/cmo.hpp"
 #include "csf/document.hpp"
@@ -1391,6 +1392,25 @@ void test_mission_editor() {
         // Overlays survive a rebuild of the index.
         resources.build();
         CHECK(resources.resolve("Models\\Vehi\\Tank.dff").candidate_indices.size() == 1);
+    }
+    {
+        // A file the project takes from outside authored/ (an authoring
+        // project's build/) stays there when an unrelated edit is saved.
+        const auto external = root / "build" / "Maps" / "M1" / "extra.bin";
+        write_bytes(external, std::vector<std::byte>(8, std::byte{7}));
+        auto with_external = csf::ModProject::load(workspace);
+        with_external.add_file({"Maps/M1/extra.bin", external, {}, {}, csf::sha256(std::vector<std::byte>(8, std::byte{7})), {}});
+        with_external.save();
+        auto edited = csf::MissionEditor::open(map / "M1.scn", package, &with_external);
+        const auto actor = edited.scene().actors()[1];
+        CHECK(edited.set_actor_placement(*actor.id, {{actor.position->x + 1, actor.position->y, actor.position->z}, 0, 0}).applied);
+        (void)edited.save(with_external);
+        const auto record = std::ranges::find(with_external.files, std::filesystem::path("Maps/M1/extra.bin"),
+                                              &csf::ModFile::relative_path);
+        CHECK(record != with_external.files.end() && record->authored_path == external);
+        CHECK(!std::filesystem::exists(workspace / "authored" / "Maps" / "M1" / "extra.bin"));
+        std::erase_if(with_external.files, [](const csf::ModFile& f) { return f.relative_path == "Maps/M1/extra.bin"; });
+        with_external.save();
     }
     // Undoing to the source content removes the file from the project on save.
     while (editor.undo()) {
@@ -3811,6 +3831,28 @@ int main() {
         CHECK(reloaded.build_world().rebuilt);
         std::filesystem::remove(project_dir / "build" / "Maps" / "Secs" / "M1.sec");
         CHECK(reloaded.build_world().rebuilt);
+
+        // Height report: ground is the terrain's collision (flat at 0 where
+        // z >= x); supports resolve through chains, actors through anchors.
+        auto heights = csf::AuthoringProject::parse(
+            "csfproj 1\nslot M1 Maps/X/M1.scn maps/M1.pak\ndonor-map Maps/X/X.rws Maps/X/X_col.rws\n"
+            "asset ground terrain sources/ground.blend sources/ground.csfworld\n"
+            "prop low 1 20 3 60 0 ground 0\nprop stacked 1 20 10 60 0 on prop low 7\n"
+            "prop fixed 1 20 99 60 0 absolute\nprop away 1 90 0 10 0 ground 0\n"
+            "anchor actor 6 ground 0\nanchor actor 5 on actor 6 2\n");
+        heights.directory = project_dir;
+        const csf::ActorPositions actors{{5, {20, 2, 60}}, {6, {20, 4, 60}}};
+        auto findings = heights.height_report(actors);
+        const auto find = [&](const std::string& id) {
+            return std::ranges::find(findings, id, &csf::HeightFinding::id);
+        };
+        CHECK(findings.size() == 4 && find("fixed") == findings.end() && find("5") == findings.end());
+        CHECK(find("low")->resolved == 0.0F && find("stacked")->resolved == 7.0F);
+        CHECK(!find("away")->resolved && find("away")->problem == "has no ground under it");
+        CHECK(find("6")->subject == csf::HeightFinding::Subject::actor && find("6")->resolved == 0.0F);
+        heights.resnap(findings);
+        findings = heights.height_report(actors);
+        CHECK(findings.size() == 2 && find("away") != findings.end() && find("6") != findings.end());
         std::filesystem::remove_all(root);
     }
     {

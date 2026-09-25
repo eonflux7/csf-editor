@@ -8,7 +8,8 @@ terrain reimport.
 **Implemented:** `csf::AuthoringProject` (`include/csf/authoring_project.hpp`)
 reads and writes both files and builds the World, collision and sector map
 (`csf-mod project-build`); hello world is migrated (`tools/hello_world/build.sh`).
-**Not yet:** height resolution and the height report, `.csfworld` version 2
+Height resolution, the height report and resnap (`csf-mod project-heights`).
+**Not yet:** `.csfworld` version 2
 `object` lines, the text range check, and building the archives into `dist/`
 from C++ (the hello-world scripts do that today).
 

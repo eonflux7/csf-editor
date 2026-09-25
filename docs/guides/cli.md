@@ -234,6 +234,8 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 # An authoring project (docs/plans/editor-project-format.md): build its map,
 # collision map and sector map into <project>/build/ when they are stale.
 ./build/Release/csf-mod project-build ~/dev/csf-mods/hello-world-project [--force]
+# Placements and anchored actors off their height rules (> 1 cm), and the resnap.
+./build/Release/csf-mod project-heights ~/dev/csf-mods/hello-world-project [--resnap]
 
 # The mission's sector map (Maps/Secs/<Mission>.sec) from the same source's
 # collision faces, and the ground height and normal under points.

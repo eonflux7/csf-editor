@@ -1,12 +1,15 @@
 #include "csf/authoring_project.hpp"
 
 #include "csf/authoring.hpp"
+#include "csf/mod_project.hpp"
 #include "rws/world_queries.hpp"
 #include "rws/world_source.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
+#include <functional>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -413,7 +416,6 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
     const auto donor_collision = read_bytes(package / donor_map.collision);
 
     // Everything the World depends on, in one canonical text.
-    std::map<std::string, rws::WorldSource> exports;
     std::string inputs = "world 1\ndonor " + hash_of(donor_visual) + ' ' + hash_of(donor_collision) + '\n';
     for (auto& asset : assets) {
         const auto bytes = read_bytes(directory / asset.export_path);
@@ -422,9 +424,6 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
             report.lines.push_back("asset\t" + asset.id + "\texport changed since it was recorded");
         asset.export_hash = hash;
         inputs += "asset " + asset.id + ' ' + std::to_string(static_cast<int>(asset.kind)) + ' ' + hash + '\n';
-        auto parsed = rws::parse_world_source({reinterpret_cast<const char*>(bytes.data()), bytes.size()});
-        if (!parsed) throw std::runtime_error(asset.export_path.generic_string() + ": " + parsed.error);
-        exports.emplace(asset.id, std::move(*parsed.value));
     }
     for (const auto& placement : placements) inputs += placement_text(placement) + '\n';
     const auto inputs_hash = hash_of(inputs);
@@ -447,25 +446,7 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
         return report;
     }
 
-    // Terrain where it was modelled, buildings at their placements, then the
-    // donor pieces and props in project order.
-    rws::WorldSource merged;
-    for (const auto& asset : assets)
-        if (asset.kind == ProjectAsset::Kind::terrain) rws::append_world_source(merged, exports.at(asset.id));
-    for (const auto& placement : placements) {
-        switch (placement.kind) {
-        case ProjectPlacement::Kind::building:
-            rws::append_world_source(merged, exports.at(placement.asset),
-                                     rws::WorldSourcePlacement{placement.position, placement.yaw_degrees});
-            break;
-        case ProjectPlacement::Kind::piece:
-            merged.pieces.push_back({placement.box_min, placement.box_max, placement.position, placement.yaw_degrees});
-            break;
-        case ProjectPlacement::Kind::prop:
-            merged.props.push_back({placement.donor_instances, placement.position, placement.yaw_degrees});
-            break;
-        }
-    }
+    const auto merged = merged_source(true);
     const auto built = rws::build_map_files(merged, donor_visual, donor_collision);
     if (!built) throw std::runtime_error(built.error);
     const auto sectors = rws::build_sector_map(merged);
@@ -481,6 +462,22 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
     store(collision_path, "world", built.value->collision);
     store(sectors_path, "sectors", sectors.bytes);
     store(source_path, "source", std::span(reinterpret_cast<const std::byte*>(source_text.data()), source_text.size()));
+    // The mission workspace packages these files from build/; record their
+    // new hashes there so validation and export see them as current.
+    if (std::filesystem::is_regular_file(directory / "mission" / ".csf-mod-state")) {
+        auto mission = ModProject::load(directory / "mission");
+        bool changed = false;
+        for (auto& file : mission.files)
+            for (const auto& output : outputs) {
+                std::error_code error;
+                if (std::filesystem::equivalent(file.authored_path, directory / output.path, error) &&
+                    file.output_sha256 != output.hash.substr(7)) {
+                    file.output_sha256 = output.hash.substr(7);  // without "sha256:"
+                    changed = true;
+                }
+            }
+        if (changed) mission.save();
+    }
     report.rebuilt = true;
     report.lines.push_back("visual\t" + map_path.generic_string() + '\t' + std::to_string(built.value->visual_triangles) +
                            " triangles\t" + std::to_string(built.value->visual_sectors) + " sectors");
@@ -491,6 +488,137 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
                            " vertices\t" + std::to_string(sectors.sector_count) + " sectors");
     for (const auto& note : built.value->notes) report.lines.push_back("note\t" + note);
     return report;
+}
+
+rws::WorldSource AuthoringProject::merged_source(const bool with_donor_placements) const {
+    std::map<std::string, rws::WorldSource> exports;
+    for (const auto& asset : assets) {
+        const auto text = read_text(directory / asset.export_path);
+        auto parsed = rws::parse_world_source(text);
+        if (!parsed) throw std::runtime_error(asset.export_path.generic_string() + ": " + parsed.error);
+        exports.emplace(asset.id, std::move(*parsed.value));
+    }
+    // Terrain where it was modelled, buildings at their placements, then the
+    // donor pieces and props in project order.
+    rws::WorldSource merged;
+    for (const auto& asset : assets)
+        if (asset.kind == ProjectAsset::Kind::terrain) rws::append_world_source(merged, exports.at(asset.id));
+    for (const auto& placement : placements) {
+        switch (placement.kind) {
+        case ProjectPlacement::Kind::building:
+            rws::append_world_source(merged, exports.at(placement.asset),
+                                     rws::WorldSourcePlacement{placement.position, placement.yaw_degrees});
+            break;
+        case ProjectPlacement::Kind::piece:
+            if (with_donor_placements)
+                merged.pieces.push_back({placement.box_min, placement.box_max, placement.position, placement.yaw_degrees});
+            break;
+        case ProjectPlacement::Kind::prop:
+            if (with_donor_placements)
+                merged.props.push_back({placement.donor_instances, placement.position, placement.yaw_degrees});
+            break;
+        }
+    }
+    return merged;
+}
+
+std::vector<HeightFinding> AuthoringProject::height_report(const ActorPositions& actors) const {
+    if (const auto problems = check(); !problems.empty()) throw std::runtime_error(problems.front());
+    const rws::GroundQuery ground(merged_source(false));
+    std::map<std::string, const ProjectPlacement*> by_id;
+    for (const auto& placement : placements) by_id[placement.id] = &placement;
+    std::map<std::int32_t, const ProjectAnchor*> anchored;
+    for (const auto& anchor : anchors) anchored[anchor.actor_id] = &anchor;
+
+    // Resolved heights, memoized; an error string when a rule does not resolve.
+    struct Resolved {
+        std::optional<float> height;
+        std::string problem;
+    };
+    std::map<std::string, Resolved> placement_heights;
+    std::map<std::int32_t, Resolved> actor_heights;
+    std::set<std::string> resolving;  // guards `on actor` chains back into placements
+    std::function<Resolved(const HeightRule&, const rws::Vec3&, const std::string&)> resolve_rule;
+    std::function<Resolved(const std::string&)> placement_height;
+    std::function<Resolved(std::int32_t)> actor_height;
+    resolve_rule = [&](const HeightRule& rule, const rws::Vec3& at, const std::string& key) -> Resolved {
+        if (!resolving.insert(key).second) return {std::nullopt, "is part of a cycle of supports"};
+        Resolved result;
+        switch (rule.mode) {
+        case HeightRule::Mode::absolute: result.height = at.y; break;
+        case HeightRule::Mode::ground:
+            if (const auto hit = ground.highest(at.x, at.z)) result.height = hit->height + rule.offset;
+            else result.problem = "has no ground under it";
+            break;
+        case HeightRule::Mode::on: {
+            Resolved support;
+            if (rule.support_kind == "actor") {
+                std::int32_t id{};
+                const auto [end, error] = std::from_chars(rule.support_id.data(),
+                                                          rule.support_id.data() + rule.support_id.size(), id);
+                support = error == std::errc{} && end == rule.support_id.data() + rule.support_id.size()
+                              ? actor_height(id)
+                              : Resolved{std::nullopt, "stands on an invalid actor ID"};
+            } else {
+                support = placement_height(rule.support_id);
+            }
+            if (support.height) result.height = *support.height + rule.offset;
+            else result.problem = "stands on " + rule.support_kind + ' ' + rule.support_id + ", which " + support.problem;
+            break;
+        }
+        }
+        resolving.erase(key);
+        return result;
+    };
+    placement_height = [&](const std::string& id) -> Resolved {
+        if (const auto found = placement_heights.find(id); found != placement_heights.end()) return found->second;
+        const auto placement = by_id.find(id);
+        if (placement == by_id.end()) return {std::nullopt, "does not exist"};
+        auto result = resolve_rule(placement->second->height, placement->second->position, "placement " + id);
+        return placement_heights[id] = result;
+    };
+    actor_height = [&](const std::int32_t id) -> Resolved {
+        if (const auto found = actor_heights.find(id); found != actor_heights.end()) return found->second;
+        const auto position = actors.find(id);
+        if (position == actors.end()) return {std::nullopt, "is not in the mission"};
+        const auto anchor = anchored.find(id);
+        auto result = anchor == anchored.end()
+                          ? Resolved{position->second.y, {}}
+                          : resolve_rule(anchor->second->height, position->second, "actor " + std::to_string(id));
+        return actor_heights[id] = result;
+    };
+
+    std::vector<HeightFinding> findings;
+    const auto report = [&](HeightFinding finding, const Resolved& resolved) {
+        if (resolved.height && std::abs(*resolved.height - finding.position.y) <= 1.0F) return;
+        finding.resolved = resolved.height;
+        finding.problem = resolved.problem;
+        findings.push_back(std::move(finding));
+    };
+    for (const auto& placement : placements)
+        if (placement.height.mode != HeightRule::Mode::absolute)
+            report({HeightFinding::Subject::placement, placement.id, 0, placement.position, {}, {}},
+                   placement_height(placement.id));
+    for (const auto& anchor : anchors) {
+        if (anchor.height.mode == HeightRule::Mode::absolute) continue;
+        const auto position = actors.find(anchor.actor_id);
+        if (position == actors.end()) {
+            findings.push_back({HeightFinding::Subject::actor, std::to_string(anchor.actor_id), anchor.actor_id, {},
+                                std::nullopt, "is not in the mission"});
+            continue;
+        }
+        report({HeightFinding::Subject::actor, std::to_string(anchor.actor_id), anchor.actor_id, position->second, {}, {}},
+               actor_height(anchor.actor_id));
+    }
+    return findings;
+}
+
+void AuthoringProject::resnap(const std::vector<HeightFinding>& findings) {
+    for (const auto& finding : findings) {
+        if (finding.subject != HeightFinding::Subject::placement || !finding.resolved) continue;
+        const auto placement = std::ranges::find(placements, finding.id, &ProjectPlacement::id);
+        if (placement != placements.end()) placement->position.y = *finding.resolved;
+    }
 }
 
 } // namespace csf

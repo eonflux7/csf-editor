@@ -206,7 +206,14 @@ project: textured crate and doberman, and the generated 16-sector collision.
   project's `dist/<build-id>/`.)
 - The height report: resolve each placement's height rule with the ground
   query and list those more than 1 cm from their stored height; resnap as one
-  reviewable operation.
+  reviewable operation. **Done:** `AuthoringProject::height_report`/`resnap`,
+  `csf-mod project-heights [--resnap]` (actors through `MissionEditor`);
+  `scene.py` writes the actors' anchors (the radio on its crate). Raising the
+  terrain 50 cm reports all 30 placements and 14 actors; one resnap and a
+  rebuild leave none. Hello world's first report lists 8 trees and plants 1-10
+  cm off (terrain.py placed them by its height formula). Found and fixed on the
+  way: saving copied a project's `build/` map into `authored/`, detaching it
+  from later rebuilds; the build now also refreshes the workspace's hashes.
 - Rebuild from the editor: detect a changed export, run the project build in
   the background and reload the map between frames.
 
@@ -338,5 +345,5 @@ gameplay behavior.
 v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
 the earlier confirmed fallback. Stage 1 is done. Stage 2: the project format,
-hello world's migration, the sector map and the ground query are done; next are
-the height report and rebuilding from the editor.
+hello world's migration, the sector map, the ground query and the height report
+are done; next is rebuilding from the editor.

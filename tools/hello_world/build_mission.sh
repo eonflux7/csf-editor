@@ -20,12 +20,18 @@ scene="$corpus/Convoy/Maps/FR03/Convoy.scn"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 "$csfmod" decompile "$scene" "$tmp/convoy.scn.txt" >/dev/null
 python3 tools/hello_world/scene.py "$tmp/convoy.scn.txt" "$project/sources/world/terrain.csfworld" "$tmp/scene"
+cat "$tmp/scene/anchors.csfproj" >> "$project/project.csfproj"
 "$csfmod" compile "$tmp/scene/Convoy.scn.txt" "$scene" "$tmp/Convoy.scn"
 "$csfmod" compile "$tmp/scene/Convoy.csc.txt" "${scene%.scn}.csc" "$tmp/Convoy.csc"
 
 "$csfmod" mission-edit "$ws" "$scene" >/dev/null  # creates the workspace
-"$csfmod" add "$ws" Maps/FR03/Convoy.scn "$tmp/Convoy.scn"
-"$csfmod" add "$ws" Maps/FR03/Convoy.csc "$tmp/Convoy.csc"
+# `add` records where a file is, so the generated scene and cutscene go into
+# the workspace's authored/ (MissionEditor saves its edits there too).
+mkdir -p "$ws/authored/Maps/FR03"
+for file in Convoy.scn Convoy.csc; do
+    cp "$tmp/$file" "$ws/authored/Maps/FR03/$file"
+    "$csfmod" add "$ws" "Maps/FR03/$file" "$ws/authored/Maps/FR03/$file"
+done
 # Ransom's doberman and its walk and run animations; Escape's telephone ghost
 # and wooden crate. Give the ghost the radio's visible model and bounding box
 # through MissionEditor, preserving its interaction behavior and physics.
