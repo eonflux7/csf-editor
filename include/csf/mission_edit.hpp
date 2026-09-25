@@ -93,6 +93,12 @@ using ScalarValue = std::variant<std::int32_t, float, std::string>; // strings a
 // nothing. Records are addressed by their stable gameplay IDs, never by entry
 // index, because structural edits renumber entries. Unedited files serialize
 // byte-for-byte as shipped; edited files follow the same canonical layout.
+// Why an area polygon would break the level load, one message per problem
+// (KB-scn-9): the loader triangulates every area, and its only gate misses
+// repeated points, zero-length edges and collinear runs, which then fault the
+// convex decomposition. Checked in the XZ plane, where the zone test works.
+[[nodiscard]] std::vector<std::string> area_polygon_problems(const std::vector<Vec3>& points);
+
 class MissionEditor {
 public:
     // `scene` is the mission .scn inside `package_root` (the unpacked mission

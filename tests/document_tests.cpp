@@ -3700,6 +3700,23 @@ int main() {
         CHECK(std::ranges::count(uv1, std::array<float, 2>{0.5F, 0.5F}) == 3);
     }
     {
+        // Area polygons the level load would fault on (KB-scn-9): repeated
+        // points, zero-length edges, collinear runs, self-crossings.
+        using V = csf::Vec3;
+        CHECK(csf::area_polygon_problems({V{0, 0, 0}, V{100, 0, 0}, V{100, 0, 100}, V{0, 0, 100}}).empty());
+        CHECK(!csf::area_polygon_problems({V{0, 0, 0}, V{100, 0, 0}}).empty());
+        // The crashing parking pattern: 8 points on 4 positions.
+        std::vector<V> ring;
+        for (int i = 0; i < 8; ++i)
+            ring.push_back({static_cast<float>(50 * std::array{1, 0, -1, 0}[i % 4]), 0,
+                            static_cast<float>(50 * std::array{0, 1, 0, -1}[i % 4])});
+        CHECK(!csf::area_polygon_problems(ring).empty());
+        CHECK(!csf::area_polygon_problems({V{0, 0, 0}, V{50, 0, 0}, V{100, 0, 0}, V{100, 0, 100}}).empty());
+        CHECK(!csf::area_polygon_problems({V{0, 0, 0}, V{100, 0, 100}, V{100, 0, 0}, V{0, 0, 100}}).empty());
+        // Height does not matter, only the XZ outline.
+        CHECK(csf::area_polygon_problems({V{0, 5, 0}, V{100, -3, 0}, V{50, 9, 80}}).empty());
+    }
+    {
         // The PNG decoder is portable and shared with the GUI preview.
         const std::array<std::uint8_t, 77> png_bytes{
             0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,

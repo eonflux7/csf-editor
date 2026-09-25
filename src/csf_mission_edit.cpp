@@ -1843,6 +1843,48 @@ EditResult MissionEditor::disconnect_navigation_points(const std::int32_t origin
 
 // ---- Areas ----------------------------------------------------------------------
 
+std::vector<std::string> area_polygon_problems(const std::vector<Vec3>& points) {
+    std::vector<std::string> problems;
+    const auto n = points.size();
+    std::vector<std::pair<double, double>> xz;
+    for (const auto& p : points) xz.emplace_back(p.x, p.z);
+    auto distinct = xz;
+    std::ranges::sort(distinct);
+    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+    if (n < 3 || distinct.size() < 3) {
+        problems.emplace_back("needs at least three distinct points");
+        return problems;
+    }
+    // A repeated vertex anywhere (a doubled loop) reaches the decomposition too.
+    if (distinct.size() != n) problems.emplace_back("repeats a point (doubled or folded outline)");
+    constexpr double min_edge = 0.01;       // game units (cm)
+    constexpr double collinear = 1.0e-6;    // |sin| of the turn at a vertex
+    const auto sub = [](auto a, auto b) { return std::pair{a.first - b.first, a.second - b.second}; };
+    const auto cross = [](auto a, auto b) { return a.first * b.second - a.second * b.first; };
+    const auto length = [](auto a) { return std::hypot(a.first, a.second); };
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto e = sub(xz[(i + 1) % n], xz[i]);
+        if (length(e) < min_edge) problems.push_back("zero-length edge after point " + std::to_string(i));
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto a = sub(xz[i], xz[(i + n - 1) % n]), b = sub(xz[(i + 1) % n], xz[i]);
+        const auto la = length(a), lb = length(b);
+        if (la >= min_edge && lb >= min_edge && std::abs(cross(a, b)) <= collinear * la * lb)
+            problems.push_back("point " + std::to_string(i) + " is collinear with its neighbours");
+    }
+    // Proper crossings between non-adjacent edges.
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = i + 2; j < n; ++j) {
+            if (i == 0 && j == n - 1) continue;
+            const auto p = xz[i], p2 = xz[(i + 1) % n], q = xz[j], q2 = xz[(j + 1) % n];
+            const auto d1 = cross(sub(p2, p), sub(q, p)), d2 = cross(sub(p2, p), sub(q2, p));
+            const auto d3 = cross(sub(q2, q), sub(p, q)), d4 = cross(sub(q2, q), sub(p2, q));
+            if (((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0)) && d1 != 0 && d2 != 0 && d3 != 0 && d4 != 0)
+                problems.push_back("edges " + std::to_string(i) + " and " + std::to_string(j) + " cross");
+        }
+    return problems;
+}
+
 namespace {
 
 TreeNode& area_points(SceneView& scene, const std::int32_t area_id) {
@@ -2527,6 +2569,12 @@ EditResult MissionEditor::import_class(const std::filesystem::path& donor_packag
 std::vector<std::filesystem::path> MissionEditor::save(ModProject& project) {
     std::vector<std::filesystem::path> written;
     const auto modified = modified_files();
+    // A degenerate area polygon crashes the level load (KB-scn-9).
+    if (std::ranges::find(modified, scene_file_) != modified.end())
+        for (const auto& area : scene().areas())
+            if (const auto problems = area_polygon_problems(area.points); !problems.empty())
+                throw std::runtime_error("Refusing to save: area " + std::to_string(area.id.value_or(-1)) + " " +
+                                         problems.front() + " (the game crashes loading it)");
     std::set<std::string> keep;
     for (const auto index : modified) {
         const auto& file = files_[index];

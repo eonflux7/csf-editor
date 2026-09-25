@@ -14,7 +14,7 @@
 | Phase 3 | done: `rws::WorldModel` parse/write (`include/rws/world_model.hpp`); `csf-mod world-audit` rewrites all 42 shipped Worlds byte for byte, and with `--rebuild` a new BSP over each World's triangles recovers `complete` |
 | Phase 4 | tooling done: `tools/blender/export_csf_world.py`, `make_test_terrain.py`, `csf-mod world-build`; awaiting the in-game spikes below |
 | Spike 1 | built (was deployed; rolled back for spike 2): Convoy with both Worlds rebuilt by `csf-mod world-rebuild` (new BSP, sectors and plug-ins, same triangles). Expect Convoy to look and play exactly as shipped |
-| Hello world | **deployed** in the Convoy slot (rollback: `~/dev/csf_game/.csf-mod-backups/1790325368115369428/deployment.state`); built by `tools/hello_world/build_mission.sh` |
+| Hello world | **deployed** in the Convoy slot (rollback: `~/dev/csf_game/.csf-mod-backups/1790326838650056524/deployment.state` (mission) and `1790326839926391553` (GlobalEK.pak)); built by `tools/hello_world/build_mission.sh` |
 | Phase 5 | tooling done: `.csfworld` `prop` (donor scene instances, collision cut from the donor `_col.rws`) and `piece` (donor World triangles in a box) records; `tools/hello_world/build_world.sh` builds the hello-world map (100 m terrain with a hill, Convoy's house, two Convoy trees) |
 | Spike 2 | works in-game (with Coll Trees): Convoy's scene and props on a generated 340 m flat World at game height 505 (`~/dev/csf-mods/convoy-flat.pak`) |
 
@@ -44,6 +44,10 @@ walk (spike 2: on the plane; props have no collision); any crash, with the
 | 2026-09-25 | bisect C: A without parking | **loads**; actors (placed for the hello terrain at y 0) spawn under spike 2's plane (y 505) and fall | confirms the degenerate parked areas caused the crash |
 | 2026-09-25 | hello world v2 | **works**: loads, plays; one stray fire effect in the air | the scene's `.EFECTOS` sit on Convoy dummies at Convoy heights; v4 sinks every effect dummy over the terrain 30 m under the ground |
 | 2026-09-25 | hello world v4 (v3 prototype placement + effects fix; rollback `.csf-mod-backups/1790325368115369428`) | **works**: no stray effects or trees | remaining: own objective text, intro cutscene, scene built from the minimal section set (KB-scn-7) |
+| 2026-09-25 | hello world v5: own text `Texts/HelloWorld.fli` inside the mission archive, `.FLIS_ESCENARIO` pointed at it, objective label `0900` "Reach the building." (rollback `.csf-mod-backups/1790326286370258324`) | objective text **empty**: a new `.fli` named by `.FLIS_ESCENARIO` is not found in the mission archive (or new ids are not read) | v6 probe |
+| 2026-09-25 | hello world v6: modified `Texts/Convoy.fli` in the mission archive (`0039` → "Reach the building.", new `0901`); objective 1 = `0039`, objective 2 = `0901` (rollback `.csf-mod-backups/1790326498042519860`) | objective 1 shows Convoy's original `0039` ("ALARM WARNING…"), objective 2 empty: a `Texts/*.fli` in the mission archive is ignored; text comes only from `GlobalEK.pak` | obj 1 new text → archive overrides GlobalEK; obj 1 Convoy text → edit `GlobalEK.pak`; obj 2 → whether new ids work |
+| 2026-09-25 | hello world v7 + `GlobalEK.pak` with the hello-world `Texts/Convoy.fli` (`tools/hello_world/build_texts.sh`; rollbacks `.csf-mod-backups/1790326594809809712` mission, `1790326596128306931` GlobalEK) | **both objectives show their new text**: text comes from `GlobalEK.pak`, and new ids work |
+| 2026-09-25 | hello world v8: one objective, new id `0900` "Reach the building.", Convoy's `0039` restored (rollbacks `.csf-mod-backups/1790326838650056524` mission, `1790326839926391553` GlobalEK) | works: the single objective reads "Reach the building."; Convoy's own text is unchanged | |
 
 ## Goal
 
@@ -483,7 +487,7 @@ entry that justifies it.
 | R10 | What `<scene>.dst` holds and whether a copied one is safe on a different map | scn | queued | 8 |
 | R11 | Nav group `.TIPO` kinds and whether nav points must lie on collision | scn | queued | 6 |
 | R12 | `.BICHOS` records without a nav cell (`.CELDA.PUNTO == -1`): what positions them | scn | queued | 6 |
-| R13 | Trigger-area record semantics: how a zone's shape is tested and which events it raises | scn | queued | 6, 7 |
+| R13 | Trigger-area record semantics: how a zone's shape is tested and which events it raises | scn | answered: KB-scn-10. `ACT_BICHO_EVENT_ZONA` arms the zone; each frame the actor must be inside `[area y, area y + height]` and inside the XZ polygon, which raises `BICHO_ENT_ZONA`/`BICHO_SAL_ZONA` | 6, 7 |
 | R14 | Cutscene camera: how `.csc` camera commands consume path dummies | scripting | queued | 7 |
 
 Already answered and used as-is: the `.vis` format (KB-package-loader-15), the
