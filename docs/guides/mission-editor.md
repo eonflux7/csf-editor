@@ -197,8 +197,12 @@ Other `mission-edit` operations: `--actor-look <id> <class-id>`, `--actor-name`,
 `--actor-scripts <id> <a,b,...>`, `--player`, `--duplicate-actor`, `--add-actor`,
 `--delete-actor`, `--move-dummy`, `--move-light`, `--move-instance <map-offset>`,
 `--print-script`, `--set-script <id> <file>`, `--add-script <file>`,
-`--delete-script`, `--import-class`, and `--force`. A rejected operation saves
-nothing.
+`--delete-script`, `--import-class`, and `--force`. Navigation, trigger areas,
+dummies and lights: `--add-nav-point <group> <x> <y> <z>`, `--move-nav-point`,
+`--delete-nav-point`, `--link-nav`/`--unlink-nav <group> <point> <group> <point>`,
+`--move-area-point`/`--insert-area-point <area> <index> <x> <y> <z>`,
+`--remove-area-point`, `--area-height`, `--duplicate-dummy`, `--delete-dummy`
+and `--delete-light`. A rejected operation saves nothing.
 
 ## Mission archives
 

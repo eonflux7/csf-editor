@@ -896,4 +896,49 @@ SceneExportStats export_collision_gltf(const std::vector<Chunk>& chunks,
     return export_gltf(worlds, {}, bytes, output_path, true);
 }
 
+std::optional<std::uint32_t> clump_prototype_id(const Chunk& clump,
+                                                const std::span<const std::byte> bytes) {
+    for (const auto& atomic : clump.children) {
+        if (atomic.type != 0x14) continue;
+        const auto* extension = find_child(atomic, 0x03);
+        const auto* pyro = extension ? find_child(*extension, 0xFFFFFF00U) : nullptr;
+        if (!pyro) continue;
+        const auto metadata = decode_pyro_extension(*pyro, 0x14, bytes);
+        if (metadata)
+            if (const auto index = metadata.value->atomic_object_index()) return 1000U + *index;
+    }
+    return std::nullopt;
+}
+
+std::vector<std::array<Vec3, 3>> placed_clump_triangles(const Chunk& clump,
+                                                         const std::span<const std::byte> bytes,
+                                                         const SceneInstance& instance) {
+    std::vector<MeshRecord> meshes;
+    std::vector<MaterialRecord> materials;
+    SceneExportStats stats;
+    std::map<std::uint32_t, PrototypeRecord> prototypes;
+    append_clumps({clump}, bytes, meshes, materials, stats, prototypes);
+    // The export pipeline works in scaled units; undo the scale at the end.
+    auto placement = instance_transform(instance);
+    placement.position = export_point(placement.position);
+    Transform root;
+    if (!prototypes.empty()) {
+        root = prototypes.begin()->second.original_root;
+        root.position = export_point(root.position);
+    }
+    std::vector<std::array<Vec3, 3>> triangles;
+    for (const auto& mesh : meshes)
+        for (const auto& primitive : mesh.primitives)
+            for (std::size_t i = 0; i + 2 < primitive.indices.size(); i += 3) {
+                std::array<Vec3, 3> triangle;
+                for (std::size_t c = 0; c < 3; ++c) {
+                    const auto point = transform_point(
+                        placement, inverse_transform_point(root, mesh.positions[primitive.indices[i + c]]));
+                    triangle[c] = {point.x / scene_scale, point.y / scene_scale, point.z / scene_scale};
+                }
+                triangles.push_back(triangle);
+            }
+    return triangles;
+}
+
 } // namespace rws

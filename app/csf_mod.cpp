@@ -3,11 +3,20 @@
 #include "csf/mod_project.hpp"
 #include "csf/source_text.hpp"
 #include "csf/tree.hpp"
+#include "rws/document.hpp"
+#include "rws/map_assembly.hpp"
+#include "rws/world_model.hpp"
+#include "rws/world_source.hpp"
+#include "rws/world_recovery.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <string>
@@ -22,6 +31,10 @@ void usage() {
            "                                      | --string <entry> <value>\n"
            "                                      | --global-string <entry> <value>]...\n"
            "  csf-mod audit <resource-root>\n"
+           "  csf-mod world-audit <resource-root|file.rws>... [--rebuild]\n"
+           "  csf-mod world-rebuild <map.rws> <new-map.rws> [--max-sector-triangles N] [--overwrite]\n"
+           "  csf-mod world-build <source.csfworld> <donor-map.rws> <new-map.rws>\n"
+           "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod init <workspace> <source-root> <name>\n"
            "  csf-mod add <workspace> <game-relative-path> <authored-file> [change-manifest]\n"
            "              [--target <semantic-target>]...\n"
@@ -47,6 +60,12 @@ void usage() {
            "      --add-actor <class-id> <x> <y> <z> <heading-degrees> <name>\n"
            "      --move-dummy <id> <x> <y> <z>         --move-light <id> <x> <y> <z>\n"
            "      --move-instance <map-offset> <x> <y> <z> (a static prop in the map .rws)\n"
+           "      --duplicate-dummy <id> <dx> <dy> <dz> --delete-dummy <id>  --delete-light <id>\n"
+           "      --add-nav-point <group> <x> <y> <z>   --move-nav-point <group> <point> <x> <y> <z>\n"
+           "      --delete-nav-point <group> <point>\n"
+           "      --link-nav <group> <point> <group> <point> (also --unlink-nav)\n"
+           "      --move-area-point <area> <index> <x> <y> <z> (also --insert-area-point)\n"
+           "      --remove-area-point <area> <index>    --area-height <area> <height>\n"
            "      --print-script <id>                   --set-script <id> <text-file>\n"
            "      --add-script <text-file>              --delete-script <id>\n"
            "      --import-class <donor-mission-root> <class-id>\n"
@@ -132,6 +151,278 @@ int main(int argc, char** argv) try {
         std::cout << "exact\t" << exact << "\nstructurally-invalid\t" << structurally_invalid
                   << "\ndifferences\t" << differences << '\n';
         return differences == 0 ? 0 : 2;
+    }
+    if (command == "world-rebuild") {
+        // Rebuilds a map's visual and collision Worlds from their own triangles
+        // (new BSP, sectors and plug-ins); Clumps and scene instances are kept.
+        if (argc < 4) { usage(); return 1; }
+        const std::filesystem::path input = argv[2], output = argv[3];
+        bool overwrite = false;
+        std::size_t budget = 1024;
+        for (int i = 4; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            if (option == "--overwrite") overwrite = true;
+            else if (option == "--max-sector-triangles" && i + 1 < argc) budget = u32(argv[++i]);
+            else throw std::runtime_error("Unknown world-rebuild option: " + std::string(option));
+        }
+        const auto sibling_collision = [](const std::filesystem::path& map) {
+            const auto wanted = map.stem().string() + "_col" + map.extension().string();
+            auto lowered = wanted;
+            std::ranges::transform(lowered, lowered.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (std::filesystem::is_directory(map.parent_path().empty() ? "." : map.parent_path()))
+                for (const auto& entry : std::filesystem::directory_iterator(map.parent_path().empty() ? "." : map.parent_path())) {
+                    auto name = entry.path().filename().string();
+                    std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (name == lowered) return entry.path();
+                }
+            return map.parent_path() / wanted;
+        };
+        const auto input_collision = sibling_collision(input);
+        const auto output_collision = output.parent_path() / (output.stem().string() + "_col" + output.extension().string());
+        if (!overwrite && (std::filesystem::exists(output) || std::filesystem::exists(output_collision)))
+            throw std::runtime_error("Output exists (pass --overwrite): " + output.generic_string());
+        if (!output.parent_path().empty()) std::filesystem::create_directories(output.parent_path());
+        for (const auto& [from, to] : {std::pair{input, output}, std::pair{input_collision, output_collision}}) {
+            const auto bytes = read_bytes(from);
+            const auto offset = rws::find_map_world(bytes);
+            if (!offset) throw std::runtime_error("No World in " + from.generic_string());
+            std::uint64_t end{};
+            const auto parsed = rws::parse_world_model(bytes, *offset, &end);
+            if (!parsed) throw std::runtime_error(from.generic_string() + ": " + parsed.error);
+            const auto& source = *parsed.value;
+            rws::WorldBuildOptions options;
+            options.library_id = source.library_id;
+            options.format = source.format;
+            options.material_list = source.material_list;
+            options.max_sector_triangles = budget;
+            options.visual_plugins = std::ranges::any_of(source.sectors, [](const auto& sector) {
+                return std::ranges::any_of(sector.plugins, [](const auto& p) { return p.type == 0x120U; });
+            });
+            const auto built = rws::build_world(rws::world_build_triangles(source), options);
+            if (!built) throw std::runtime_error(built.error);
+            if (const auto problems = rws::check_world_model(*built.value); !problems.empty())
+                throw std::runtime_error("Rebuilt World is invalid: " + problems.front());
+            std::vector<std::byte> out(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(*offset));
+            const auto world = rws::write_world_model(*built.value);
+            out.insert(out.end(), world.begin(), world.end());
+            out.insert(out.end(), bytes.begin() + static_cast<std::ptrdiff_t>(end), bytes.end());
+            const auto document = rws::Document::from_bytes(out);
+            const auto recovered = rws::recover_worlds(document.chunks(), document.bytes());
+            if (recovered.size() != 1U || recovered[0].status != rws::WorldRecoveryStatus::complete ||
+                recovered[0].topology_status != rws::WorldTopologyStatus::complete)
+                throw std::runtime_error("Rebuilt World does not recover as complete");
+            std::ofstream file(to, std::ios::binary | std::ios::trunc);
+            file.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(out.size()));
+            if (!file) throw std::runtime_error("Cannot write " + to.generic_string());
+            std::cout << "rebuilt\t" << to.generic_string() << '\t' << built.value->triangle_count << " triangles\t"
+                      << source.world_sector_count << " -> " << built.value->world_sector_count << " sectors\n";
+        }
+        return 0;
+    }
+    if (command == "world-build") {
+        // Compiles a .csfworld into <new-map>.rws and <new-map>_col.rws, with
+        // materials copied from the donor map and its _col.rws.
+        if (argc < 5) { usage(); return 1; }
+        const std::filesystem::path source_path = argv[2], donor_path = argv[3], output = argv[4];
+        bool keep_props = false, overwrite = false;
+        rws::WorldCompileOptions options;
+        for (int i = 5; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            if (option == "--keep-props") keep_props = true;
+            else if (option == "--overwrite") overwrite = true;
+            else if (option == "--max-sector-triangles" && i + 1 < argc) options.max_sector_triangles = u32(argv[++i]);
+            else throw std::runtime_error("Unknown world-build option: " + std::string(option));
+        }
+        const auto collision_name = [](const std::filesystem::path& map) {
+            return map.parent_path() / (map.stem().string() + "_col" + map.extension().string());
+        };
+        std::filesystem::path donor_collision = collision_name(donor_path);
+        for (const auto& entry : std::filesystem::directory_iterator(donor_path.parent_path())) {
+            auto name = entry.path().filename().string(), wanted = donor_collision.filename().string();
+            const auto fold = [](std::string& text) {
+                std::ranges::transform(text, text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            };
+            fold(name);
+            fold(wanted);
+            if (name == wanted) donor_collision = entry.path();
+        }
+        const auto output_collision = collision_name(output);
+        if (!overwrite && (std::filesystem::exists(output) || std::filesystem::exists(output_collision)))
+            throw std::runtime_error("Output exists (pass --overwrite): " + output.generic_string());
+        const auto load_world = [](const std::filesystem::path& path, std::vector<std::byte>& bytes,
+                                   std::uint64_t& begin, std::uint64_t& end) {
+            bytes = read_bytes(path);
+            const auto offset = rws::find_map_world(bytes);
+            if (!offset) throw std::runtime_error("No World in " + path.generic_string());
+            auto parsed = rws::parse_world_model(bytes, *offset, &end);
+            if (!parsed) throw std::runtime_error(path.generic_string() + ": " + parsed.error);
+            begin = *offset;
+            return std::move(*parsed.value);
+        };
+        std::vector<std::byte> donor_bytes, donor_collision_bytes;
+        std::uint64_t donor_begin{}, donor_end{}, collision_begin{}, collision_end{};
+        const auto donor_visual = load_world(donor_path, donor_bytes, donor_begin, donor_end);
+        const auto donor_col = load_world(donor_collision, donor_collision_bytes, collision_begin, collision_end);
+        std::ifstream input(source_path, std::ios::binary);
+        if (!input) throw std::runtime_error("Cannot read " + source_path.generic_string());
+        const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        const auto source = rws::parse_world_source(text);
+        if (!source) throw std::runtime_error(source_path.generic_string() + ": " + source.error);
+        // Props: donor Clumps and instance records, collision cut from the donor.
+        std::optional<rws::AssembledProps> props;
+        if (!source.value->props.empty()) {
+            const auto donor_document = rws::Document::from_bytes(donor_bytes);
+            auto assembled = rws::assemble_props(donor_document, donor_col, source.value->props);
+            if (!assembled) throw std::runtime_error(assembled.error);
+            props = std::move(*assembled.value);
+        }
+        const auto compiled = rws::compile_world_source(*source.value, donor_visual, donor_col, options,
+                                                        props ? std::span<const rws::WorldBuildTriangle>(props->collision)
+                                                              : std::span<const rws::WorldBuildTriangle>{});
+        if (!compiled) throw std::runtime_error(compiled.error);
+        if (props && keep_props) throw std::runtime_error("--keep-props cannot be combined with prop lines");
+        if (props)
+            for (const auto& note : props->notes) std::cout << "note\t" << note << '\n';
+        for (const auto* world : {&compiled.value->visual, &compiled.value->collision})
+            if (const auto problems = rws::check_world_model(*world); !problems.empty())
+                throw std::runtime_error("Built World is invalid: " + problems.front());
+        // The visual map keeps the donor's Clumps and scene-instance records
+        // only with --keep-props; the collision file is the World alone.
+        std::vector<std::byte> map;
+        if (keep_props) map.assign(donor_bytes.begin(), donor_bytes.begin() + static_cast<std::ptrdiff_t>(donor_begin));
+        if (props) map = props->prefix;
+        const auto visual_bytes = rws::write_world_model(compiled.value->visual);
+        map.insert(map.end(), visual_bytes.begin(), visual_bytes.end());
+        const auto collision_bytes = rws::write_world_model(compiled.value->collision);
+        // Both files must recover as complete through the viewer's reader.
+        for (const auto* bytes : std::initializer_list<const std::vector<std::byte>*>{&map, &collision_bytes}) {
+            const auto document = rws::Document::from_bytes(*bytes);
+            const auto recovered = rws::recover_worlds(document.chunks(), document.bytes());
+            if (recovered.size() != 1U || recovered[0].status != rws::WorldRecoveryStatus::complete ||
+                recovered[0].topology_status != rws::WorldTopologyStatus::complete)
+                throw std::runtime_error("Built World does not recover as complete");
+        }
+        if (!output.parent_path().empty()) std::filesystem::create_directories(output.parent_path());
+        const auto write = [](const std::filesystem::path& path, const std::vector<std::byte>& bytes) {
+            std::ofstream file(path, std::ios::binary | std::ios::trunc);
+            file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            if (!file) throw std::runtime_error("Cannot write " + path.generic_string());
+        };
+        write(output, map);
+        write(output_collision, collision_bytes);
+        for (const auto& note : compiled.value->notes) std::cout << "note\t" << note << '\n';
+        const auto& visual = compiled.value->visual;
+        const auto& collision = compiled.value->collision;
+        std::cout << "visual\t" << output.generic_string() << '\t' << visual.triangle_count << " triangles\t"
+                  << visual.world_sector_count << " sectors\n"
+                  << "collision\t" << output_collision.generic_string() << '\t' << collision.triangle_count
+                  << " triangles\t" << collision.world_sector_count << " sectors\n";
+        return 0;
+    }
+    if (command == "world-audit") {
+        // Every World in a map .rws must survive parse -> write byte for byte,
+        // with header counts equal to the parts, before the writer builds new maps.
+        if (argc < 3) { usage(); return 1; }
+        std::vector<std::filesystem::path> files;
+        bool rebuild = false;
+        for (int i = 2; i < argc; ++i) {
+            if (std::string_view(argv[i]) == "--rebuild") { rebuild = true; continue; }
+            if (std::filesystem::is_regular_file(argv[i])) { files.emplace_back(argv[i]); continue; }
+            std::error_code error;
+            for (std::filesystem::recursive_directory_iterator it(
+                     argv[i], std::filesystem::directory_options::skip_permission_denied, error), end;
+                 it != end; it.increment(error)) {
+                if (error) { error.clear(); continue; }
+                auto extension = it->path().extension().string();
+                std::ranges::transform(extension, extension.begin(),
+                                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (it->is_regular_file(error) && extension == ".rws") files.push_back(it->path());
+            }
+        }
+        std::ranges::sort(files);
+        std::size_t exact{}, failures{};
+        for (const auto& path : files) {
+            const auto bytes = read_bytes(path);
+            const auto world = rws::find_map_world(bytes);
+            if (!world) continue;
+            const auto offset = *world;
+            std::uint64_t end{};
+            const auto parsed = rws::parse_world_model(bytes, offset, &end);
+            std::string problem;
+            if (!parsed) problem = parsed.error;
+            else {
+                auto counted = *parsed.value;
+                rws::update_world_counts(counted);
+                const auto written = rws::write_world_model(
+                    *parsed.value, {.reproduce_pyro_size_overstatement = true});
+                const auto problems = rws::check_world_model(*parsed.value);
+                if (!problems.empty()) problem = "model check: " + problems.front();
+                else if (counted.triangle_count != parsed.value->triangle_count ||
+                         counted.vertex_count != parsed.value->vertex_count ||
+                         counted.plane_sector_count != parsed.value->plane_sector_count ||
+                         counted.world_sector_count != parsed.value->world_sector_count)
+                    problem = "header counts differ from the parts";
+                else if (written.size() != end - offset ||
+                         !std::equal(written.begin(), written.end(), bytes.begin() + static_cast<std::ptrdiff_t>(offset)))
+                    problem = "rewritten World differs";
+                // --rebuild: a new BSP over the same triangles must recover as
+                // complete through the read-only recovery used by the viewer.
+                if (problem.empty() && rebuild) {
+                    const auto& source = *parsed.value;
+                    const auto triangles = rws::world_build_triangles(source);
+                    rws::WorldBuildOptions options;
+                    options.library_id = source.library_id;
+                    options.format = source.format;
+                    options.material_list = source.material_list;
+                    options.visual_plugins = std::ranges::any_of(source.sectors, [](const auto& sector) {
+                        return std::ranges::any_of(sector.plugins, [](const auto& p) { return p.type == 0x120U; });
+                    });
+                    const auto built = rws::build_world(triangles, options);
+                    const auto document = rws::Document::from_bytes(rws::write_world_model(*built.value));
+                    const auto recovered = rws::recover_worlds(document.chunks(), document.bytes());
+                    const auto checks = rws::check_world_model(*built.value);
+                    if (!checks.empty()) problem = "rebuilt model check: " + checks.front();
+                    else if (recovered.size() != 1U) problem = "rebuilt World not found";
+                    else if (recovered[0].status != rws::WorldRecoveryStatus::complete ||
+                             recovered[0].topology_status != rws::WorldTopologyStatus::complete ||
+                             recovered[0].recovered_triangles != static_cast<std::int64_t>(triangles.size()))
+                        problem = std::string("rebuilt World recovers as ") +
+                                  rws::world_recovery_status_name(recovered[0].status) + "/" +
+                                  rws::world_topology_status_name(recovered[0].topology_status) +
+                                  (recovered[0].diagnostics.empty() ? "" : ": " + recovered[0].diagnostics.front()) +
+                                  (recovered[0].topology_diagnostics.empty() ? "" : " / " + recovered[0].topology_diagnostics.front());
+                    else if (!document.diagnostics().empty())
+                        problem = "rebuilt World has chunk diagnostics: " + document.diagnostics().front().message;
+                    else
+                        std::cout << "rebuilt\t" << path.generic_string() << '\t' << built.value->sectors.size()
+                                  << " sectors\t" << triangles.size() << " triangles\n";
+                }
+            }
+            // Scene-instance records must re-encode byte for byte too.
+            if (problem.empty()) {
+                const auto map = rws::Document::from_bytes(bytes);
+                for (const auto& instance : map.scene_instances()) {
+                    const auto encoded = rws::encode_scene_instance(instance, parsed.value->library_id);
+                    if (instance.offset + encoded.size() > bytes.size() || encoded.size() != instance.physical_size ||
+                        !std::equal(encoded.begin(), encoded.end(), bytes.begin() + static_cast<std::ptrdiff_t>(instance.offset))) {
+                        problem = "scene instance " + std::to_string(instance.instance_id) + " re-encodes differently";
+                        break;
+                    }
+                }
+                if (problem.empty() && !map.scene_instances().empty())
+                    std::cout << "instances\t" << path.generic_string() << '\t' << map.scene_instances().size() << " exact\n";
+            }
+            if (problem.empty()) {
+                ++exact;
+                std::cout << "exact\t" << path.generic_string() << '\t' << parsed.value->sectors.size()
+                          << " sectors\t" << parsed.value->planes.size() << " planes\n";
+            } else {
+                ++failures;
+                std::cout << "failed\t" << path.generic_string() << '\t' << problem << '\n';
+            }
+        }
+        std::cout << "exact\t" << exact << "\nfailed\t" << failures << '\n';
+        return failures == 0 ? 0 : 2;
     }
     if (command == "edit") {
         if (argc < 5) { usage(); return 1; }
@@ -424,6 +715,56 @@ int main(int argc, char** argv) try {
                         }
                     result = editor.set_dummy_placement(id, position, rotation, pitch);
                 }
+            } else if (operation == "--duplicate-dummy") {
+                need(4);
+                std::int32_t id{};
+                result = editor.duplicate_dummy(i32(argv[i]), {real(argv[i + 1]), real(argv[i + 2]), real(argv[i + 3])}, &id);
+                if (result) std::cout << "new-dummy\t" << id << '\n';
+                i += 4;
+            } else if (operation == "--delete-dummy") {
+                need(1);
+                result = editor.delete_dummy(i32(argv[i++]), force);
+            } else if (operation == "--delete-light") {
+                need(1);
+                result = editor.delete_light(i32(argv[i++]));
+            } else if (operation == "--add-nav-point") {
+                need(4);
+                std::int32_t id{};
+                const auto group = i32(argv[i]);
+                result = editor.add_navigation_point(group, {real(argv[i + 1]), real(argv[i + 2]), real(argv[i + 3])}, &id);
+                if (result) std::cout << "new-nav-point\t" << group << '/' << id << '\n';
+                i += 4;
+            } else if (operation == "--move-nav-point") {
+                need(5);
+                result = editor.set_navigation_point(i32(argv[i]), i32(argv[i + 1]),
+                                                     {real(argv[i + 2]), real(argv[i + 3]), real(argv[i + 4])});
+                i += 5;
+            } else if (operation == "--delete-nav-point") {
+                need(2);
+                result = editor.delete_navigation_point(i32(argv[i]), i32(argv[i + 1]), force);
+                i += 2;
+            } else if (operation == "--link-nav" || operation == "--unlink-nav") {
+                need(4);
+                const auto a = i32(argv[i]), b = i32(argv[i + 1]), c = i32(argv[i + 2]), d = i32(argv[i + 3]);
+                result = operation == "--link-nav" ? editor.connect_navigation_points(a, b, c, d)
+                                                   : editor.disconnect_navigation_points(a, b, c, d);
+                i += 4;
+            } else if (operation == "--move-area-point" || operation == "--insert-area-point") {
+                need(5);
+                const auto area = i32(argv[i]);
+                const auto index = static_cast<std::size_t>(u32(argv[i + 1]));
+                const csf::Vec3 position{real(argv[i + 2]), real(argv[i + 3]), real(argv[i + 4])};
+                result = operation == "--move-area-point" ? editor.set_area_point(area, index, position)
+                                                          : editor.insert_area_point(area, index, position);
+                i += 5;
+            } else if (operation == "--remove-area-point") {
+                need(2);
+                result = editor.remove_area_point(i32(argv[i]), static_cast<std::size_t>(u32(argv[i + 1])));
+                i += 2;
+            } else if (operation == "--area-height") {
+                need(2);
+                result = editor.set_area_height(i32(argv[i]), real(argv[i + 1]));
+                i += 2;
             } else if (operation == "--move-instance") {
                 need(4);
                 const auto offset = std::stoull(argv[i], nullptr, 0);

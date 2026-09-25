@@ -12,6 +12,9 @@ add_library(rws_core
     src/decoded.cpp
     src/physics_inspection.cpp
     src/world_recovery.cpp
+    src/world_model.cpp
+    src/world_source.cpp
+    src/map_assembly.cpp
     src/obj_export.cpp
     src/scene_export.cpp
 )
@@ -130,7 +133,7 @@ add_executable(csf-info app/csf_info.cpp)
 target_link_libraries(csf-info PRIVATE csf::core)
 
 add_executable(csf-mod app/csf_mod.cpp)
-target_link_libraries(csf-mod PRIVATE csf::core)
+target_link_libraries(csf-mod PRIVATE csf::core rws::core)
 
 if(RWSMAN_BUILD_GUI)
     set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)

@@ -19,6 +19,8 @@
 #include "rws/physics_inspection.hpp"
 #include "rws/scene_export.hpp"
 #include "rws/texture_image.hpp"
+#include "rws/world_model.hpp"
+#include "rws/world_source.hpp"
 #include "rws/world_recovery.hpp"
 #include "rwsman/commands.hpp"
 #include "rwsman/diagnostics.hpp"
@@ -3478,6 +3480,224 @@ int main() {
         CHECK(projected.actors().size() == 1 && projected.actors()[0].script_ids.size() == 2);
         CHECK(projected.actors()[0].script_ids[0] == 99 &&
               projected.actors()[0].script_ids[1] == 100);
+    }
+    {
+        // World writer: a built World round-trips through parse/write, the
+        // reader recovers it as complete, and the Pyro size rule is optional.
+        const auto quad = [](const float x, const float z, const std::uint16_t material) {
+            std::vector<rws::WorldBuildTriangle> result(2);
+            const std::array<rws::Vec3, 4> corners{rws::Vec3{x, 0.0F, z}, rws::Vec3{x, 0.0F, z + 100.0F},
+                                                   rws::Vec3{x + 100.0F, 0.0F, z + 100.0F},
+                                                   rws::Vec3{x + 100.0F, 0.0F, z}};
+            const std::array<std::array<int, 3>, 2> faces{{{0, 1, 2}, {0, 2, 3}}};
+            for (std::size_t f = 0; f < 2; ++f)
+                for (std::size_t c = 0; c < 3; ++c) {
+                    auto& vertex = result[f].vertices[c];
+                    vertex.position = corners[static_cast<std::size_t>(faces[f][c])];
+                    vertex.normal = {0.0F, 1.0F, 0.0F};
+                    vertex.texcoords[0] = {vertex.position.x / 100.0F, vertex.position.z / 100.0F};
+                }
+            for (auto& triangle : result) {
+                triangle.material = material;
+                triangle.pyro = static_cast<std::uint8_t>(7 + material);
+            }
+            return result;
+        };
+        std::vector<rws::WorldBuildTriangle> triangles;
+        for (int i = 0; i < 4; ++i) {
+            const auto tile = quad(static_cast<float>(i) * 100.0F, 0.0F, static_cast<std::uint16_t>(i % 2));
+            triangles.insert(triangles.end(), tile.begin(), tile.end());
+        }
+        // Two self-contained materials, composed and split back unchanged.
+        const auto material = [](const std::uint8_t red) {
+            std::vector<std::byte> chunk;
+            append_header(chunk, 0x07, 40, 0x1C020037);
+            append_header(chunk, 0x01, 28, 0x1C020037);
+            append_u32(chunk, 0);
+            append_u32(chunk, 0xFF000000U | red);
+            for (int i = 0; i < 5; ++i) append_u32(chunk, 0);
+            return chunk;
+        };
+        const std::vector<std::vector<std::byte>> materials{material(1), material(2)};
+        rws::WorldBuildOptions options;
+        options.material_list = rws::compose_material_list(materials, options.library_id);
+        const auto split = rws::split_material_list(options.material_list, options.library_id);
+        CHECK(split && *split.value == materials);
+        options.max_sector_triangles = 2;
+        const auto built = rws::build_world(triangles, options);
+        CHECK(built && built.value->sectors.size() == 4 && built.value->planes.size() == 3);
+        CHECK(rws::check_world_model(*built.value).empty());
+        CHECK(built.value->triangle_count == 8 && built.value->world_sector_count == 4);
+        const auto bytes = rws::write_world_model(*built.value);
+        std::uint64_t end{};
+        const auto parsed = rws::parse_world_model(bytes, 0, &end);
+        CHECK(parsed && end == bytes.size());
+        CHECK(rws::write_world_model(*parsed.value) == bytes);
+        const auto& sector = parsed.value->sectors[0];
+        CHECK(sector.positions.size() == 4 && sector.triangles.size() == 2 && sector.texcoords.empty());
+        const auto pyro = std::ranges::find(sector.plugins, rws::pyro_metadata_chunk, &rws::WorldPlugin::type);
+        CHECK(pyro != sector.plugins.end());
+        const auto metadata = rws::decode_pyro_sector_metadata(*pyro, sector.triangles.size());
+        CHECK(metadata && metadata.value->present && metadata.value->triangle_bytes.size() == 2);
+        // The shipped overstatement adds 4 declared bytes per sector plug-in to
+        // every enclosing size, and the parser accepts both forms.
+        const auto shipped = rws::write_world_model(*parsed.value, {.reproduce_pyro_size_overstatement = true});
+        CHECK(shipped.size() == bytes.size());
+        const auto declared = [](const std::vector<std::byte>& data) {
+            return std::to_integer<std::uint32_t>(data[4]) | (std::to_integer<std::uint32_t>(data[5]) << 8U) |
+                   (std::to_integer<std::uint32_t>(data[6]) << 16U);
+        };
+        CHECK(declared(shipped) == declared(bytes) + 16U);
+        const auto reparsed = rws::parse_world_model(shipped, 0);
+        CHECK(reparsed && rws::write_world_model(*reparsed.value) == bytes);
+        const auto document = rws::Document::from_bytes(bytes);
+        const auto recovered = rws::recover_worlds(document.chunks(), document.bytes());
+        CHECK(recovered.size() == 1 && recovered[0].status == rws::WorldRecoveryStatus::complete);
+        CHECK(recovered[0].topology_status == rws::WorldTopologyStatus::complete);
+        CHECK(recovered[0].recovered_triangles == 8 && recovered[0].material_count == 2);
+        CHECK(rws::world_build_triangles(*parsed.value).size() == triangles.size());
+        // Collision sectors carry a Coll Tree that the existing decoder reads:
+        // a remap permutation, leaves tiling it, children after their parent.
+        std::size_t trees = 0;
+        const auto walk_trees = [&](auto&& self, const rws::Chunk& chunk) -> void {
+            if (chunk.type == 0x11D) {
+                const auto tree = rws::decode_collision_tree(chunk, document.bytes());
+                CHECK(tree && tree.value->version == 0x37002 && tree.value->flags == 1);
+                auto map = tree.value->triangle_map;
+                std::ranges::sort(map);
+                CHECK(map.size() == tree.value->triangle_count && tree.value->split_count >= 1);
+                for (std::size_t i = 0; i < map.size(); ++i) CHECK(map[i] == i);
+                ++trees;
+            }
+            for (const auto& child : chunk.children) self(self, child);
+        };
+        for (const auto& chunk : document.chunks()) walk_trees(walk_trees, chunk);
+        CHECK(trees == parsed.value->sectors.size());
+        // A visual World with normals and two UV sets carries the MatFX plug-ins
+        // and no Pyro bytes.
+        options.format = 0x400200B0U;
+        options.visual_plugins = true;
+        options.max_sector_triangles = 64;
+        const auto visual = rws::build_world(triangles, options);
+        CHECK(visual && visual.value->sectors.size() == 1 && visual.value->planes.empty());
+        const auto& leaf = visual.value->sectors[0];
+        CHECK(leaf.normals.size() == leaf.positions.size() && leaf.texcoords.size() == 2);
+        CHECK(leaf.plugins.size() == 5 && leaf.plugins[1].type == 0x1FU && leaf.plugins[2].type == 0x120U);
+        CHECK(!rws::decode_pyro_sector_metadata(leaf.plugins[4], leaf.triangles.size()).value->present);
+        const auto visual_bytes = rws::write_world_model(*visual.value);
+        CHECK(rws::parse_world_model(visual_bytes, 0) &&
+              rws::write_world_model(*rws::parse_world_model(visual_bytes, 0).value) == visual_bytes);
+        // A map .rws: Clump, one scene-instance record (12 bytes past its size),
+        // then the World.
+        std::vector<std::byte> map;
+        append_header(map, 0x10, 0, 0x1C020037);
+        append_header(map, 0x16FC0, 92, 0x1C020037);
+        map.resize(map.size() + 104U);
+        const auto world_offset = map.size();
+        map.insert(map.end(), bytes.begin(), bytes.end());
+        CHECK(rws::find_map_world(map) == world_offset);
+        // Broken links are reported instead of written.
+        auto broken = *parsed.value;
+        broken.planes[0].right = broken.planes[0].left;
+        CHECK(!rws::check_world_model(broken).empty());
+        broken = *parsed.value;
+        broken.sectors[0].triangles[0].vertices[0] = 99;
+        CHECK(!rws::check_world_model(broken).empty());
+    }
+    {
+        // .csfworld: parse errors name the line; compile resolves donor materials
+        // by texture and surface name and splits faces by role.
+        CHECK(!rws::parse_world_source("csfworld 2\n"));
+        const auto bad = rws::parse_world_source("csfworld 1\nmaterial A Tierra\nf 0 1 2 0 both\n");
+        CHECK(!bad && bad.error.starts_with("line 3"));
+        const auto source = rws::parse_world_source(
+            "csfworld 1\n# test\nmaterial GROUND tierra\nmaterial WALL Metal 90\n"
+            "v 0 0 0 0 1 0 0 0\nv 0 0 100 0 1 0 0 1\nv 100 0 100 0 1 0 1 1 0.25 0.25\n"
+            "v 100 0 0 0 1 0 1 0\n"
+            "f 0 1 2 0 both\nf 0 2 3 0 visual\nf 0 2 1 1 collision\n");
+        CHECK(source && source.value->faces.size() == 3 && source.value->materials[1].shade == 90);
+        CHECK(!source.value->faces[1].collision && !source.value->faces[2].visual);
+        const auto string_chunk = [](std::vector<std::byte>& out, const std::string& text) {
+            const auto padded = (text.size() + 4U) & ~std::size_t{3};
+            append_header(out, 0x02, static_cast<std::uint32_t>(padded));
+            for (std::size_t i = 0; i < padded; ++i)
+                out.push_back(static_cast<std::byte>(i < text.size() ? text[i] : '\0'));
+        };
+        const auto finish = [](std::uint32_t type, const std::vector<std::byte>& body) {
+            std::vector<std::byte> chunk;
+            append_header(chunk, type, static_cast<std::uint32_t>(body.size()));
+            chunk.insert(chunk.end(), body.begin(), body.end());
+            return chunk;
+        };
+        const auto material_struct = [](std::vector<std::byte>& out, const bool textured) {
+            append_header(out, 0x01, 28);
+            append_u32(out, 0);
+            append_u32(out, 0xFFFFFFFFU);
+            append_u32(out, 0);
+            append_u32(out, textured ? 1U : 0U);
+            for (int i = 0; i < 3; ++i) append_u32(out, 0x3F800000U);
+        };
+        const auto visual_material = [&](const std::string& texture) {
+            std::vector<std::byte> texture_body;
+            append_header(texture_body, 0x01, 4);
+            append_u32(texture_body, 0x1106);
+            string_chunk(texture_body, texture);
+            string_chunk(texture_body, "");
+            append_header(texture_body, 0x03, 0);
+            std::vector<std::byte> body;
+            material_struct(body, true);
+            const auto texture_chunk = finish(0x06, texture_body);
+            body.insert(body.end(), texture_chunk.begin(), texture_chunk.end());
+            append_header(body, 0x03, 0);
+            return finish(0x07, body);
+        };
+        const auto surface_material = [&](const std::string& name) {
+            std::vector<std::byte> pyro;
+            for (const auto word : {2U, 1U, 0U, 0U, 0xFFU, 6U, 0U, static_cast<std::uint32_t>(name.size())})
+                append_u32(pyro, word);
+            for (const char c : name) pyro.push_back(static_cast<std::byte>(c));
+            std::vector<std::byte> body;
+            material_struct(body, false);
+            const auto extension = finish(0x03, finish(0xFFFFFF00U, pyro));
+            body.insert(body.end(), extension.begin(), extension.end());
+            return finish(0x07, body);
+        };
+        CHECK(rws::material_texture_name(visual_material("FFLR_33A")) == "FFLR_33A");
+        CHECK(rws::material_surface_name(surface_material("Madera")) == "Madera");
+        rws::WorldModel donor_visual, donor_collision;
+        donor_visual.library_id = donor_collision.library_id = 0x1C020037;
+        donor_visual.format = 0x400200B0U;
+        donor_collision.format = 0x40000040U;
+        const std::vector<std::vector<std::byte>> visual_list{visual_material("OTHER"), visual_material("ground")};
+        const std::vector<std::vector<std::byte>> surface_list{surface_material("Madera"), surface_material("Metal"),
+                                                                surface_material("Tierra")};
+        donor_visual.material_list = rws::compose_material_list(visual_list, 0x1C020037);
+        donor_collision.material_list = rws::compose_material_list(surface_list, 0x1C020037);
+        auto unknown = *source.value;
+        unknown.materials[1].surface = "Hormigon";
+        CHECK(rws::compile_world_source(unknown, donor_visual, donor_collision).error.find("Hormigon") !=
+              std::string::npos);
+        // WALL is used only by a collision face, so no visual material needs it.
+        const auto compiled = rws::compile_world_source(*source.value, donor_visual, donor_collision);
+        CHECK(compiled);
+        const auto& visual = compiled.value->visual;
+        const auto& collision = compiled.value->collision;
+        CHECK(visual.triangle_count == 2 && collision.triangle_count == 2);
+        CHECK(*rws::split_material_list(visual.material_list, 0x1C020037).value ==
+              std::vector<std::vector<std::byte>>{visual_list[1]});
+        CHECK(collision.material_list == donor_collision.material_list);
+        const auto& sector = collision.sectors[0];
+        std::vector<std::uint16_t> materials;
+        for (const auto& triangle : sector.triangles)
+            materials.push_back(static_cast<std::uint16_t>(sector.material_window_base + triangle.material));
+        std::ranges::sort(materials);
+        CHECK((materials == std::vector<std::uint16_t>{1, 2}));
+        const auto shades = rws::decode_pyro_sector_metadata(sector.plugins.back(), sector.triangles.size());
+        CHECK(shades && std::ranges::count(shades.value->triangle_bytes, std::uint8_t{90}) == 1);
+        // Vertices without a second UV set sample one lightmap texel.
+        const auto& uv1 = visual.sectors[0].texcoords[1];
+        CHECK(std::ranges::count(uv1, std::array<float, 2>{0.25F, 0.25F}) == 1);
+        CHECK(std::ranges::count(uv1, std::array<float, 2>{0.5F, 0.5F}) == 3);
     }
     {
         // The PNG decoder is portable and shared with the GUI preview.

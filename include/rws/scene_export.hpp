@@ -4,7 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -43,5 +45,17 @@ struct SceneExportStats {
 [[nodiscard]] SceneExportStats export_collision_gltf(const std::vector<Chunk>& chunks,
                                                      std::span<const std::byte> bytes,
                                                      const std::filesystem::path& output_path);
+
+// Prototype id of a map Clump: 1000 + its first valid Pyro Atomic object
+// index, the number scene-instance records name (FUN_006C3C60).
+[[nodiscard]] std::optional<std::uint32_t> clump_prototype_id(const Chunk& clump,
+                                                              std::span<const std::byte> bytes);
+
+// Game-space triangles of a map Clump placed by a scene-instance record: the
+// record Matrix replaces the Clump root frame (FUN_006C4090), as in the scene
+// export and the viewport.
+[[nodiscard]] std::vector<std::array<Vec3, 3>>
+placed_clump_triangles(const Chunk& clump, std::span<const std::byte> bytes,
+                       const SceneInstance& instance);
 
 } // namespace rws

@@ -30,6 +30,11 @@
   `csf-mod audit` must keep every corpus file byte-identical through the tree
   writer and the source text; regenerate `src/csf_script_signatures.cpp` with
   `tools/generate_script_signatures.py` instead of editing it.
+- Map Worlds: `rws::WorldModel` (`src/world_model.cpp`) parses and writes `0x0B`
+  Worlds, `src/world_source.cpp` compiles `.csfworld` (written by
+  `tools/blender/export_csf_world.py`) and `src/map_assembly.cpp` copies donor
+  props. `csf-mod world-audit ../CSF_unpacks --rebuild` must keep every shipped
+  World and scene-instance record byte-identical.
 - GUI-free helpers (settings, command registry, fuzzy matcher, navigation history,
   operation log, search index, diagnostics table, mission discovery) live in the
   `rwsman_ui_model` library (`include/rwsman/`, `src/ui_model_*.cpp`). It must not
