@@ -48,6 +48,7 @@ walk (spike 2: on the plane; props have no collision); any crash, with the
 | 2026-09-25 | hello world v6: modified `Texts/Convoy.fli` in the mission archive (`0039` → "Reach the building.", new `0901`); objective 1 = `0039`, objective 2 = `0901` (rollback `.csf-mod-backups/1790326498042519860`) | objective 1 shows Convoy's original `0039` ("ALARM WARNING…"), objective 2 empty: a `Texts/*.fli` in the mission archive is ignored; text comes only from `GlobalEK.pak` | obj 1 new text → archive overrides GlobalEK; obj 1 Convoy text → edit `GlobalEK.pak`; obj 2 → whether new ids work |
 | 2026-09-25 | hello world v7 + `GlobalEK.pak` with the hello-world `Texts/Convoy.fli` (`tools/hello_world/build_texts.sh`; rollbacks `.csf-mod-backups/1790326594809809712` mission, `1790326596128306931` GlobalEK) | **both objectives show their new text**: text comes from `GlobalEK.pak`, and new ids work |
 | 2026-09-25 | hello world v8: one objective, new id `0900` "Reach the building.", Convoy's `0039` restored (rollbacks `.csf-mod-backups/1790326838650056524` mission, `1790326839926391553` GlobalEK) | works: the single objective reads "Reach the building."; Convoy's own text is unchanged | |
+| 2026-09-25 | hello world v9: generated scene, scripts and `.sec` (no Convoy leftovers); objectives "Reach the building." and "Kill the officer." (success TRUE, mission success when both are done); officer idling at a camp of prop actors (burnt truck, wood piles, radio), a camp guard on a 4-point loop, a north guard on a 2-point route, a house guard; `.TIPO 3` cover group behind the props, selected by every guard; MP40 pickup near the start; Convoy's intro cutscene still runs on placeholder camera dummies (rollbacks `.csf-mod-backups/1790328019122887200` mission, `1790328020455534289` GlobalEK) | pending | |
 
 ## Goal
 
@@ -95,6 +96,20 @@ content that proves it works.
       and entering the zone completes the objective and ends the mission.
 - [ ] Every format fact the tools rely on cites a `format-reversal`
       knowledge-base entry (or is marked *copied from the donor, unexplained*).
+
+### Extended hello world (requested 2026-09-25)
+
+After v8 the level grows into a small mechanics test bed. Each stage is a
+separate in-game test.
+
+| Stage | Content | Basis |
+|---|---|---|
+| v9: generated scene | the `.scn`, `.gsc` and `.sec` written from scratch by `tools/hello_world/scene.py` and `build_sec.py` (no Convoy leftovers); objective 1 "Reach the building" (zone enter, `SET_OBJETIVO_SUCCESS … (BOOL TRUE)`; v1–v8 passed `FALSE`, which marks it failed, KB-scripting objective table); objective 2 "Kill the officer" (`MUERTO` event); mission success when both are done; two guards patrolling nav routes; prop actors (crates, wood piles, a burnt truck, a weapon pickup); a `.TIPO 3` cover group next to the props that the guards take in combat (`SELECT_GRUPO_PARAPETO`) | KB-scn-7, 8, 10, 11, 12 |
+| v10: intro and terrain | the doberman (`--import-class` 431, walk animations 2383/2384 from Ransom) walking a loop round the camp; a `START_GAME` intro in the Convoy/Ransom pattern (fade, `CUTSCENE_NO_INTERACTIVA`, `CUTSCENE_EXE` of a generated `Convoy.csc` that cuts between five camera dummies aimed with `.ROT = atan2(dx, dz)`, positive `.ROT_X` down, checked against Ransom's intro cameras); terrain from `tools/hello_world/terrain.py`: grass (`FFLRA11B`), a dirt path (`FFLRA14I`, UVs across the path), rock (`FDET_05B`, `Piedra`) on slopes over 24°, hills closing the edges, flat pads under the house, camp and start, 14 trees and 15 ground plants; actor, nav and camera heights sampled from the exported terrain | Convoy/Ransom scripts; `CAMARA_EN_DUMMY` 0x00465310; R14 for camera paths |
+
+The `.sec` covers every walkable terrain triangle as one sector, with
+neighbour links across shared edges. The game discards cover points outside a
+sector (KB-scn-11), so Convoy's `.sec` cannot stay.
 
 The game is run **by a person**. The research workspace is static-only; an
 in-game test is the one check it cannot give, and it is the last rung of the
@@ -484,9 +499,9 @@ entry that justifies it.
 | R7 | Which `.scn` sections the loader requires (minimal section set) | scn | queued | 6 |
 | R8 | The `.sec` per-sector payload and index entries, so a sector map can be generated | scn | queued | 6 |
 | R9 | Are `.m3d`/`.txl`/`.and`/`.phd` required at load or regenerated/logged by the game (`LogModels.m3d`, `LogAnims.and` in the extension table at `0x008466c0`) | package-loader | queued | 8 |
-| R10 | What `<scene>.dst` holds and whether a copied one is safe on a different map | scn | queued | 8 |
-| R11 | Nav group `.TIPO` kinds and whether nav points must lie on collision | scn | queued | 6 |
-| R12 | `.BICHOS` records without a nav cell (`.CELDA.PUNTO == -1`): what positions them | scn | queued | 6 |
+| R10 | What `<scene>.dst` holds and whether a copied one is safe on a different map | scn | answered (KB-scn-13): a map-independent class-distance table; all 17 shipped files are byte-identical, so a copy is safe | 8 |
+| R11 | Nav group `.TIPO` kinds and whether nav points must lie on collision | scn | answered: KB-scn-11. `.TIPO` 0 walk graph, 1 legacy, 2 patrol routes, 3 cover points, 4 ladders; no nav check reads the collision World. Types 2/3 are checked against the `.sec` sector map, and nothing enforces that check | 6 |
+| R12 | `.BICHOS` records without a nav cell (`.CELDA.PUNTO == -1`): what positions them | scn | answered (KB-scn-12): `.POS` places the actor; a nav cell with `.PUNTO != -1` overrides it with that nav point's position | 6 |
 | R13 | Trigger-area record semantics: how a zone's shape is tested and which events it raises | scn | answered: KB-scn-10. `ACT_BICHO_EVENT_ZONA` arms the zone; each frame the actor must be inside `[area y, area y + height]` and inside the XZ polygon, which raises `BICHO_ENT_ZONA`/`BICHO_SAL_ZONA` | 6, 7 |
 | R14 | Cutscene camera: how `.csc` camera commands consume path dummies | scripting | queued | 7 |
 

@@ -13,6 +13,9 @@ import sys
 REPLACE: dict[str, str] = {}
 STRINGS = {
     "0900": "Reach the building.",
+    "0901": "Kill the officer.",
+    "0902": "Building reached.",
+    "0903": "The officer is dead.",
 }
 
 
