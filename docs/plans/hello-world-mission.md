@@ -14,7 +14,7 @@
 | Phase 3 | done: `rws::WorldModel` parse/write (`include/rws/world_model.hpp`); `csf-mod world-audit` rewrites all 42 shipped Worlds byte for byte, and with `--rebuild` a new BSP over each World's triangles recovers `complete` |
 | Phase 4 | tooling done: `tools/blender/export_csf_world.py`, `make_test_terrain.py`, `csf-mod world-build`; awaiting the in-game spikes below |
 | Spike 1 | built (was deployed; rolled back for spike 2): Convoy with both Worlds rebuilt by `csf-mod world-rebuild` (new BSP, sectors and plug-ins, same triangles). Expect Convoy to look and play exactly as shipped |
-| Hello world | **deployed** in the Convoy slot (rollback: `~/dev/csf_game/.csf-mod-backups/1790326838650056524/deployment.state` (mission) and `1790326839926391553` (GlobalEK.pak)); built by `tools/hello_world/build_mission.sh` |
+| Hello world | **v13 deployed and works in-game** in the Convoy slot; archives and projects in `~/dev/csf-mods/hello-world-v13-ready/`; rollback to working v12: `~/dev/csf_game/.csf-mod-backups/1790333101776881280/deployment.state`. GlobalEK remains v12 (the generated FLI is byte-identical). [Build/playtest guide](../guides/hello-world-mission.md) |
 | Phase 5 | tooling done: `.csfworld` `prop` (donor scene instances, collision cut from the donor `_col.rws`) and `piece` (donor World triangles in a box) records; `tools/hello_world/build_world.sh` builds the hello-world map (100 m terrain with a hill, Convoy's house, two Convoy trees) |
 | Spike 2 | works in-game (with Coll Trees): Convoy's scene and props on a generated 340 m flat World at game height 505 (`~/dev/csf-mods/convoy-flat.pak`) |
 
@@ -50,7 +50,28 @@ walk (spike 2: on the plane; props have no collision); any crash, with the
 | 2026-09-25 | hello world v8: one objective, new id `0900` "Reach the building.", Convoy's `0039` restored (rollbacks `.csf-mod-backups/1790326838650056524` mission, `1790326839926391553` GlobalEK) | works: the single objective reads "Reach the building."; Convoy's own text is unchanged | |
 | 2026-09-25 | hello world v9: generated scene, scripts and `.sec` (no Convoy leftovers); objectives "Reach the building." and "Kill the officer." (success TRUE, mission success when both are done); officer idling at a camp of prop actors (burnt truck, wood piles, radio), a camp guard on a 4-point loop, a north guard on a 2-point route, a house guard; `.TIPO 3` cover group behind the props, selected by every guard; MP40 pickup near the start; Convoy's intro cutscene still runs on placeholder camera dummies (rollbacks `.csf-mod-backups/1790328019122887200` mission, `1790328020455534289` GlobalEK) | **works** | |
 | 2026-09-25 | hello world v10: v9 plus the doberman (imported from Ransom), a five-shot intro cutscene and the new terrain (grass, dirt path, rock slopes, edge hills, 14 trees, 15 plants) (rollback `.csf-mod-backups/1790329006361140547` mission; GlobalEK as v9) | **works** (intro, dog, terrain); the guards do not patrol | `INIT` is a mission event, not a built-in one (KB-scripting-14), and nothing sent it, so no actor script ran (patrols, idles, cover selection, the dog's walk). Convoy's intro sends it |
-| 2026-09-25 | hello world v11: the intro sends `INIT`; secondary objective "Sabotage the camp radio.": an Escape ghost use point (class 241) in front of the radio, `BICHO_SET_CONTEXT_LABEL`, `HABILITAR_GHOST`, `EVT_GHOST_USADO` (rollbacks `.csf-mod-backups/1790329908820409351` mission, `1790329910177180333` GlobalEK) | pending | |
+| 2026-09-25 | hello world v11: the intro sends `INIT`; secondary objective "Sabotage the camp radio.": an Escape ghost use point (class 241) in front of the radio, `BICHO_SET_CONTEXT_LABEL`, `HABILITAR_GHOST`, `EVT_GHOST_USADO` (rollbacks `.csf-mod-backups/1790329908820409351` mission, `1790329910177180333` GlobalEK) | user reports soldiers do not move to cover in combat; radio has no usable prompt or glow | v12 configures cover AI explicitly and replaces the invisible use point |
+| 2026-09-25 | hello world v12: explicit alert/combat `MOVIL_A_PARAPETO`; Escape telephone ghost class 484 with the radio's look, context and illumination enabled; radio raised onto Escape's static wooden crate (383) | **works in-game**, confirmed by the user | confirmed fallback for the travelling-camera update |
+| 2026-09-25 | hello world v13: five short travelling-camera shots, invisible class-197 camera/target helpers, independent navigation paths, registered viewpoints | **works in-game**, confirmed by the user | current reference build for the [editor plan](editor-blender-authoring.md) |
+
+Editor follow-up: [editor/Blender authoring plan](editor-blender-authoring.md)
+defines ownership, reimport behavior, implementation order and acceptance checks.
+
+### Reproducible build and current limits
+
+Use the [combined build command](../guides/hello-world-mission.md) to build both
+archives and record hashes, revision, tool version and the mission recipe.
+Mission editing failures now stop the build. Map and sector sources remain in
+the project's `extra/` directory after packaging, so reopening/re-exporting
+does not depend on deleted temporary files.
+
+v12 passed `./test.sh --no-build` (both existing suites). A complete staging
+copy was rendered to check the radio/crate placement: the current project
+preview omits imported actor models such as the crate even though they are
+packaged. This editor resource-resolution limitation remains open.
+`world-audit` currently forces the shipped Pyro size overstatement and therefore
+reports byte differences on authored Worlds, which intentionally use actual
+sizes; use `rws-info --world-report` to check their recovery instead.
 
 ## Goal
 
@@ -189,8 +210,8 @@ it. A person launches the game and reports what happened.
 ```text
  Blender (CLI)                 rws-man                                   game
  ─────────────                 ───────                                   ────
- terrain.blend ──► glTF + ──► csf-mod world-build ──► <map>.rws        ┐
-                   sidecar      (BSP, sectors,        <map>_col.rws    │
+ terrain.blend ──► .csfworld ► csf-mod world-build ──► <map>.rws        ┐
+                                (BSP, sectors,        <map>_col.rws    │
                                  collision merge)     <mission>.vis    │
                                         ▲                              │
  Asset store (vanilla index) ───────────┤ props (Clumps + instances)   ├─► mission.pak

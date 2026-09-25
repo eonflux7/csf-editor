@@ -3,7 +3,7 @@
 # from build_world.sh, its sector map (build_sec.py) and a scene and scripts
 # written from scratch by scene.py. Only Convoy's environment (.MUNDOVIS) and
 # databases are reused; the doberman is imported from Ransom and the
-# radio's use point from Escape.
+# radio's ghost behavior and supporting crate from Escape.
 #
 #   tools/hello_world/build_mission.sh WORKSPACE ORIGINAL_CONVOY_PAK OUT_PAK [CORPUS_ROOT]
 #
@@ -26,18 +26,30 @@ python3 tools/hello_world/scene.py "$tmp/convoy.scn.txt" "$tmp/world/hello.csfwo
 "$csfmod" mission-edit "$ws" "$scene" >/dev/null  # creates the workspace
 "$csfmod" add "$ws" Maps/FR03/Convoy.scn "$tmp/Convoy.scn"
 "$csfmod" add "$ws" Maps/FR03/Convoy.csc "$tmp/Convoy.csc"
-# Ransom's doberman and its walk and run animations; Escape's ghost use point.
+# Ransom's doberman and its walk and run animations; Escape's telephone ghost
+# and wooden crate. Give the ghost the radio's visible model and bounding box
+# through MissionEditor, preserving its interaction behavior and physics.
 ops=(--import-class "$corpus/Ransom" 431 --import-anim "$corpus/Ransom" 2383 --import-anim "$corpus/Ransom" 2384
-     --import-class "$corpus/Escape" 241)
+     --import-class "$corpus/Escape" 484 --import-class "$corpus/Escape" 383
+     --actor-look 15 211)
 ops+=(--force)
-for id in $(./build/Release/csf-info program "$corpus/Convoy/Maps/FR03/Convoy.gsc" --scripts |
-            sed -n 's/^SCRIPT\t.*\tid=\([0-9]*\)\t.*/\1/p'); do
+./build/Release/csf-info program "$corpus/Convoy/Maps/FR03/Convoy.gsc" --scripts > "$tmp/donor-scripts.txt"
+sed -n 's/^SCRIPT\t.*\tid=\([0-9]*\)\t.*/\1/p' "$tmp/donor-scripts.txt" > "$tmp/donor-ids.txt"
+while read -r id; do
     ops+=(--delete-script "$id")
-done
+done < "$tmp/donor-ids.txt"
 for file in "$tmp"/scene/scripts/*.txt; do ops+=(--add-script "$file"); done
-"$csfmod" mission-edit "$ws" "$scene" "${ops[@]}" | grep -v '^applied' || true
-"$csfmod" add "$ws" Maps/FR03/FR03.rws "$tmp/world/FR03.rws"
-"$csfmod" add "$ws" Maps/FR03/FR03_col.rws "$tmp/world/FR03_col.rws"
-"$csfmod" add "$ws" Maps/Secs/Convoy.sec "$tmp/Convoy.sec"
+"$csfmod" mission-edit "$ws" "$scene" "${ops[@]}" > "$tmp/mission-edit.log" 2>&1 || {
+    cat "$tmp/mission-edit.log" >&2; exit 1;
+}
+sed '/^applied/d' "$tmp/mission-edit.log"
+# `add` records source paths; keep these files after the scratch directory is
+# removed so the project can be reopened and exported again.
+mkdir -p "$ws/extra/Maps/FR03" "$ws/extra/Maps/Secs"
+cp "$tmp/world/FR03.rws" "$tmp/world/FR03_col.rws" "$ws/extra/Maps/FR03/"
+cp "$tmp/Convoy.sec" "$ws/extra/Maps/Secs/"
+"$csfmod" add "$ws" Maps/FR03/FR03.rws "$ws/extra/Maps/FR03/FR03.rws"
+"$csfmod" add "$ws" Maps/FR03/FR03_col.rws "$ws/extra/Maps/FR03/FR03_col.rws"
+"$csfmod" add "$ws" Maps/Secs/Convoy.sec "$ws/extra/Maps/Secs/Convoy.sec"
 "$csfmod" validate "$ws"
 "$csfmod" export-mission "$ws" "$original" "$out" --overwrite

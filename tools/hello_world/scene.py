@@ -75,7 +75,8 @@ AREA_TOTAL = 16
 # Actor ids. Players keep Convoy's ids 1 and 2 (the kept weapon script names them).
 SNIPER, SPY = 1, 2
 OFFICER, GUARD_CAMP, GUARD_NORTH, GUARD_HOUSE, DOG, RADIO_GHOST = 10, 11, 12, 13, 14, 15
-GHOST_CLASS = 241  # Escape's "Item Ghost": an invisible use point (EVT_GHOST_USADO)
+GHOST_CLASS = 484  # Escape's visible telephone ghost; build_mission gives it radio class 211's look.
+RADIO_LIFT = 90.55355  # Escape class 383 BBOX.SUP.y minus radio class 211 BBOX.INF.y.
 DOG_CLASS, DOG_WALK = 431, 2383  # Ransom's Doberman and DobermanAndar (imported)
 
 # Nav groups.
@@ -85,6 +86,7 @@ G_WALK, G_START, G_CAMP_ROUTE, G_NORTH_ROUTE, G_DOG_ROUTE, G_COVER = 1, 2, 5, 6,
 S_WEAPONS, S_INIT, S_OBJECTIVES, S_ZONE, S_OFFICER_DEAD, S_RADIO = 9001, 9002, 9003, 9004, 9005, 9006
 S_OFFICER_IDLE, S_CAMP_PATROL, S_NORTH_PATROL, S_HOUSE_IDLE, S_DOG = 9010, 9011, 9012, 9013, 9014
 S_INTRO = 9020
+CAMERA_CLASS = 197  # Ambush's invisible, physics-free travelling-camera actor
 
 # The camp between the players' start and the house: props and the cover
 # points behind them (on the side away from the players, who come from +x).
@@ -92,7 +94,7 @@ PROPS = [  # class, name, x, z, heading degrees
     (93, "CAMP_TRUCK", 600.0, -2700.0, 90.0),     # burnt Mercedes
     (335, "CAMP_WOOD_1", 150.0, -3450.0, 20.0),   # wood pile
     (335, "CAMP_WOOD_2", 950.0, -3550.0, -35.0),
-    (211, "CAMP_RADIO", 350.0, -3050.0, 0.0),     # field radio
+    (383, "RADIO_CRATE", 350.0, -3050.0, 0.0),   # Escape's static wooden crate
     (306, "SCRAP_TRUCK", -900.0, 3300.0, 160.0),  # scrap truck near the north route
     (105, "PICKUP_MP40", 2600.0, -3300.0, 0.0),   # weapon pickup near the start
 ]
@@ -112,7 +114,7 @@ ACTORS = [  # id, name, class, x, z, heading, nav (group, point) or None, script
     (GUARD_NORTH, "GE_NORTH", 21, *NORTH_ROUTE[0], -101.5, (G_NORTH_ROUTE, 1), [S_NORTH_PATROL], []),
     (GUARD_HOUSE, "GE_HOUSE", 3, -1400.0, -2000.0, 90.0, None, [S_HOUSE_IDLE], []),
     (DOG, "DOBERMAN", DOG_CLASS, *DOG_ROUTE[0], -90.0, None, [S_DOG], []),
-    (RADIO_GHOST, "RADIO_GHOST", GHOST_CLASS, 350.0, -2960.0, 180.0, None, [], []),  # in front of CAMP_RADIO
+    (RADIO_GHOST, "CAMP_RADIO", GHOST_CLASS, 350.0, -3050.0, 0.0, None, [], []),
 ]
 
 def prop_actors() -> list[tuple]:
@@ -132,6 +134,26 @@ SHOTS = [
     (104, (-1000.0, 2800.0, 350.0), (-1500.0, 4000.0, 100.0), 3.5),    # the north patrol
     (105, (-500.0, -700.0, 550.0), (-2500.0, -2500.0, 250.0), 4.0),    # the building
 ]
+# Short straight travelling shots, in game centimetres. The cuts between
+# subjects stay; each view moves while holding its own look-at target.
+SHOT_TRAVEL = [(-220.0, -120.0), (-180.0, -80.0), (-100.0, 100.0),
+               (-220.0, 0.0), (-160.0, -120.0)]
+
+
+def camera_helpers():
+    """(actor record, height above terrain), matching Ambush's class 197 rigs.
+
+    KB-scripting-44: CREATE_VIEWPOINT binds a dummy to a cameraman and target;
+    IR_A_PATHPOINT moves the cameraman on an independent type-0 nav group.
+    """
+    for k, (_, camera, target, _) in enumerate(SHOTS):
+        cameraman, aim, group = 100 + 2 * k, 101 + 2 * k, 100 + k
+        x, z, height = camera
+        yield ((cameraman, f"INTRO_CAMERA_{k + 1}", CAMERA_CLASS, x, z, 0.0,
+                (group, 1), [], []), height)
+        x, z, height = target
+        yield ((aim, f"INTRO_TARGET_{k + 1}", CAMERA_CLASS, x, z, 0.0,
+                None, [], []), height)
 
 
 def look_at(camera, target) -> tuple[float, float]:
@@ -176,11 +198,12 @@ def mundovis(donor: str) -> str:
     return "\n".join(lines[start:end + 1]) + "\n"
 
 
-def actor(record) -> str:
+def actor(record, lift: float = 0.0) -> str:
     ident, name, cls, x, z, heading, nav, scripts, extra = record
     group, point = nav if nav else (-1, -1)
     lines = [
-        "[", f"  .NOMBRE {name}", f"  .ID {ident}", f"  .CLASSID {cls}", f"  .POS {pos(x, z)}",
+        "[", f"  .NOMBRE {name}", f"  .ID {ident}", f"  .CLASSID {cls}",
+        f"  .POS {pos(x, z, RADIO_LIFT if ident == RADIO_GHOST else lift)}",
         f"  .ANGULO {heading}", "  .ANGULO_X 0.0", "  .COLISION 1", "  .FLAGS 0",
         *("  " + line for line in extra), "  .SEGUNDA_EXPLOSION 0",
     ]
@@ -190,8 +213,9 @@ def actor(record) -> str:
     return block(lines, 4)
 
 
-def nav_point(ident: int, x: float, z: float, heading_degrees: float = 0.0) -> list[str]:
-    return ["[", f"  .ID {ident}", '  .NOMBRE ""', f"  .POS {pos(x, z)}",
+def nav_point(ident: int, x: float, z: float, heading_degrees: float = 0.0,
+              lift: float = 0.0) -> list[str]:
+    return ["[", f"  .ID {ident}", '  .NOMBRE ""', f"  .POS {pos(x, z, lift)}",
             f"  .ROT {math.radians(heading_degrees):.6f}", "  .ROT_X 0.0", "]"]
 
 
@@ -226,6 +250,15 @@ def navigation() -> str:
     dog = [(k + 1, x, z) for k, (x, z) in enumerate(DOG_ROUTE)]
     text += nav_group(G_DOG_ROUTE, "RUTA_PERRO", 0, dog, loop(len(dog)))
     text += nav_group(G_COVER, "Parapeto_Campamento", 3, cover, [])
+    # Camera paths deliberately have no links into the walking graph. Hold
+    # world height constant instead of following terrain height along the shot.
+    for k, (_, (x, z, height), _, _) in enumerate(SHOTS):
+        dx, dz = SHOT_TRAVEL[k]
+        heading = math.degrees(math.atan2(dx, dz))
+        end_lift = ground(x, z) + height - ground(x + dx, z + dz)
+        text += nav_group(100 + k, f"Rutas_Cutscene_Inicio_Camara_{k + 1}", 0,
+                          [(1, x, z, heading, height),
+                           (2, x + dx, z + dz, heading, end_lift)], [(1, 2)])
     text += "    )\n"
     # Every route and start point joins the nearest walk-grid point.
     links = []
@@ -273,7 +306,8 @@ def areas() -> str:
 def scene(donor: str) -> str:
     return (
         "[\n  .VERSION 17\n  .PLAYER 2\n" + mundovis(donor)
-        + "  .BICHOS (\n" + "".join(actor(record) for record in ACTORS + prop_actors()) + "  )\n"
+        + "  .BICHOS (\n" + "".join(actor(record) for record in ACTORS + prop_actors())
+        + "".join(actor(record, lift) for record, lift in camera_helpers()) + "  )\n"
         + "  .EFECTOS ()\n  .AGUAS ()\n"
         + "  .MULTIPLAYER [\n    .MPDEATHMATCH 0\n    .MPTDEATHMATCH 0\n    .MPPOSTMEN 0\n"
           "    .MPPOSTMEN_IDPOSTMAN -1\n    .MPFRANCOS 0\n  ]\n"
@@ -319,7 +353,14 @@ def patrol(route_group: int, count: int, pause: float) -> list[str]:
 
 
 def scripts() -> dict[int, str]:
-    cover = f"SELECT_GRUPO_PARAPETO (THIS) (GRUPO_PATHPOINT {G_COVER})"
+    # Escape's INIT scripts configure the AI mode as well as the cover group
+    # (e.g. SELECT_GRUPO_PARAPETO 127 + MOVIL_A_PARAPETO). A group alone
+    # leaves the actor's default combat behavior in place.
+    cover = [
+        f"SELECT_GRUPO_PARAPETO (THIS) (GRUPO_PATHPOINT {G_COVER})",
+        "SET_IA_ALERTA (THIS) (IA_ALERTA MOVIL_A_PARAPETO)",
+        "SET_IA_COMBATE (THIS) (IA_COMBATE MOVIL_A_PARAPETO)",
+    ]
     return {
         S_WEAPONS: script(S_WEAPONS, "COMMANDOS_INI", 1, ["START_GAME"], [
             "ADD_ARMA (BICHO 1) (ARMA_CLASSID 16)",
@@ -350,14 +391,18 @@ def scripts() -> dict[int, str]:
             'SET_OBJETIVO_LABEL (NUMERO 1.0) (FLI "0900")',
             "SET_OBJETIVO (NUMERO 2.0) (BOOL FALSE) (NUMERO 2.0)",
             'SET_OBJETIVO_LABEL (NUMERO 2.0) (FLI "0901")',
-            # Secondary objective: use the radio (a ghost use point in front of it).
+            # Secondary objective: use the visible radio ghost on the crate.
             "SET_OBJETIVO (NUMERO 3.0) (BOOL TRUE) (NUMERO 1.0)",
             'SET_OBJETIVO_LABEL (NUMERO 3.0) (FLI "0904")',
             f'BICHO_SET_CONTEXT_LABEL (BICHO {RADIO_GHOST}) (FLI "0906")',
             f"HABILITAR_GHOST (BICHO {RADIO_GHOST}) (BOOL TRUE)",
+            f"SET_CONTEXTUAL (BICHO {RADIO_GHOST}) (BOOL TRUE)",
+            f"ENABLE_GHOST_ILUM (BICHO {RADIO_GHOST}) (BOOL TRUE)",
         ]),
         S_RADIO: script(S_RADIO, "RADIO_SABOTEADA", 1, ["EVT_GHOST_USADO"], [
             f"HABILITAR_GHOST (BICHO {RADIO_GHOST}) (BOOL FALSE)",
+            f"SET_CONTEXTUAL (BICHO {RADIO_GHOST}) (BOOL FALSE)",
+            f"ENABLE_GHOST_ILUM (BICHO {RADIO_GHOST}) (BOOL FALSE)",
             "SET_OBJETIVO_SUCCESS (NUMERO 3.0) (BOOL TRUE)",
             'TIMED_STRING_V2 (FLI "0905") (NUMERO 5.0) (NUMERO 4.0)',
         ], [f"CMP_OP_BICHO (EVT_BICHO2) (OP_BOOLEAN 0) (BICHO {RADIO_GHOST})"]),
@@ -374,16 +419,16 @@ def scripts() -> dict[int, str]:
         ], [f"AND (CMP_OP_BICHO (EVT_BICHO1) (OP_BOOLEAN 0) (BICHO {OFFICER})) "
             "(NOT (OBJETIVO_COMPLETADO (NUMERO 2.0)))"]),
         S_OFFICER_IDLE: script(S_OFFICER_IDLE, "OFICIAL_FUMAR", 0, ["INIT"], [
-            cover,
+            *cover,
             "WHILE (BOOL TRUE)",
             "  PLAY_ANMBDD_CICLOS (THIS) (ANM_BDD 1881) (RANDOM (NUMERO 2.0) (NUMERO 4.0))",
             "  PLAY_ANMBDD (THIS) (ANM_BDD 1385)",
             "WEND",
         ]),
         S_CAMP_PATROL: script(S_CAMP_PATROL, "GE_RUTA_CAMPAMENTO", 0, ["INIT"],
-                              [cover, *patrol(G_CAMP_ROUTE, len(CAMP_ROUTE), 3.0)]),
+                              [*cover, *patrol(G_CAMP_ROUTE, len(CAMP_ROUTE), 3.0)]),
         S_NORTH_PATROL: script(S_NORTH_PATROL, "GE_RUTA_NORTE", 0, ["INIT"],
-                               [cover, *patrol(G_NORTH_ROUTE, len(NORTH_ROUTE), 4.0)]),
+                               [*cover, *patrol(G_NORTH_ROUTE, len(NORTH_ROUTE), 4.0)]),
         S_DOG: script(S_DOG, "PERRO_RUTA", 0, ["INIT"], [
             "WHILE (BOOL TRUE)",
             *(f"  IR_A_PATHPOINT_ANIM (THIS) (PATHPOINT {G_DOG_ROUTE} {k + 1}) (BOOL TRUE) (ANM_BDD {DOG_WALK})"
@@ -400,15 +445,21 @@ def scripts() -> dict[int, str]:
             # actor scripts listening for it (patrols, idles, cover) start here,
             # as Convoy's intro script sends it.
             "SEND_EVENT (EVENT INIT)",
+            # Shipped Ambush travelling-camera pattern (KB-scripting-44).
+            # Register viewpoints in .gsc; the .csc activates them by dummy ID.
+            *(f"CREATE_VIEWPOINT (DUMMY {ident}) (BICHO {100 + 2 * k}) "
+              f"(BICHO {101 + 2 * k}) (NUMERO 0.0)"
+              for k, (ident, _, _, _) in enumerate(SHOTS)),
             "CUTSCENE_EXE (CUTSCENE 1)",
             "FX_FADE (NUMERO 1.0) (BOOL TRUE) (VECTOR 0.0 0.0 0.0)",
             "PAUSE (NUMERO 1.5)",
             "CUTSCENE_NO_INTERACTIVA (BOOL FALSE)",
             "PLAYER_TERCERA (BOOL FALSE)",
+            *(f"NAVEGACION_STOP (BICHO {100 + 2 * k})" for k in range(len(SHOTS))),
             "FX_FADE (NUMERO 1.0) (BOOL FALSE) (VECTOR 0.0 0.0 0.0)",
         ]),
         S_HOUSE_IDLE: script(S_HOUSE_IDLE, "GE_RADIO", 0, ["INIT"], [
-            cover,
+            *cover,
             "WHILE (BOOL TRUE)",
             "  PLAY_ANMBDD (THIS) (ANM_BDD 1782)",
             "WEND",
@@ -420,9 +471,13 @@ def cutscene() -> str:
     """Convoy.csc's structure (CUT_INICIO runs its INIT, camera and END scripts)
     with the hello-world camera script."""
     camera = []
-    for ident, _, _, seconds in SHOTS:
+    for k, (ident, _, _, seconds) in enumerate(SHOTS):
+        speed = math.hypot(*SHOT_TRAVEL[k]) / seconds
         camera += ["PAUSE (NUMERO 0.01)", f"CAMARA_EN_DUMMY (DUMMY {ident})",
-                   'CAM_SETFILTRO (CADENA "<NINGUNO>")', f"PAUSE (NUMERO {seconds})"]
+                   'CAM_SETFILTRO (CADENA "<NINGUNO>")',
+                   f"SET_WANTED_VEL (BICHO {100 + 2 * k}) (NUMERO {speed:.6f})",
+                   f"CONTINUE (IR_A_PATHPOINT (BICHO {100 + 2 * k}) (PATHPOINT {100 + k} 2))",
+                   f"PAUSE (NUMERO {seconds})"]
     empty = lambda ident, name: "\n".join(script(ident, name, 1, [], ["X"]).split("\n")[:9]) + "\n]\n"
     records = [
         script(1, "CUT_INICIO", 1, [], ["CUTSCENE_EXE (CUTSCENE 2)",
