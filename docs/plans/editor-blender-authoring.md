@@ -21,9 +21,42 @@ record order. Keep `scene.py` as a test fixture until the editor reproduces all
 of it. Playtests are then needed only for new gameplay behavior, not for
 regressions in recipes the parity test already covers.
 
-**Decisions (user, 2026-09-25).** Terrain is modelled in Blender only; the
-editor imports and rebuilds it and gets no terrain tools. New missions replace
-a shipped mission's slot; registering extra missions is not a goal.
+**Decisions (user, 2026-09-25).**
+
+- The goal is new maps and missions. Remixing shipped maps (editable import of
+  a vanilla World, extracting its buildings) is not a goal for now.
+- Terrain is modelled in Blender only; the editor imports and rebuilds it and
+  gets no terrain tools.
+- New missions replace a shipped mission's slot; registering extra missions is
+  not a goal.
+- Blender shows placements and gameplay records view-only. Moving a proxy in
+  Blender does not change the project; two-way editing may come later.
+- Dummies, navigation, areas, cover groups, camera helpers and scripts are
+  authored in the editor only. They are mission records that scripts reference
+  by ID, need gameplay context (flow, references, warnings) and must follow the
+  compiled ground. Blender shows them as references; a later Blender camera
+  import arrives as editor records, never as Blender-owned data.
+
+## Map structure and asset kinds
+
+A shipped map (Convoy's `FR03.rws`) holds one World and 48 Clumps. The World is
+terrain and buildings merged into one static mesh (33k triangles, 95 materials)
+with baked lightmaps; its collision is a second World (`_col.rws`). The Clumps,
+placed by scene-instance records, are repeated decor such as trees. Everything
+interactive is an actor: an `.rpc` model by class, placed in the `.scn`.
+
+The project uses matching asset kinds:
+
+| Kind | Made in | Placed by | Built into |
+|---|---|---|---|
+| terrain | Blender, where it is modelled | (fixed) | the World and its collision |
+| building | Blender (or a donor World piece), at its own origin | the editor | the World: its triangles are merged at each placement, so it gets lightmaps and collision |
+| prop | a donor Clump (later: Blender, stage 8 spike) | the editor | Clump and scene instance in the map `.rws`, collision cut into `_col.rws` |
+| actor | a donor class (later: custom models) | the editor | a `.scn` actor record, with imported class files |
+
+A terrain change never requires placing anything again: the World is rebuilt
+from the terrain and the placements, which keep their IDs and positions, and
+the editor reports what no longer sits on the ground (handoff item 5).
 
 ## What the editor does today, and the gaps
 
@@ -33,14 +66,14 @@ a shipped mission's slot; registering extra missions is not a goal.
 | Terrain, house piece, trees, plants | `terrain.py` → `.csfworld` → `world-build` | none in the GUI | World import and rebuild; props and pieces as project placements (see stage 2) |
 | Sector map | `build_sec.py` paired terrain triangles into convex polygons | done: `rws::build_sector_map`, `csf-mod sector-build`, byte-identical to v13 | |
 | Actors, prop actors, pickups | `ACTORS`, `prop_actors()` | add, duplicate, delete, class, look, faction, scripts, animations | ground height (stage 2) and presets |
-| Donor classes and animations | `--import-class`, `--import-anim` | `import_class`, `import_animation` | asset browser with provenance (stage 3) |
+| Donor classes and animations | `--import-class`, `--import-anim` | `import_class`, `import_animation` | asset browser with provenance (stage 4) |
 | Walk grid (`MALLA`) and its links to routes | `walk_grid()`, `navigation()` | move, add, delete, link and unlink points in existing groups | add and delete navigation groups; generate a walk grid that avoids obstacles |
 | Patrol routes, cover group (`.TIPO 3`) | `nav_group`, `patrol()` | as above | route tool and presets that write the group and the actor script together |
 | Zones (the house) | `areas()` | move, insert and remove points; height | add and delete areas |
-| Camera dummies and helpers | `dummies()`, `camera_helpers()` | move, duplicate, delete | add dummies; the cutscene editor (stage 5) |
-| Objectives, events, mission success | `scripts()`, `CHECK_BOTH` | raw script text | recipes and the flow view (stage 4) |
+| Camera dummies and helpers | `dummies()`, `camera_helpers()` | move, duplicate, delete | add dummies; the cutscene editor (stage 6) |
+| Objectives, events, mission success | `scripts()`, `CHECK_BOTH` | raw script text | recipes and the flow view (stage 5) |
 | Usable radio on a crate | class 484 with class 211's look, lifted onto class 383 | `set_actor_look` | "usable object" preset; placing on a supporting object |
-| Objective text | `texts.py`, `build_texts.sh` → GlobalEK | none | text table editing and packaging (stage 4) |
+| Objective text | `texts.py`, `build_texts.sh` → GlobalEK | none | text table editing and packaging (stage 5) |
 | Two archives, deployment, rollback | `build.sh`, `csf-mod deploy-pak` | project export of one archive | one project build covering both archives |
 
 Undo already exists: every `MissionEditor` operation is one undo step
@@ -55,10 +88,10 @@ Undo already exists: every `MissionEditor` operation is one undo step
 | Custom collision shapes | Blender | Export separate collision meshes; editor assigns surfaces, previews collision and compiles the collision World |
 | Lightmap unwrap, lights for baking, baking | Blender | Existing Cycles/DDS staging add-on; connect its results to authored World materials and packaging |
 | Texture painting | Blender or an image editor | Editor previews and packages textures; existing lightmap DDS staging does not establish a complete custom-material pipeline |
-| New reusable prop models | Blender → CSF compiler → editor | Static meshes can become World geometry today; a custom Clump/RPC prop is a research spike (stage 7) |
+| New reusable prop models | Blender → CSF compiler → editor | Static meshes can become World geometry today; a custom Clump/RPC prop is a research spike (stage 8) |
 | New characters, rigs, skinning, animation clips | Blender → future converters | Separate research track; vanilla imports work now |
 | Place buildings, trees, props, actors, pickups | CSF editor | Actor transforms/imports exist; add asset browser, World-piece and donor-prop placement, ground snapping |
-| Patrols, cover, sectors, walk grid, trigger zones | CSF editor | Point/area editing exists; add group/zone creation, route tools, walk-grid and sector generation, behavior presets |
+| Patrols, cover, sectors, walk grid, trigger zones, dummies | CSF editor (Blender shows them view-only) | Point/area editing exists; add group/zone creation, route tools, walk-grid and sector generation, behavior presets |
 | Objectives, interactions, mission success, text | CSF editor | Add forms and reusable script recipes, a flow view, and text editing/package support |
 | Camera paths, look-at targets, timing, fades | CSF editor | Add shot authoring; compile to the travelling-camera pattern in KB-scripting-44 (v13) |
 | Environment, build, deployment and rollback | CSF editor | Existing parts need one project workflow covering mission and GlobalEK archives |
@@ -99,9 +132,10 @@ replacement is defined as follows:
 - Each Blender mesh object exported as World geometry (the terrain, a custom
   building) is one asset. Its ID is a custom property (`csf_asset_id`, set like
   the materials' `csf_texture`/`csf_surface`), assigned on first export and
-  kept through renames and mesh reorders.
-- Each donor `piece` and `prop` is a project placement with its own ID and a
-  donor reference. It is not Blender geometry.
+  kept through renames and mesh reorders. A building asset is exported about
+  its own origin; its placements say where it stands.
+- Each building, `piece` and `prop` placement has its own project ID and names
+  its asset or donor. Placements are not Blender geometry.
 - Reimport replaces an asset's triangles and recompiles the World; placements
   and mission records keep their IDs.
 
@@ -122,7 +156,7 @@ project unless the user explicitly chooses to bake them into geometry.
 
 ## Delivery order and acceptance checks
 
-Each stage ends with a build that is deployed and played; stages after 2 also
+Each stage ends with a build that is deployed and played; stages after 3 also
 extend the parity test.
 
 ### 1. Imported models in project preview
@@ -166,7 +200,31 @@ play. Placements that were terrain-relative follow the hill. Any object left
 floating or buried is reported. An invalid export leaves the working project
 intact.
 
-### 3. Mission structure, placement and behavior presets
+### 3. Blender add-on
+
+Package `tools/blender` as an installable add-on with a CSF panel; the headless
+exporters stay usable from scripts.
+
+- **Tag** mesh objects as terrain, building or collision-only, and give each an
+  asset ID on first export.
+- **Send to rws-man** exports the terrain and each building asset (about its
+  own origin) into the project's `sources/`, atomically. The editor watches
+  them, rebuilds in the background and shows the change summary and height
+  report.
+- **Reference import** loads the project's compiled state into a locked
+  `CSF reference` collection that export skips: the World, placed buildings,
+  props and actors (glTF from rws-man's exporter), and the gameplay records
+  (navigation routes as curves, areas as outlined volumes, cover points and
+  dummies as markers, camera paths). It is refreshed on request, view-only.
+- **Import a donor model** (a Clump, an `.rpc` or a World piece) as an editable
+  mesh, as a starting point for a new asset.
+
+**Accept:** with hello world open in both tools, raise the hill in Blender with
+the camp, routes and zones visible, send it, and see rws-man rebuild; every
+placement keeps its position, and the height report lists what the hill now
+covers or lifts.
+
+### 4. Mission structure, placement and behavior presets
 
 - "New mission from slot" (see the gap table).
 - `MissionEditor` operations for adding and deleting navigation groups, areas
@@ -189,7 +247,7 @@ radio, the guards, the dog and the pickup, and set up the patrols and the cover
 with forms and viewport tools. Parity with `scene.py` for the placements,
 navigation and actor scripts.
 
-### 4. Mission flow, objectives and text
+### 5. Mission flow, objectives and text
 
 First build the read-only event/program/objective graph. Then add authoring
 recipes for start/intro (including sending `INIT`, KB-scripting-14), enter
@@ -210,7 +268,7 @@ unraised custom events and malformed zones without claiming full runtime proof.
 primary objectives in either order, and finish with or without the radio.
 Parity with `scene.py` for all scripts except the cutscene.
 
-### 5. Cutscene editor
+### 6. Cutscene editor
 
 Edit shots as forms first: capture the camera from the viewport, then set start
 and end, look-at target, duration and cuts. Show helper paths separately from
@@ -228,7 +286,7 @@ duration, build, play and regain player control at the end. Full parity with
 `scene.py`. From then on the parity tests can use a stored copy of its output
 instead of running it.
 
-### 6. Baking
+### 7. Baking
 
 Connect the existing lightmap add-on to project material dependencies and
 incremental builds. Hello world has no baked lightmaps (its terrain uses plain
@@ -238,7 +296,7 @@ building.
 **Accept:** edit and rebake the building in Blender, update it once in the
 editor, and verify its lighting and packaged textures in-game.
 
-### 7. Research spikes: custom props and characters
+### 8. Research spikes: custom props and characters
 
 Not delivery stages. A custom independently placed prop (a new Clump and
 class) has had no in-game spike. Characters, rigs and animation export need

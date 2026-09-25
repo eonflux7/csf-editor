@@ -60,10 +60,13 @@ texts GlobalEK.pak Texts/Convoy.fli 900 999
 donor-map Maps/FR03/FR03.rws Maps/FR03/FR03_col.rws
 
 # World geometry from Blender
-asset terrain mesh sources/world/terrain.blend sources/world/terrain.csfworld
+asset terrain terrain sources/world/terrain.blend sources/world/terrain.csfworld
 asset-export terrain export_csf_world.py 2 sha256:<of the .csfworld>
+asset bunker building sources/assets/bunker.blend sources/assets/bunker.csfworld
+asset-export bunker export_csf_world.py 2 sha256:<...>
 
-# Donor pieces and props placed by the editor
+# Buildings, donor pieces and props placed by the editor
+building bunker-1 bunker  1200 0 800  90  ground 0
 piece house -5650 1020 -6850 -4120 2500 -5440  -2500 0 -2500  0  ground -4
 prop tree-1 1,2  2500 0 -2000  0  ground -10
 prop plant-1 319  -600 0 -1600  0  ground -5
@@ -87,8 +90,9 @@ output build/Maps/Secs/Convoy.sec sectors sha256:<output> inputs sha256:<...>
 | `slot <mission> <scene> <archive>` | the shipped mission slot (decision: slots are replaced, not added): mission name, package-relative scene, game-relative archive |
 | `texts <archive> <file> <first> <last>` | text file in GlobalEK and the project's reserved string ID range; the build refuses IDs outside it |
 | `donor-map <visual> <collision>` | package-relative donor Worlds that supply materials, props and pieces |
-| `asset <id> mesh <blend> <export>` | Blender geometry: the source `.blend` and its `.csfworld` export |
+| `asset <id> <terrain\|building> <blend> <export>` | Blender geometry: the source `.blend` and its `.csfworld` export. A terrain is built where it was modelled; a building is exported about its own origin and built at each of its placements |
 | `asset-export <id> <exporter> <version> <hash>` | the exporter and version that wrote the export, and the export's hash |
+| `building <id> <asset> <x y z> <yaw> <height>` | a building asset, placed; its triangles are merged into the World |
 | `piece <id> <box x0 y0 z0 x1 y1 z1> <x y z> <yaw> <height>` | donor World triangles inside a box, placed |
 | `prop <id> <donor-instances> <x y z> <yaw> <height>` | donor scene instances (and their Clumps), placed |
 | `anchor actor <actor-id> <height>` | height relation of a scene actor |
@@ -129,7 +133,9 @@ object terrain
 ```
 
 A version-1 file has no `object` lines and is one asset with the ID in its
-`asset` record. The compiler still builds one World from all of them. Asset
+`asset` record. The compiler still builds one World from all of them. Asset kinds follow the
+map structure described in the [editor plan](editor-blender-authoring.md#map-structure-and-asset-kinds);
+the Blender add-on (stage 3) sets the kind and ID when it tags an object. Asset
 identity is used for change summaries ("terrain: 5000 → 5200 faces"), for
 invalidation and for the placements' reference errors. The reference errors
 matter once assets are more than terrain, such as a custom building a prop
@@ -139,7 +145,7 @@ stands `on`.
 
 | Output | Inputs | Operation |
 |---|---|---|
-| `build/world.csfworld` | asset exports, `piece` and `prop` records with resolved heights | merge |
+| `build/world.csfworld` | terrain exports, building exports at their placements, `piece` and `prop` records | merge |
 | `build/Maps/.../<map>.rws`, `_col.rws` | `build/world.csfworld`, donor maps | `compile_world_source` + `map_assembly` |
 | `build/Maps/Secs/<mission>.sec` | the merged World's collision faces | `rws::build_sector_map` (`csf-mod sector-build`) |
 | `mission/authored/...` | editor state | `MissionEditor::save` |
