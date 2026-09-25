@@ -8,10 +8,12 @@ terrain reimport.
 **Implemented:** `csf::AuthoringProject` (`include/csf/authoring_project.hpp`)
 reads and writes both files and builds the World, collision and sector map
 (`csf-mod project-build`); hello world is migrated (`tools/hello_world/build.sh`).
-Height resolution, the height report and resnap (`csf-mod project-heights`).
+Height resolution, the height report and resnap (`csf-mod project-heights`),
+and mission text (`text` records; `project-build` writes
+`build/<archive stem>/<file>`, e.g. `build/GlobalEK/Texts/Convoy.fli`).
 **Not yet:** `.csfworld` version 2
-`object` lines, the text range check, and building the archives into `dist/`
-from C++ (the hello-world scripts do that today).
+`object` lines, and building the archives into `dist/` from C++ (the
+hello-world scripts do that today).
 
 ## What exists
 
@@ -104,6 +106,7 @@ output build/Maps/Secs/Convoy.sec sectors sha256:<output> inputs sha256:<...>
 | `piece <id> <box x0 y0 z0 x1 y1 z1> <x y z> <yaw> <height>` | donor World triangles inside a box, placed |
 | `prop <id> <donor-instances> <x y z> <yaw> <height>` | donor scene instances (and their Clumps), placed |
 | `anchor actor <actor-id> <height>` | height relation of a scene actor |
+| `text <id> <string>` | a mission string (UTF-8) for the texts file; the ID is within the reserved range |
 | `output <path> <kind> <hash> inputs <hash>` | a generated file, its hash and the hash of what it was built from |
 
 `<id>` is a project-unique name (`[A-Za-z0-9_-]+`). The editor assigns one on

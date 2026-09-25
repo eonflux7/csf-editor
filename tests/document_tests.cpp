@@ -5,6 +5,7 @@
 #include "csf/document.hpp"
 #include "csf/export.hpp"
 #include "csf/mission_edit.hpp"
+#include "csf/mission_flow.hpp"
 #include "csf/mission_ops.hpp"
 #include "csf/mission_recipes.hpp"
 #include "csf/mod_project.hpp"
@@ -1497,6 +1498,50 @@ void test_mission_editor() {
         CHECK(csf::run_mission_ops(fresh, "dummy id=10 name=F pos=1,2,3 colour=red\n")[0].result.warnings ==
               std::vector<std::string>{"ignored colour="});
         CHECK(csf::script_number(3) == "3.0" && csf::script_number(0.25F) == "0.25");
+
+        // Flow: script 8 and the patrol wait for the mission event INIT, which nothing raises.
+        {
+            const auto flow = csf::MissionFlow::build(
+                std::make_unique<csf::ProgramDocument>(csf::ProgramDocument::project(fresh.document(program))).get(), nullptr);
+            CHECK(std::ranges::any_of(flow.findings(), [](const csf::FlowFinding& f) {
+                return f.message.starts_with("Mission event INIT starts ");
+            }));
+            CHECK(csf::is_builtin_event("start_game") && !csf::is_builtin_event("INIT"));
+        }
+        // Objectives: a zone, a kill and a secondary use, one undo step; the
+        // flow then sees three objectives, each completed, and a success.
+        {
+            const auto before = history();
+            csf::Objectives objectives;
+            objectives.setup = {9100, "SETUP"};
+            objectives.objectives = {
+                {1, false, csf::Objective::Kind::enter_zone, 1, "0900", "0902", "", {9101, "ZONE"}},
+                {2, false, csf::Objective::Kind::kill_actor, 5, "0901", "0903", "", {9102, "KILL"}},
+                {3, true, csf::Objective::Kind::use_object, 1, "0904", "0905", "0906", {9103, "USE"}}};
+            CHECK(csf::add_objectives(fresh, objectives).applied && history() == before + 1);
+            const auto setup = *fresh.script_text(program, 9100);
+            CHECK(setup.find("ACT_BICHO_EVENT_ZONA (PLAYER) (ZONA 1) (BOOL TRUE)") != std::string::npos);
+            CHECK(setup.find("SET_OBJETIVO_LABEL (NUMERO 1.0) (FLI \"0900\")") != std::string::npos);
+            CHECK(setup.find("HABILITAR_GHOST (BICHO 1) (BOOL TRUE)") != std::string::npos);
+            const auto kill = *fresh.script_text(program, 9102);
+            CHECK(kill.find("IF (AND (OBJETIVO_COMPLETADO (NUMERO 1.0)) (OBJETIVO_COMPLETADO (NUMERO 2.0)))") !=
+                  std::string::npos);
+            CHECK(fresh.script_text(program, 9103)->find("SET_MISSION_SUCCESS") == std::string::npos);  // secondary
+            const auto document = csf::ProgramDocument::project(fresh.document(program));
+            const auto flow = csf::MissionFlow::build(&document, nullptr);
+            CHECK(flow.objectives().size() == 3 && flow.objectives()[2].secondary == true);
+            CHECK(std::ranges::none_of(flow.findings(), [](const csf::FlowFinding& f) {
+                return f.message.find("Objective") != std::string::npos ||
+                       f.message.find("SET_MISSION_SUCCESS") != std::string::npos ||
+                       f.message.find("ACT_BICHO_EVENT_ZONA") != std::string::npos ||
+                       f.message.find("HABILITAR_GHOST") != std::string::npos;
+            }));
+            csf::Equipment equipment{{{1, {{16, std::nullopt}, {102, std::pair{100.0F, 50.0F}}}, 102, 23}}, {9104, "KIT"}};
+            CHECK(csf::add_equipment(fresh, equipment).applied);
+            CHECK(fresh.script_text(program, 9104)->find(
+                      "SET_MUNICION_ARMA (BICHO 1) (ARMA_CLASSID 102) (NUMERO 100.0) (NUMERO 50.0)") != std::string::npos);
+            CHECK(csf::fli_operand("0900") == "(FLI \"0900\")" && csf::fli_operand("g014") == "(FLI g014)");
+        }
 
         // A new mission keeps the environment and empties the rest.
         CHECK(fresh.new_mission().applied);
@@ -3919,6 +3964,33 @@ int main() {
         CHECK(reloaded.build_world().rebuilt);
         std::filesystem::remove(project_dir / "build" / "Maps" / "Secs" / "M1.sec");
         CHECK(reloaded.build_world().rebuilt);
+
+        // Mission text: range-checked records and the .fli the build writes.
+        {
+            auto texts = csf::AuthoringProject::parse("csfproj 1\ntexts GlobalEK.pak Texts/M1.fli 900 902\n"
+                                                      "text 0900 \"Reach it.\"\ntext 0901 \"Done.\"\n");
+            CHECK(texts.check().empty() && texts.next_text_id() == "0902");
+            texts.strings.push_back({"0903", "out of range"});
+            CHECK(!texts.check().empty());
+            const auto utf16 = [](const std::u16string& text) {
+                std::vector<std::byte> bytes{std::byte{0xFF}, std::byte{0xFE}};
+                for (const auto c : text) {
+                    bytes.push_back(static_cast<std::byte>(c & 0xFF));
+                    bytes.push_back(static_cast<std::byte>(c >> 8));
+                }
+                return bytes;
+            };
+            const auto donor = utf16(u"0001\r\n\"Old\"\r\n\r\n");
+            CHECK(csf::append_fli_strings(donor, {{"0900", "Caf\xC3\xA9"}}) ==
+                  utf16(u"0001\r\n\"Old\"\r\n\r\n0900\r\n\"Café\"\r\n\r\n"));
+            bool clash = false;
+            try {
+                (void)csf::append_fli_strings(donor, {{"0001", "again"}});
+            } catch (const std::runtime_error&) {
+                clash = true;
+            }
+            CHECK(clash);
+        }
 
         // Height report: ground is the terrain's collision (flat at 0 where
         // z >= x); supports resolve through chains, actors through anchors.

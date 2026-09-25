@@ -137,7 +137,14 @@ std::string read_text(const std::filesystem::path& path) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
-EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOptions& options) {
+// Lines that collect records for a later line (objective -> objectives, kit
+// -> equipment).
+struct Pending {
+    std::vector<Objective> objectives;
+    std::vector<Kit> kits;
+};
+
+EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOptions& options, Pending& pending) {
     const auto& op = line.op;
     const auto path = [&](const std::string& key) { return options.base_directory / line.text(key); };
     if (op == "new-mission") return editor.new_mission();
@@ -251,6 +258,63 @@ EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOpt
         grid.ground = options.ground;
         return add_walk_grid(editor, grid);
     }
+    if (op == "objective") {
+        Objective objective;
+        objective.number = number<std::int32_t>(line.text("n"));
+        objective.secondary = line.text_or("secondary", "0") != "0";
+        const auto kind = line.text("kind");
+        if (kind == "zone") objective.kind = Objective::Kind::enter_zone;
+        else if (kind == "kill") objective.kind = Objective::Kind::kill_actor;
+        else if (kind == "use") objective.kind = Objective::Kind::use_object;
+        else throw std::invalid_argument("kind= is zone, kill or use");
+        objective.target = number<std::int32_t>(line.text("target"));
+        objective.label = line.text("label");
+        objective.done = line.text("done");
+        objective.prompt = line.text_or("prompt", "");
+        objective.script = {optional_id(line, "script"), line.text_or("script-name", "")};
+        pending.objectives.push_back(std::move(objective));
+        return {true, "Objective " + std::to_string(pending.objectives.back().number) + " noted", {}};
+    }
+    if (op == "objectives") {
+        Objectives recipe{std::move(pending.objectives), {optional_id(line, "setup"), line.text_or("setup-name", "")},
+                          line.text_or("success", "g014"), number<float>(line.text_or("pause", "4"))};
+        pending.objectives.clear();
+        return add_objectives(editor, recipe);
+    }
+    if (op == "kit") {
+        Kit kit;
+        kit.actor = number<std::int32_t>(line.text("actor"));
+        // <class>[@<ammo>/<ammo>],...
+        for (const auto& weapon : split(line.text("weapons"), ',')) {
+            const auto at = weapon.find('@');
+            Kit::Weapon entry{number<std::int32_t>(weapon.substr(0, at)), std::nullopt};
+            if (at != std::string::npos) {
+                const auto ammo = weapon.substr(at + 1);
+                const auto slash = ammo.find('/');
+                if (slash == std::string::npos) throw std::invalid_argument("expected <class>@<ammo>/<ammo>");
+                entry.ammunition = std::pair{number<float>(ammo.substr(0, slash)), number<float>(ammo.substr(slash + 1))};
+            }
+            kit.weapons.push_back(entry);
+        }
+        if (line.has("select")) kit.selected = number<std::int32_t>(line.text("select"));
+        if (line.has("disguise")) kit.disguise = number<std::int32_t>(line.text("disguise"));
+        pending.kits.push_back(std::move(kit));
+        return {true, "Kit for actor " + std::to_string(pending.kits.back().actor) + " noted", {}};
+    }
+    if (op == "equipment") {
+        Equipment recipe{std::move(pending.kits), {optional_id(line, "script"), line.text_or("script-name", "")}};
+        pending.kits.clear();
+        return add_equipment(editor, recipe);
+    }
+    if (op == "tips") {
+        Tips recipe{split(line.text("tips"), ','), {0.115F, 0.25F}, {optional_id(line, "script"), line.text_or("script-name", "")}};
+        if (line.has("pos")) {
+            const auto v = floats(line.text("pos"));
+            if (v.size() != 2) throw std::invalid_argument("expected pos=<x>,<y>");
+            recipe.position = {v[0], v[1]};
+        }
+        return add_tips(editor, recipe);
+    }
     throw std::invalid_argument("unknown operation '" + op + "'");
 }
 
@@ -259,6 +323,7 @@ EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOpt
 std::vector<MissionOpOutcome> run_mission_ops(MissionEditor& editor, const std::string_view text,
                                               const MissionOpsOptions& options) {
     std::vector<MissionOpOutcome> outcomes;
+    Pending pending;
     std::size_t number_of_line = 0;
     for (std::size_t begin = 0; begin < text.size();) {
         const auto end = std::min(text.find('\n', begin), text.size());
@@ -271,7 +336,7 @@ std::vector<MissionOpOutcome> run_mission_ops(MissionEditor& editor, const std::
         try {
             const auto line = parse_line(raw);
             outcome.op = line.op;
-            outcome.result = run_line(editor, line, options);
+            outcome.result = run_line(editor, line, options, pending);
             for (const auto& [key, value] : line.values)
                 if (!line.used.contains(key) && outcome.result.applied)
                     outcome.result.warnings.push_back("ignored " + key + "=");
@@ -282,6 +347,9 @@ std::vector<MissionOpOutcome> run_mission_ops(MissionEditor& editor, const std::
         outcomes.push_back(std::move(outcome));
         if (!applied) break;
     }
+    if (!outcomes.empty() && outcomes.back().result.applied && (!pending.objectives.empty() || !pending.kits.empty()))
+        outcomes.push_back({number_of_line, "end",
+                            {false, "objective or kit lines were not followed by an objectives or equipment line", {}}});
     return outcomes;
 }
 

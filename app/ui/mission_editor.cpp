@@ -864,6 +864,212 @@ void draw_presets(AppState& state) {
     dim_text("Empties this slot's actors, navigation, zones, dummies and scripts (undoable).");
 }
 
+void draw_flow(AppState& state) {
+    const auto* flow = mission_flow(state);
+    if (!flow) return;
+    dim_text("How the scripts connect, read from the programs as they are. Findings are evidence to check, "
+             "not proof of what the game does.");
+    const auto script_link = [&](const std::string_view program, const std::int32_t id) {
+        const auto* script = flow->script(program, id);
+        const auto label = std::to_string(id) + (script ? " " + script->name : std::string{});
+        ImGui::PushID(id);
+        if (ImGui::SmallButton(label.c_str())) open_flow_script(state, program, id);
+        ImGui::PopID();
+        ImGui::SameLine();
+    };
+    section("Findings");
+    if (flow->findings().empty()) dim_text("None.");
+    for (const auto& finding : flow->findings()) {
+        const auto token = finding.severity == csf::FlowFinding::Severity::error     ? Token::error
+                           : finding.severity == csf::FlowFinding::Severity::warning ? Token::warn
+                                                                                      : Token::text_dim;
+        token_text(token, "%s", finding.message.c_str());
+    }
+    section("Objectives");
+    if (flow->objectives().empty()) dim_text("No objectives are set up.");
+    for (const auto& objective : flow->objectives()) {
+        ImGui::PushID(objective.number);
+        ImGui::Text("%d  %s  %s", objective.number,
+                    objective.secondary ? (*objective.secondary ? "secondary" : "primary") : "",
+                    text_label(state, objective.label).c_str());
+        dim_text("set up by");
+        ImGui::SameLine();
+        for (const auto id : objective.defined_by) script_link("mission", id);
+        dim_text("completed by");
+        ImGui::SameLine();
+        for (const auto id : objective.completed_by) script_link("mission", id);
+        ImGui::NewLine();
+        ImGui::PopID();
+    }
+    section("Events");
+    if (ImGui::BeginTable("##flow_events", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Event");
+        ImGui::TableSetupColumn("Starts");
+        ImGui::TableSetupColumn("Raised by");
+        ImGui::TableHeadersRow();
+        for (const auto& event : flow->events()) {
+            ImGui::PushID(event.name.c_str());
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(event.name.c_str());
+            if (event.builtin) {
+                ImGui::SameLine();
+                dim_text("engine");
+            }
+            ImGui::TableNextColumn();
+            for (const auto id : event.listeners)
+                script_link(flow->script("mission", id) ? "mission" : "cutscene", id);
+            ImGui::TableNextColumn();
+            for (const auto id : event.senders) script_link(flow->script("mission", id) ? "mission" : "cutscene", id);
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+}
+
+void draw_objectives(AppState& state) {
+    auto& tools = state.tools;
+    const bool project = state.authoring.project != nullptr;
+    dim_text(project ? "Objectives, their completion scripts and the success check, as one undo step. Type the "
+                       "text; the project stores it in the mission's text file (GlobalEK)."
+                     : "Objectives, their completion scripts and the success check, as one undo step. Without an "
+                       "authoring project, text fields are FLI string IDs.");
+    std::vector<std::pair<int, std::string>> zones, actors;
+    if (state.mission.scene) {
+        for (const auto& area : state.mission.scene->areas())
+            if (area.id) zones.emplace_back(*area.id, std::to_string(*area.id) + "  " + area.name.value_or(""));
+        for (const auto& actor : state.mission.scene->actors())
+            if (actor.id) actors.emplace_back(*actor.id, std::to_string(*actor.id) + "  " + actor.name.value_or(""));
+    }
+    static constexpr std::array<const char*, 3> kinds{"Reach a zone", "Kill an actor", "Use an object"};
+    for (std::size_t i = 0; i < tools.objectives.size(); ++i) {
+        auto& form = tools.objectives[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Separator();
+        ImGui::Text("Objective %zu", i + 1);
+        ImGui::SameLine();
+        ImGui::Checkbox("secondary", &form.secondary);
+        ImGui::SameLine();
+        const bool remove = ImGui::SmallButton("Remove");
+        if (begin_fields("##objective")) {
+            begin_row("Kind");
+            ImGui::Combo("##kind", &form.kind, kinds.data(), static_cast<int>(kinds.size()));
+            begin_row(form.kind == 0 ? "Zone" : form.kind == 1 ? "Actor" : "Object");
+            const auto& items = form.kind == 0 ? zones : actors;
+            std::string current = std::to_string(form.target);
+            for (const auto& [id, label] : items)
+                if (id == form.target) current = label;
+            if (const auto picked = filtered_combo("##target", current, items)) form.target = *picked;
+            begin_row("Text");
+            ImGui::InputText("##label", form.label.data(), form.label.size());
+            begin_row("Done message");
+            ImGui::InputText("##done", form.done.data(), form.done.size());
+            if (form.kind == 2) {
+                begin_row("Prompt");
+                ImGui::InputText("##prompt", form.prompt.data(), form.prompt.size());
+            }
+            ImGui::EndTable();
+        }
+        ImGui::PopID();
+        if (remove) {
+            tools.objectives.erase(tools.objectives.begin() + static_cast<std::ptrdiff_t>(i));
+            break;
+        }
+    }
+    if (ImGui::Button("Add objective")) tools.objectives.emplace_back();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(90.0F * ui_scale());
+    ImGui::InputText("success message", tools.success_message.data(), tools.success_message.size());
+    ImGui::BeginDisabled(tools.objectives.empty());
+    if (ImGui::Button("Create objectives")) create_objectives(state);
+    ImGui::EndDisabled();
+
+    section("Starting equipment");
+    for (std::size_t i = 0; i < tools.kits.size(); ++i) {
+        auto& kit = tools.kits[i];
+        ImGui::PushID(1000 + static_cast<int>(i));
+        std::string current = std::to_string(kit.actor);
+        for (const auto& [id, label] : actors)
+            if (id == kit.actor) current = label;
+        ImGui::SetNextItemWidth(160.0F * ui_scale());
+        if (const auto picked = filtered_combo("##kit_actor", current, actors)) kit.actor = *picked;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-220.0F * ui_scale());
+        ImGui::InputTextWithHint("##weapons", "weapons: 16,102@100/100,...", kit.weapons.data(), kit.weapons.size());
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(60.0F * ui_scale());
+        ImGui::InputInt("select", &kit.selected, 0, 0);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(60.0F * ui_scale());
+        ImGui::InputInt("disguise", &kit.disguise, 0, 0);
+        ImGui::PopID();
+    }
+    if (ImGui::Button("Add player kit")) tools.kits.emplace_back();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(tools.kits.empty());
+    if (ImGui::Button("Create equipment script")) create_equipment(state);
+    ImGui::EndDisabled();
+
+    section("Mission tips");
+    ImGui::SetNextItemWidth(-150.0F * ui_scale());
+    ImGui::InputTextWithHint("##tips", "FLI IDs, e.g. g200,g199", tools.tips.data(), tools.tips.size());
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!tools.tips[0]);
+    if (ImGui::Button("Create tips script")) create_tips(state);
+    ImGui::EndDisabled();
+}
+
+void draw_texts(AppState& state) {
+    auto* project = state.authoring.project.get();
+    if (!project || !project->texts) {
+        dim_text("Mission text belongs to an authoring project with a texts record (see "
+                 "docs/plans/editor-project-format.md).");
+        return;
+    }
+    dim_text("%s in %s, IDs %d-%d. Changes rebuild the text file; package it with the project's GlobalEK "
+             "workspace.",
+             path_utf8(project->texts->file).c_str(), path_utf8(project->texts->archive).c_str(), project->texts->first,
+             project->texts->last);
+    std::optional<std::string> removed;
+    std::optional<std::pair<std::string, std::string>> edited;
+    if (ImGui::BeginTable("##texts", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 60.0F * ui_scale());
+        ImGui::TableSetupColumn("Text");
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 30.0F * ui_scale());
+        for (const auto& string : project->strings) {
+            ImGui::PushID(string.id.c_str());
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(string.id.c_str());
+            ImGui::TableNextColumn();
+            std::string value;
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (text_field("##text", string.text, value)) edited = std::pair{string.id, value};
+            ImGui::TableNextColumn();
+            if (ImGui::SmallButton(icons::LC_X)) removed = string.id;
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    auto& tools = state.tools;
+    ImGui::SetNextItemWidth(-90.0F * ui_scale());
+    ImGui::InputTextWithHint("##new_text", "new string", tools.new_text.data(), tools.new_text.size());
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!tools.new_text[0]);
+    if (ImGui::Button("Add")) {
+        if (const auto id = project->next_text_id()) {
+            set_project_text(state, *id, std::string(tools.new_text.data()));
+            tools.new_text[0] = '\0';
+        } else {
+            state.warn("The project's text ID range is full");
+        }
+    }
+    ImGui::EndDisabled();
+    if (edited) set_project_text(state, edited->first, edited->second);
+    if (removed) set_project_text(state, *removed, std::nullopt);
+}
+
 void draw_import(AppState& state) {
     dim_text("Copies a class (with its models, collision, weapons, textures and animations) or an "
              "animation from another unpacked mission into this one, updating the package indexes.");
@@ -1038,6 +1244,18 @@ void draw_changes(AppState& state) {
     }
     if (tab("Presets")) {
         draw_presets(state);
+        ImGui::EndTabItem();
+    }
+    if (tab("Objectives")) {
+        draw_objectives(state);
+        ImGui::EndTabItem();
+    }
+    if (tab("Flow")) {
+        draw_flow(state);
+        ImGui::EndTabItem();
+    }
+    if (tab("Texts")) {
+        draw_texts(state);
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Import")) {

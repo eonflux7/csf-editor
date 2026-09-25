@@ -236,6 +236,11 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 ./build/Release/csf-mod project-build ~/dev/csf-mods/hello-world-project [--force]
 # Placements and anchored actors off their height rules (> 1 cm), and the resnap.
 ./build/Release/csf-mod project-heights ~/dev/csf-mods/hello-world-project [--resnap]
+# A mission built from operations and presets (include/csf/mission_ops.hpp),
+# and how its scripts connect (events, objectives, findings).
+./build/Release/csf-mod mission-ops out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn my.ops
+./build/Release/csf-mod mission-flow ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn --workspace out/mission
+
 # What the Blender add-on loads as reference, and how it registers an asset.
 ./build/Release/csf-mod project-reference ~/dev/csf-mods/hello-world-project out/reference
 ./build/Release/csf-mod project-asset ~/dev/csf-mods/hello-world-project hut building \

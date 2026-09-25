@@ -35,6 +35,11 @@
   `tools/blender/export_csf_world.py`) and `src/map_assembly.cpp` copies donor
   props. `csf-mod world-audit ../CSF_unpacks --rebuild` must keep every shipped
   World and scene-instance record byte-identical.
+- Mission authoring on top of `MissionEditor` stays GUI-free in `csf_core`:
+  presets in `csf/mission_recipes`, the text operations API in `csf/mission_ops`
+  (`csf-mod mission-ops`) and the read-only flow in `csf/mission_flow`.
+  `tools/hello_world/parity.sh <project>` must keep hello world byte-identical
+  when built through them.
 - Authoring projects: `csf::AuthoringProject` (`src/csf_authoring_project.cpp`)
   reads `project.csfproj`/`local.csfproj` and builds a project's map, collision
   and sector map (`rws::build_map_files`, `rws::build_sector_map`) into its

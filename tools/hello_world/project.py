@@ -6,7 +6,8 @@
 Expects PROJECT_DIR/sources/world/terrain.csfworld (terrain.py). Writes
 project.csfproj (Convoy's slot, the objective text range, the terrain asset
 and the house, tree and plant placements from layout.py, standing on the
-ground at the sinks v13 used) and local.csfproj (the corpus path). Heights are
+ground at the sinks v13 used, and the mission strings) and
+local.csfproj (the corpus path). Heights are
 resolved here from layout.height, as v13's terrain.py did, so the project
 builds the same World.
 """
@@ -22,6 +23,16 @@ from layout import (HOUSE_AT, HOUSE_BOX, HOUSE_SINK, PLANT, PLANT_SINK, PLANTS, 
                     TREES, height)
 
 TERRAIN = "sources/world/terrain.csfworld"
+# The mission strings (GlobalEK Texts/Convoy.fli), in the project's range 0900-0999.
+STRINGS = {
+    "0900": "Reach the building.",
+    "0901": "Kill the officer.",
+    "0902": "Building reached.",
+    "0903": "The officer is dead.",
+    "0904": "Sabotage the camp radio.",
+    "0905": "Radio sabotaged.",
+    "0906": "Sabotage radio",
+}
 
 
 def number(value: float) -> str:
@@ -55,6 +66,8 @@ def main(argv: list[str]) -> int:
     for k, (x, z) in enumerate(PLANTS, 1):
         lines.append(f"prop plant-{k} {PLANT} {number(x)} {number(height(x, z) + PLANT_SINK)} {number(z)}"
                      f" {(k - 1) * 47 % 360} ground {number(PLANT_SINK)}")
+    lines += ["", "# Mission text (GlobalEK)"]
+    lines += [f'text {key} "{value}"' for key, value in STRINGS.items()]
     (project / "project.csfproj").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
     (project / "local.csfproj").write_text(f'csfproj-local 1\ncorpus "{corpus.as_posix()}"\n',
                                            encoding="utf-8", newline="\n")

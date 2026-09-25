@@ -509,6 +509,18 @@ void register_commands(AppState& state) {
               },
               editable)
             .keywords = "patrol guard cover walk grid dog idle";
+        for (const auto& [id, label, tab, keywords] :
+             {std::tuple{"mission.objectives", "Objectives and starting equipment", "Objectives",
+                         "goal success kit weapons tips"},
+              std::tuple{"mission.flow", "Mission flow", "Flow", "events scripts graph findings objectives"},
+              std::tuple{"mission.texts", "Mission text", "Texts", "strings fli globalek localization"}})
+            b.add(id, label, "Mission", "",
+                  [&s, tab] {
+                      toggle_bottom_panel(s, &UiState::show_changes);
+                      s.ui.mission_edit_tab = tab;
+                  },
+                  editable)
+                .keywords = keywords;
         b.add("mission.new_mission", "Start a new mission in this slot", "Mission", "",
               [&s] { start_new_mission(s); }, editable)
             .keywords = "empty clear slot";

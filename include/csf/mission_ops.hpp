@@ -33,6 +33,12 @@
 //   cover-group [id=] name= points=
 //   walk-grid [id=] [name=] spacing= x=<min>..<max> z=<min>..<max> [stagger=0|1]
 //             [exclude=x0,z0,x1,z1;...] [avoid=x,z,r;...]   (heights from the ground)
+//   objective n= kind=zone|kill|use target=<zone or actor> label=<fli> done=<fli> [prompt=<fli>]
+//             [secondary=1] [script=] [script-name=]      (collected; then:)
+//   objectives [setup=] [setup-name=] [success=<fli>] [pause=]
+//   kit actor= weapons=<class>[@<ammo>/<ammo>],... [select=<class>] [disguise=<class>]   (then:)
+//   equipment [script=] [script-name=]
+//   tips tips=<fli>,... [pos=<x>,<y>] [script=] [script-name=]
 namespace csf {
 
 struct MissionOpsOptions {

@@ -71,9 +71,9 @@ the editor reports what no longer sits on the ground (handoff item 5).
 | Patrol routes, cover group (`.TIPO 3`) | `nav_group`, `patrol()` | as above | route tool and presets that write the group and the actor script together |
 | Zones (the house) | `areas()` | move, insert and remove points; height | add and delete areas |
 | Camera dummies and helpers | `dummies()`, `camera_helpers()` | move, duplicate, delete | add dummies; the cutscene editor (stage 6) |
-| Objectives, events, mission success | `scripts()`, `CHECK_BOTH` | raw script text | recipes and the flow view (stage 5) |
+| Objectives, events, mission success | `scripts()`, `CHECK_BOTH` | objective, equipment and tips recipes; Flow tab | done (stage 5) |
 | Usable radio on a crate | class 484 with class 211's look, lifted onto class 383 | `set_actor_look` | "usable object" preset; placing on a supporting object |
-| Objective text | `texts.py`, `build_texts.sh` → GlobalEK | none | text table editing and packaging (stage 5) |
+| Objective text | `project.csfproj` `text` records → `project-build` | Texts tab | done (stage 5); GUI export of the GlobalEK archive |
 | Two archives, deployment, rollback | `build.sh`, `csf-mod deploy-pak` | project export of one archive | one project build covering both archives |
 
 Undo already exists: every `MissionEditor` operation is one undo step
@@ -328,6 +328,27 @@ unraised custom events and malformed zones without claiming full runtime proof.
 primary objectives in either order, and finish with or without the radio.
 Parity with `scene.py` for all scripts except the cutscene.
 
+**Done (2026-09-25).** `csf/mission_flow` builds the read-only flow (events,
+engine or mission; listeners and raisers; objectives with the scripts that set
+them up and complete them) and its findings: mission events that start scripts
+but that nothing raises (v10's patrol bug), objectives never completed or never
+set up, no mission success, zone handlers without zone events switched on, ghost
+handlers without an enabled ghost, cutscene calls to missing scripts
+(`csf-mod mission-flow`). Shipped missions have such dead scripts too, so these
+are evidence, not errors. Recipes: objectives (zone, kill, use; one setup
+script, one completion script each, the all-primaries success check), starting
+equipment and mission tips; ops lines `objective`/`objectives`, `kit`/`equipment`
+and `tips`. Project `text` records hold the mission strings within the reserved
+range; `project-build` appends them to the donor's `.fli` byte-identically to
+the retired `texts.py`. With them, **every hello-world script except the intro
+comes from recipes and stays byte-identical** (parity.sh), as do the World,
+sector map and GlobalEK text file. GUI: **Changes > Objectives** (objective,
+equipment and tip forms; with an authoring project the text is typed and gets
+IDs automatically), **Flow** (findings, objectives and events, scripts open in
+the Script workspace) and **Texts** (the project's strings). Not yet: a
+graphical node view of the flow; the GUI builds the mission archive but not yet
+the GlobalEK one (`tools/hello_world/build_texts.sh` does).
+
 ### 6. Cutscene editor
 
 Edit shots as forms first: capture the camera from the viewport, then set start
@@ -382,6 +403,7 @@ gameplay behavior.
 
 v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
-the earlier confirmed fallback. Stages 1-4 are done (stage 4: structure,
-assets and presets, with byte-identical hello-world parity).
+the earlier confirmed fallback. Stages 1-5 are done; hello world is
+byte-identical when built through the editor's operations, except its intro
+(stage 6).
 The stage 2 acceptance playtest (change the hill in Blender, play) is open.

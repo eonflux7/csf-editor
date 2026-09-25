@@ -3,6 +3,8 @@
 #include "app_state.hpp"
 
 #include <optional>
+#include <string>
+#include <string_view>
 
 // Placing assets and applying behaviour presets in the open mission (editor
 // plan stage 4). The UI (app/ui/mission_editor.cpp) calls these; every change
@@ -19,6 +21,18 @@ void build_asset_catalog(AppState& state);
 // Imports the class when the mission lacks it, then places it at the view
 // centre: characters on a new placement point, props and pickups without one.
 void place_asset(AppState& state, const AuthoringTools::CatalogEntry& entry);
+
+// The mission's flow (events, objectives, findings), current with the editor.
+[[nodiscard]] const csf::MissionFlow* mission_flow(AppState& state);
+// Opens a mission ("mission") or cutscene ("cutscene") script in the Script workspace.
+void open_flow_script(AppState& state, std::string_view program, std::int32_t id);
+// An FLI string ID with its text when the authoring project has it.
+[[nodiscard]] std::string text_label(const AppState& state, std::string_view id);
+void create_objectives(AppState& state);
+void create_equipment(AppState& state);
+void create_tips(AppState& state);
+// Adds, edits or removes a string of the authoring project (then rebuilds its text file).
+void set_project_text(AppState& state, const std::string& id, const std::optional<std::string>& text);
 
 void add_preset_point(AppState& state);
 void apply_preset(AppState& state);

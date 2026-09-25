@@ -74,8 +74,18 @@ def main(argv: list[str]) -> int:
         (out / "scripts" / f"{ident}.txt").write_text(scripts[ident], encoding="utf-8")
         ops.append(f"script file=scripts/{ident}.txt")
 
-    for ident in (hw.S_WEAPONS, hw.S_INIT, hw.S_OBJECTIVES, hw.S_ZONE, hw.S_OFFICER_DEAD, hw.S_RADIO):
-        raw(ident)
+    # Starting equipment, mission tips and the three objectives (recipes).
+    ops += ["kit actor=1 weapons=16,102@100/100,4@100/100,64,37 select=4",
+            "kit actor=2 weapons=50,102@100/100,45,44,37,70 disguise=23",
+            f"equipment script={hw.S_WEAPONS} script-name=COMMANDOS_INI",
+            f"tips tips=g200,g199 pos=0.115,0.25 script={hw.S_INIT} script-name=INIT_MISSION",
+            f"objective n=1 kind=zone target={hw.ZONE_HOUSE} label=0900 done=0902 script={hw.S_ZONE} "
+            "script-name=CASA_ALCANZADA",
+            f"objective n=2 kind=kill target={hw.OFFICER} label=0901 done=0903 script={hw.S_OFFICER_DEAD} "
+            "script-name=OFICIAL_MUERTO",
+            f"objective n=3 kind=use target={hw.RADIO_GHOST} label=0904 done=0905 prompt=0906 secondary=1 "
+            f"script={hw.S_RADIO} script-name=RADIO_SABOTEADA",
+            f"objectives setup={hw.S_OBJECTIVES} setup-name=INIT_OBJETIVOS success=g014 pause=4"]
 
     actors = {record[0]: record for record in hw.ACTORS}
     _, name, cls, x, z, heading, _, _, extra = actors[hw.OFFICER]

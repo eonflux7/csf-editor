@@ -1,6 +1,7 @@
 #include "csf/authoring.hpp"
 #include "csf/authoring_project.hpp"
 #include "csf/mission_edit.hpp"
+#include "csf/mission_flow.hpp"
 #include "csf/mission_ops.hpp"
 #include "csf/mission.hpp"
 #include "csf/mod_project.hpp"
@@ -42,6 +43,7 @@ void usage() {
            "  csf-mod world-build <source.csfworld> <donor-map.rws> <new-map.rws>\n"
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod mission-ops <workspace> <scene.scn> <ops-file> [--package <root>] [--ground <source.csfworld>]\n"
+           "  csf-mod mission-flow <scene.scn> [--package <root>] [--workspace <dir>]\n"
            "  csf-mod project-build <project-dir> [--force]\n"
            "  csf-mod project-heights <project-dir> [--resnap]\n"
            "  csf-mod project-reference <project-dir> <out-dir>\n"
@@ -251,15 +253,18 @@ int main(int argc, char** argv) try {
         return 0;
     }
     if (command == "project-build") {
-        // Builds an authoring project's World, collision and sector map into
-        // its build/ directory when they are stale, and records the outputs.
+        // Builds an authoring project's World, collision and sector map and its
+        // mission text into its build/ directory when they are stale, and
+        // records the outputs.
         if (argc < 3 || argc > 4) { usage(); return 1; }
         const bool force = argc == 4 && std::string_view(argv[3]) == "--force";
         if (argc == 4 && !force) throw std::runtime_error("Unknown project-build option: " + std::string(argv[3]));
         auto project = csf::AuthoringProject::load(argv[2]);
-        const auto report = project.build_world(force);
+        const auto world = project.build_world(force);
+        const auto texts = project.build_texts(force);
         project.save();
-        for (const auto& line : report.lines) std::cout << line << '\n';
+        for (const auto* report : {&world, &texts})
+            for (const auto& line : report->lines) std::cout << line << '\n';
         return 0;
     }
     if (command == "project-heights") {
@@ -715,6 +720,56 @@ int main(int argc, char** argv) try {
         file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
         if (!file) throw std::runtime_error("Cannot write compiled output");
         std::cout << "compiled\t" << output.generic_string() << "\nsha256\t" << csf::sha256(bytes) << '\n';
+        return 0;
+    }
+    if (command == "mission-flow") {
+        // How the mission's scripts connect: events, objectives and findings.
+        if (argc < 3) { usage(); return 1; }
+        const std::filesystem::path scene = argv[2];
+        std::filesystem::path package, workspace;
+        for (int i = 3; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            if (option == "--package" && i + 1 < argc) package = argv[++i];
+            else if (option == "--workspace" && i + 1 < argc) workspace = argv[++i];
+            else throw std::runtime_error("Unknown mission-flow option: " + std::string(option));
+        }
+        if (package.empty())
+            for (auto dir = std::filesystem::weakly_canonical(scene).parent_path(); !dir.empty(); dir = dir.parent_path()) {
+                if (std::filesystem::is_directory(dir / "BDD")) {
+                    package = dir;
+                    break;
+                }
+                if (dir == dir.parent_path()) break;
+            }
+        std::optional<csf::ModProject> project;
+        if (!workspace.empty()) project = csf::ModProject::load(workspace);
+        const auto editor = csf::MissionEditor::open(scene, package, project ? &*project : nullptr);
+        const auto program = [&](const csf::MissionFileKind kind) -> std::optional<csf::ProgramDocument> {
+            if (const auto file = editor.file_of_kind(kind)) return csf::ProgramDocument::project(editor.document(*file));
+            return std::nullopt;
+        };
+        const auto mission = program(csf::MissionFileKind::mission_script);
+        const auto cutscene = program(csf::MissionFileKind::cutscene_script);
+        const auto flow = csf::MissionFlow::build(mission ? &*mission : nullptr, cutscene ? &*cutscene : nullptr);
+        for (const auto& e : flow.events()) {
+            std::cout << "event\t" << e.name << '\t' << (e.builtin ? "engine" : "mission") << "\tlisteners";
+            for (const auto id : e.listeners) std::cout << ' ' << id;
+            std::cout << "\tsenders";
+            for (const auto id : e.senders) std::cout << ' ' << id;
+            std::cout << '\n';
+        }
+        for (const auto& o : flow.objectives()) {
+            std::cout << "objective\t" << o.number << '\t'
+                      << (o.secondary ? (*o.secondary ? "secondary" : "primary") : "unset") << "\tlabel " << o.label
+                      << "\tset-by";
+            for (const auto id : o.defined_by) std::cout << ' ' << id;
+            std::cout << "\tcompleted-by";
+            for (const auto id : o.completed_by) std::cout << ' ' << id;
+            std::cout << '\n';
+        }
+        for (const auto& f : flow.findings())
+            std::cout << csf::flow_severity_name(f.severity) << '\t' << (f.script ? std::to_string(*f.script) : "-")
+                      << '\t' << f.message << '\n';
         return 0;
     }
     if (command == "mission-ops") {

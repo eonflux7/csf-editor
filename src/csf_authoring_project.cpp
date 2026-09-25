@@ -190,6 +190,25 @@ std::string placement_text(const ProjectPlacement& placement) {
            text_of(placement.height);
 }
 
+// Rewrites the file records of a csf-mod workspace that package `outputs`
+// with their new hashes, so validation and export see them as current.
+void refresh_workspace(const std::filesystem::path& workspace, const std::filesystem::path& project,
+                       const std::vector<ProjectOutput>& outputs) {
+    if (!std::filesystem::is_regular_file(workspace / ".csf-mod-state")) return;
+    auto packaged = ModProject::load(workspace);
+    bool changed = false;
+    for (auto& file : packaged.files)
+        for (const auto& output : outputs) {
+            std::error_code error;
+            if (std::filesystem::equivalent(file.authored_path, project / output.path, error) &&
+                file.output_sha256 != output.hash.substr(7)) {
+                file.output_sha256 = output.hash.substr(7);  // without "sha256:"
+                changed = true;
+            }
+        }
+    if (changed) packaged.save();
+}
+
 } // namespace
 
 const char* height_mode_name(const HeightRule::Mode mode) noexcept {
@@ -289,6 +308,9 @@ AuthoringProject AuthoringProject::parse(const std::string_view project_text, co
         } else if (record == "anchor") {
             if (f.size() < 3 || f[1] != "actor") throw std::runtime_error("anchor actor <id> <height>");
             project.anchors.push_back({number<std::int32_t>(f[2]), height_rule(f, 3)});
+        } else if (record == "text") {
+            expect(f, 3, "text <id> <string>");
+            project.strings.push_back({f[1], f[2]});
         } else if (record == "output") {
             expect(f, 6, "output <path> <kind> <hash> inputs <hash>");
             if (f[4] != "inputs") throw std::runtime_error("expected 'inputs' before the input hash");
@@ -345,6 +367,8 @@ std::string AuthoringProject::project_text() const {
     if (!anchors.empty()) out += "\n# Height relations of mission actors\n";
     for (const auto& anchor : anchors)
         out += "anchor actor " + std::to_string(anchor.actor_id) + ' ' + text_of(anchor.height) + '\n';
+    if (!strings.empty()) out += "\n# Mission text (GlobalEK)\n";
+    for (const auto& string : strings) out += "text " + field(string.id) + ' ' + field(string.text) + '\n';
     if (!outputs.empty()) out += "\n# Generated outputs and what they were made from\n";
     for (const auto& output : outputs)
         out += "output " + field(output.path) + ' ' + output.kind + ' ' + output.hash + " inputs " +
@@ -384,6 +408,17 @@ std::vector<std::string> AuthoringProject::check() const {
     const auto kind_name = [](const ProjectPlacement::Kind kind) {
         return kind == ProjectPlacement::Kind::building ? "building" : kind == ProjectPlacement::Kind::piece ? "piece" : "prop";
     };
+    std::set<std::string> text_ids;
+    for (const auto& string : strings) {
+        const bool digits = !string.id.empty() &&
+                            std::ranges::all_of(string.id, [](const char c) { return c >= '0' && c <= '9'; });
+        if (!digits) problems.push_back("Text ID '" + string.id + "' is not a number");
+        else if (!texts) problems.push_back("Text " + string.id + " needs a texts record (file and ID range)");
+        else if (const auto value = std::stoi(string.id); value < texts->first || value > texts->last)
+            problems.push_back("Text " + string.id + " is outside the project's range " + std::to_string(texts->first) +
+                               ".." + std::to_string(texts->last));
+        if (!text_ids.insert(string.id).second) problems.push_back("Duplicate text ID " + string.id);
+    }
     for (const auto& placement : placements) {
         // Follow the chain of supports; revisiting a placement is a cycle.
         std::set<std::string> seen{placement.id};
@@ -464,22 +499,8 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
     store(collision_path, "world", built.value->collision);
     store(sectors_path, "sectors", sectors.bytes);
     store(source_path, "source", std::span(reinterpret_cast<const std::byte*>(source_text.data()), source_text.size()));
-    // The mission workspace packages these files from build/; record their
-    // new hashes there so validation and export see them as current.
-    if (std::filesystem::is_regular_file(directory / "mission" / ".csf-mod-state")) {
-        auto mission = ModProject::load(directory / "mission");
-        bool changed = false;
-        for (auto& file : mission.files)
-            for (const auto& output : outputs) {
-                std::error_code error;
-                if (std::filesystem::equivalent(file.authored_path, directory / output.path, error) &&
-                    file.output_sha256 != output.hash.substr(7)) {
-                    file.output_sha256 = output.hash.substr(7);  // without "sha256:"
-                    changed = true;
-                }
-            }
-        if (changed) mission.save();
-    }
+    // The mission workspace packages these files from build/.
+    refresh_workspace(directory / "mission", directory, outputs);
     report.rebuilt = true;
     report.lines.push_back("visual\t" + map_path.generic_string() + '\t' + std::to_string(built.value->visual_triangles) +
                            " triangles\t" + std::to_string(built.value->visual_sectors) + " sectors");
@@ -489,6 +510,122 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
     report.lines.push_back("sectors\t" + sectors_path.generic_string() + '\t' + std::to_string(sectors.vertex_count) +
                            " vertices\t" + std::to_string(sectors.sector_count) + " sectors");
     for (const auto& note : built.value->notes) report.lines.push_back("note\t" + note);
+    return report;
+}
+
+namespace {
+
+// UTF-8 to UTF-16 code units (surrogate pairs above the BMP).
+void append_utf16(std::vector<char16_t>& out, const std::string_view utf8) {
+    for (std::size_t i = 0; i < utf8.size();) {
+        const auto byte = static_cast<unsigned char>(utf8[i]);
+        std::uint32_t code{};
+        std::size_t length = 1;
+        if (byte < 0x80) code = byte;
+        else if ((byte >> 5) == 0x6) code = byte & 0x1F, length = 2;
+        else if ((byte >> 4) == 0xE) code = byte & 0x0F, length = 3;
+        else if ((byte >> 3) == 0x1E) code = byte & 0x07, length = 4;
+        else throw std::runtime_error("Text is not UTF-8");
+        if (i + length > utf8.size()) throw std::runtime_error("Text is not UTF-8");
+        for (std::size_t k = 1; k < length; ++k) code = code << 6 | (static_cast<unsigned char>(utf8[i + k]) & 0x3F);
+        i += length;
+        if (code >= 0x10000) {
+            code -= 0x10000;
+            out.push_back(static_cast<char16_t>(0xD800 + (code >> 10)));
+            out.push_back(static_cast<char16_t>(0xDC00 + (code & 0x3FF)));
+        } else {
+            out.push_back(static_cast<char16_t>(code));
+        }
+    }
+}
+
+} // namespace
+
+std::vector<std::byte> append_fli_strings(const std::span<const std::byte> donor, const std::vector<ProjectText>& strings) {
+    if (donor.size() % 2 != 0) throw std::runtime_error("The text file is not UTF-16");
+    std::vector<char16_t> text;
+    for (std::size_t i = 0; i + 1 < donor.size(); i += 2)
+        text.push_back(static_cast<char16_t>(std::to_integer<unsigned>(donor[i]) | std::to_integer<unsigned>(donor[i + 1]) << 8));
+    if (!text.empty() && text.front() == 0xFEFF) text.erase(text.begin());
+    // CRLF to LF.
+    std::vector<char16_t> lines;
+    for (std::size_t i = 0; i < text.size(); ++i)
+        if (!(text[i] == u'\r' && i + 1 < text.size() && text[i + 1] == u'\n')) lines.push_back(text[i]);
+    text = std::move(lines);
+    // The IDs the donor already has: lines of digits.
+    std::set<std::string> ids;
+    for (std::size_t begin = 0; begin < text.size();) {
+        auto end = begin;
+        while (end < text.size() && text[end] != u'\n') ++end;
+        std::string line;
+        for (auto k = begin; k < end; ++k) line.push_back(text[k] < 0x80 ? static_cast<char>(text[k]) : '?');
+        const auto first = line.find_first_not_of(" \t"), last = line.find_last_not_of(" \t");
+        if (first != std::string::npos) {
+            line = line.substr(first, last - first + 1);
+            if (std::ranges::all_of(line, [](const char c) { return c >= '0' && c <= '9'; })) ids.insert(line);
+        }
+        begin = end + 1;
+    }
+    for (const auto& string : strings)
+        if (ids.contains(string.id)) throw std::runtime_error("The donor text file already has string " + string.id);
+    while (!text.empty() && text.back() == u'\n') text.pop_back();
+    append_utf16(text, "\n\n");
+    for (const auto& string : strings) append_utf16(text, string.id + "\n\"" + string.text + "\"\n\n");
+    std::vector<std::byte> out{std::byte{0xFF}, std::byte{0xFE}};
+    const auto put = [&](const char16_t c) {
+        out.push_back(static_cast<std::byte>(c & 0xFF));
+        out.push_back(static_cast<std::byte>(c >> 8));
+    };
+    for (const auto c : text) {
+        if (c == u'\n') put(u'\r');
+        put(c);
+    }
+    return out;
+}
+
+std::optional<std::string> AuthoringProject::next_text_id() const {
+    if (!texts) return std::nullopt;
+    std::set<std::int32_t> used;
+    for (const auto& string : strings)
+        if (!string.id.empty() && std::ranges::all_of(string.id, [](const char c) { return c >= '0' && c <= '9'; }))
+            used.insert(std::stoi(string.id));
+    for (auto id = texts->first; id <= texts->last; ++id)
+        if (!used.contains(id)) {
+            auto text = std::to_string(id);
+            return std::string(text.size() < 4 ? 4 - text.size() : 0, '0') + text;
+        }
+    return std::nullopt;
+}
+
+ProjectBuildReport AuthoringProject::build_texts(const bool force) {
+    ProjectBuildReport report;
+    if (!texts || strings.empty()) {
+        report.lines.push_back("texts\tno project strings");
+        return report;
+    }
+    if (const auto problems = check(); !problems.empty()) throw std::runtime_error(problems.front());
+    if (local.corpus.empty()) throw std::runtime_error("local.csfproj sets no corpus");
+    const auto archive = texts->archive.stem();
+    const auto donor = read_bytes(local.corpus / archive / texts->file);
+    std::string inputs = "texts 1\ndonor " + hash_of(donor) + '\n';
+    for (const auto& string : strings) inputs += string.id + ' ' + string.text + '\n';
+    const auto inputs_hash = hash_of(inputs);
+    const auto path = std::filesystem::path("build") / archive / texts->file;
+    const auto record = std::ranges::find(outputs, path, &ProjectOutput::path);
+    std::error_code error;
+    if (!force && record != outputs.end() && record->inputs_hash == inputs_hash &&
+        std::filesystem::is_regular_file(directory / path, error) && hash_of(read_bytes(directory / path)) == record->hash) {
+        report.lines.push_back("texts\tup to date");
+        return report;
+    }
+    const auto bytes = append_fli_strings(donor, strings);
+    write_atomically(directory / path, bytes);
+    const ProjectOutput output{path, "texts", hash_of(bytes), inputs_hash};
+    if (record == outputs.end()) outputs.push_back(output);
+    else *record = output;
+    refresh_workspace(directory / "texts", directory, outputs);
+    report.rebuilt = true;
+    report.lines.push_back("texts\t" + path.generic_string() + '\t' + std::to_string(strings.size()) + " strings");
     return report;
 }
 

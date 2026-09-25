@@ -1,11 +1,13 @@
 #include "mission_authoring.hpp"
 
 #include "app_util.hpp"
+#include "authoring.hpp"
 #include "mission_editing.hpp"
 
 #include "csf/mission_recipes.hpp"
 #include "rws/world_model.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstring>
 #include <set>
@@ -114,6 +116,172 @@ void place_asset(AppState& state, const AuthoringTools::CatalogEntry& entry) {
         return editor.add_actor_record(spec, &id);
     });
     if (apply_mission_edit(state, result)) select_after_refresh(state, {MissionRecordKey::Kind::actor, id, 0});
+}
+
+const csf::MissionFlow* mission_flow(AppState& state) {
+    auto& tools = state.tools;
+    if (!state.mission.editor) return nullptr;
+    const auto revision = state.mission.applied_revision;
+    if (tools.flow && tools.flow_revision == revision) return tools.flow.get();
+    const csf::ProgramDocument *mission{}, *cutscene{};
+    for (const auto& [path, program] : state.mission.programs) {
+        const auto extension = lower_ascii(path_utf8(path.extension()));
+        if (extension == ".gsc" && !mission) mission = &program;
+        if (extension == ".csc" && !cutscene) cutscene = &program;
+    }
+    tools.flow = std::make_shared<const csf::MissionFlow>(csf::MissionFlow::build(mission, cutscene));
+    tools.flow_revision = revision;
+    return tools.flow.get();
+}
+
+void open_flow_script(AppState& state, const std::string_view program, const std::int32_t id) {
+    const auto wanted = program == "cutscene" ? ".csc" : ".gsc";
+    const auto& programs = state.mission.programs;
+    for (std::size_t document = 0; document < programs.size(); ++document) {
+        if (lower_ascii(path_utf8(programs[document].first.extension())) != wanted) continue;
+        const auto& scripts = programs[document].second.scripts();
+        for (std::size_t i = 0; i < scripts.size(); ++i)
+            if (scripts[i].id == id) {
+                state.selected_program_document = document;
+                state.selected_program_script = i;
+                state.workspace = Workspace::script;
+                return;
+            }
+    }
+    state.warn("Script " + std::to_string(id) + " is not in the " + std::string(program) + " program");
+}
+
+std::string text_label(const AppState& state, const std::string_view id) {
+    if (const auto* project = state.authoring.project.get())
+        for (const auto& string : project->strings)
+            if (string.id == id) return std::string(id) + "  \"" + string.text + "\"";
+    return std::string(id);
+}
+
+void set_project_text(AppState& state, const std::string& id, const std::optional<std::string>& text) {
+    auto* project = state.authoring.project.get();
+    if (!project) return state.warn("Open an authoring project to edit mission text");
+    auto found = std::ranges::find(project->strings, id, &csf::ProjectText::id);
+    if (!text) {
+        if (found != project->strings.end()) project->strings.erase(found);
+    } else if (found != project->strings.end()) {
+        found->text = *text;
+    } else {
+        project->strings.push_back({id, *text});
+    }
+    if (const auto problems = project->check(); !problems.empty()) return state.warn(problems.front());
+    save_authoring_project(state);
+    rebuild_authoring_map(state, false);
+}
+
+namespace {
+
+std::string buffer_text(const std::span<const char> buffer) { return {buffer.data(), strnlen(buffer.data(), buffer.size())}; }
+
+// The FLI ID for a text field: with an authoring project the field holds the
+// string, which gets the next free ID; otherwise the field is the ID.
+std::optional<std::string> text_id(AppState& state, const std::span<const char> field, std::vector<csf::ProjectText>& added) {
+    const auto value = buffer_text(field);
+    if (value.empty()) return std::string{};
+    auto* project = state.authoring.project.get();
+    if (!project) return value;
+    for (const auto& string : project->strings)
+        if (string.text == value) return string.id;
+    for (const auto& string : added)
+        if (string.text == value) return string.id;
+    auto copy = *project;
+    copy.strings.insert(copy.strings.end(), added.begin(), added.end());
+    const auto id = copy.next_text_id();
+    if (!id) return std::nullopt;
+    added.push_back({*id, value});
+    return id;
+}
+
+bool store_texts(AppState& state, const std::vector<csf::ProjectText>& added) {
+    auto* project = state.authoring.project.get();
+    if (!project || added.empty()) return true;
+    project->strings.insert(project->strings.end(), added.begin(), added.end());
+    if (const auto problems = project->check(); !problems.empty()) {
+        project->strings.resize(project->strings.size() - added.size());
+        state.warn(problems.front());
+        return false;
+    }
+    save_authoring_project(state);
+    rebuild_authoring_map(state, false);
+    return true;
+}
+
+} // namespace
+
+void create_objectives(AppState& state) {
+    if (!mission_editable(state)) return;
+    auto& tools = state.tools;
+    if (tools.objectives.empty()) return state.warn("Add an objective first");
+    std::vector<csf::ProjectText> added;
+    csf::Objectives recipe;
+    recipe.success_message = buffer_text(tools.success_message);
+    std::int32_t number = 1;
+    for (const auto& form : tools.objectives) {
+        csf::Objective objective;
+        objective.number = number++;
+        objective.secondary = form.secondary;
+        objective.kind = static_cast<csf::Objective::Kind>(form.kind);
+        objective.target = form.target;
+        const auto label = text_id(state, form.label, added), done = text_id(state, form.done, added),
+                   prompt = text_id(state, form.prompt, added);
+        if (!label || !done || !prompt) return state.warn("The project's text ID range is full");
+        if (label->empty() || done->empty()) return state.warn("Every objective needs its text and its done message");
+        objective.label = *label;
+        objective.done = *done;
+        objective.prompt = *prompt;
+        recipe.objectives.push_back(std::move(objective));
+    }
+    if (!store_texts(state, added)) return;
+    if (apply_mission_edit(state, csf::add_objectives(*state.mission.editor, recipe))) tools.objectives.clear();
+}
+
+void create_equipment(AppState& state) {
+    if (!mission_editable(state)) return;
+    csf::Equipment recipe;
+    for (const auto& form : state.tools.kits) {
+        csf::Kit kit;
+        kit.actor = form.actor;
+        std::string_view list(form.weapons.data(), strnlen(form.weapons.data(), form.weapons.size()));
+        while (!list.empty()) {
+            const auto comma = list.find(',');
+            const auto item = list.substr(0, comma);
+            list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+            const auto at = item.find('@');
+            const auto weapon = parse_int(item.substr(0, at));
+            if (!weapon) return state.warn("Weapons: <class>[@<ammo>/<ammo>], e.g. 102@100/100");
+            csf::Kit::Weapon entry{*weapon, std::nullopt};
+            if (at != std::string_view::npos) {
+                const auto ammo = item.substr(at + 1);
+                const auto slash = ammo.find('/');
+                const auto first = parse_float(ammo.substr(0, slash));
+                const auto second = slash == std::string_view::npos ? std::nullopt : parse_float(ammo.substr(slash + 1));
+                if (!first || !second) return state.warn("Ammunition is <loaded>/<carried>, e.g. 102@100/100");
+                entry.ammunition = std::pair{*first, *second};
+            }
+            kit.weapons.push_back(entry);
+        }
+        if (form.selected) kit.selected = form.selected;
+        if (form.disguise) kit.disguise = form.disguise;
+        recipe.kits.push_back(std::move(kit));
+    }
+    if (apply_mission_edit(state, csf::add_equipment(*state.mission.editor, recipe))) state.tools.kits.clear();
+}
+
+void create_tips(AppState& state) {
+    if (!mission_editable(state)) return;
+    csf::Tips recipe;
+    std::string_view list(state.tools.tips.data(), strnlen(state.tools.tips.data(), state.tools.tips.size()));
+    while (!list.empty()) {
+        const auto comma = list.find(',');
+        if (const auto tip = list.substr(0, comma); !tip.empty()) recipe.tips.emplace_back(tip);
+        list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+    }
+    if (apply_mission_edit(state, csf::add_tips(*state.mission.editor, recipe))) state.tools.tips[0] = '\0';
 }
 
 void add_preset_point(AppState& state) { state.tools.points.push_back(view_ground_point(state)); }

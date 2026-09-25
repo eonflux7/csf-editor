@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -53,6 +54,12 @@ struct ProjectPlacement {
 struct ProjectAnchor {
     std::int32_t actor_id{};
     HeightRule height;
+};
+
+// A string of the mission's text file (GlobalEK Texts/<mission>.fli), UTF-8.
+struct ProjectText {
+    std::string id;  // digits, within the project's reserved range
+    std::string text;
 };
 
 struct ProjectOutput {
@@ -108,6 +115,7 @@ public:
     std::vector<ProjectAsset> assets;
     std::vector<ProjectPlacement> placements;
     std::vector<ProjectAnchor> anchors;
+    std::vector<ProjectText> strings;
     std::vector<ProjectOutput> outputs;
     ProjectLocal local;
 
@@ -130,6 +138,12 @@ public:
     // source). Outputs are rebuilt only when their inputs or files changed (or
     // `force`); their records are updated in memory, so save() afterwards.
     ProjectBuildReport build_world(bool force = false);
+    // The mission's text file with the project's strings appended to the
+    // donor's (GlobalEK in the corpus), into build/<archive stem>/<file>, when
+    // stale. Nothing to do without a texts record and strings.
+    ProjectBuildReport build_texts(bool force = false);
+    // The next free string ID in the reserved range, if any is left.
+    [[nodiscard]] std::optional<std::string> next_text_id() const;
 
     // Resolves every height rule against the ground: the collision faces of
     // the terrain and building assets (props and pieces are not ground), and
@@ -145,6 +159,12 @@ private:
 };
 
 [[nodiscard]] const char* height_mode_name(HeightRule::Mode mode) noexcept;
+
+// A `.fli` text file: UTF-16 LE with a BOM and CRLF lines; each string is an
+// ID line, the quoted string and a blank line. Returns the donor with
+// `strings` appended (their IDs must be new to it), as texts.py wrote it.
+[[nodiscard]] std::vector<std::byte> append_fli_strings(std::span<const std::byte> donor,
+                                                        const std::vector<ProjectText>& strings);
 
 class MissionScene;
 

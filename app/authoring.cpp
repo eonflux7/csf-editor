@@ -52,6 +52,8 @@ void start_job(AppState& state) {
         AuthoringSession::Outcome outcome;
         try {
             outcome.report = project.build_world(force);
+            auto texts = project.build_texts(force);
+            outcome.report.lines.insert(outcome.report.lines.end(), texts.lines.begin(), texts.lines.end());
             outcome.findings = project.height_report(actors);
             outcome.project = std::move(project);
         } catch (const std::exception& error) {
@@ -181,6 +183,17 @@ void poll_authoring(AppState& state) {
 }
 
 void rebuild_authoring_map(AppState& state, const bool force) { queue_job(state, force); }
+
+void save_authoring_project(AppState& state) {
+    auto& session = state.authoring;
+    if (!session.project) return;
+    try {
+        session.project->save();
+        session.project_time = project_time(*session.project);
+    } catch (const std::exception& error) {
+        state.notify(LogLevel::error, std::string("Project not saved: ") + error.what());
+    }
+}
 
 void resnap_authoring_heights(AppState& state) {
     auto& session = state.authoring;

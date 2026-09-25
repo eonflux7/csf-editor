@@ -87,6 +87,60 @@ struct WalkGrid {
     std::function<std::optional<float>(float, float)> ground;
 };
 
+// Objectives (hello world's proven pattern): one START_GAME script sets up
+// every objective (SET_OBJETIVO, its label, zone events, usable ghosts), and
+// one script per objective completes it and shows its message. Completing a
+// primary objective checks whether all primaries are done and ends the
+// mission in success. Text is FLI string IDs ("0900" or g014).
+struct Objective {
+    enum class Kind : std::uint8_t { enter_zone, kill_actor, use_object };
+    std::int32_t number{};
+    bool secondary{};
+    Kind kind{Kind::enter_zone};
+    std::int32_t target{};  // zone (area) ID, or actor ID
+    std::string label;      // the objective's text
+    std::string done;       // shown when completed
+    std::string prompt;     // use_object: the context label on the object
+    ScriptSpec script;
+};
+
+struct Objectives {
+    std::vector<Objective> objectives;
+    ScriptSpec setup;
+    std::string success_message{"g014"};
+    float success_pause{4.0F};
+};
+
+// Starting weapons (and disguise) of the player characters, on START_GAME.
+struct Kit {
+    std::int32_t actor{};
+    struct Weapon {
+        std::int32_t weapon_class{};
+        std::optional<std::pair<float, float>> ammunition;  // SET_MUNICION_ARMA
+    };
+    std::vector<Weapon> weapons;
+    std::optional<std::int32_t> selected;  // SELECT_ARMA
+    std::optional<std::int32_t> disguise;  // DISFRAZAR as this class
+};
+
+struct Equipment {
+    std::vector<Kit> kits;
+    ScriptSpec script;
+};
+
+// Mission tips (the in-game help list), on START_GAME.
+struct Tips {
+    std::vector<std::string> tips;  // FLI string IDs
+    std::pair<float, float> position{0.115F, 0.25F};  // TIMED_STRING_INITPOS
+    ScriptSpec script;
+};
+
+EditResult add_objectives(MissionEditor& editor, const Objectives& recipe);
+EditResult add_equipment(MissionEditor& editor, const Equipment& recipe);
+EditResult add_tips(MissionEditor& editor, const Tips& recipe);
+// An FLI operand as script source writes it: numeric IDs are quoted.
+[[nodiscard]] std::string fli_operand(std::string_view id);
+
 EditResult add_guard_patrol(MissionEditor& editor, GuardPatrol recipe);
 EditResult add_guard_idle(MissionEditor& editor, GuardIdle recipe);
 EditResult add_animal_patrol(MissionEditor& editor, AnimalPatrol recipe);

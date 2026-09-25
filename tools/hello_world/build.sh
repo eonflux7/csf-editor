@@ -18,7 +18,7 @@ tools/hello_world/build_world.sh "$project" "$corpus" > "$dist/world.log" 2>&1 |
 tools/hello_world/build_mission.sh "$project" "$convoy" "$dist/hello-world.pak" "$corpus" > "$dist/mission.log" 2>&1 || {
     cat "$dist/mission.log" >&2; exit 1;
 }
-tools/hello_world/build_texts.sh "$project/texts" "$global" "$dist/hello-texts.pak" "$corpus" > "$dist/texts.log" 2>&1 || {
+tools/hello_world/build_texts.sh "$project" "$global" "$dist/hello-texts.pak" "$corpus" > "$dist/texts.log" 2>&1 || {
     cat "$dist/texts.log" >&2; exit 1;
 }
 # Validate again after each child has removed its temporary files.

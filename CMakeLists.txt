@@ -38,6 +38,7 @@ add_library(csf_core
     src/csf_export.cpp
     src/csf_mission.cpp
     src/csf_mission_edit.cpp
+    src/csf_mission_flow.cpp
     src/csf_mission_ops.cpp
     src/csf_mission_recipes.cpp
     src/csf_mission_scene.cpp

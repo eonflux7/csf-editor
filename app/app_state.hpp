@@ -10,6 +10,7 @@
 #include "rwsman/settings.hpp"
 #include "csf/animation_catalog.hpp"
 #include "csf/authoring_project.hpp"
+#include "csf/mission_flow.hpp"
 #include "csf/cmo.hpp"
 #include "csf/document.hpp"
 #include "csf/mission_edit.hpp"
@@ -176,6 +177,29 @@ struct AuthoringTools {
     std::array<char, 128> idle_loop{};  // "1881:2-4,1385"
     int walk_animation{};
     float grid_spacing{1000.0F}, grid_avoid{300.0F};
+
+    // The Flow tab's view of the mission programs, rebuilt when they change.
+    std::shared_ptr<const csf::MissionFlow> flow;
+    std::uint64_t flow_revision{~std::uint64_t{}};
+    // The Objectives tab: forms for the objectives, the players' starting
+    // equipment and the mission tips. With an authoring project open the
+    // text fields hold the strings themselves; otherwise FLI string IDs.
+    struct ObjectiveForm {
+        int kind{};  // csf::Objective::Kind
+        int target{};
+        bool secondary{};
+        std::array<char, 160> label{}, done{}, prompt{};
+    };
+    std::vector<ObjectiveForm> objectives;
+    std::array<char, 32> success_message{"g014"};
+    struct KitForm {
+        int actor{};
+        std::array<char, 128> weapons{};  // <class>[@<ammo>/<ammo>],...
+        int selected{}, disguise{};
+    };
+    std::vector<KitForm> kits;
+    std::array<char, 128> tips{};  // FLI IDs, comma-separated
+    std::array<char, 160> new_text{};
 };
 
 // Transient UI state that is not part of a document.

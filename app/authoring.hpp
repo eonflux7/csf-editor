@@ -20,6 +20,8 @@ void poll_authoring(AppState& state);
 [[nodiscard]] bool authoring_open(const AppState& state);
 // Rebuilds the map when stale (or always, with `force`), then reports heights.
 void rebuild_authoring_map(AppState& state, bool force);
+// Saves the open authoring project (without reloading it as an outside change).
+void save_authoring_project(AppState& state);
 // Stores the resolved heights: placements in the project (then rebuilds the
 // map), actors through the mission editor (one undo step each).
 void resnap_authoring_heights(AppState& state);
