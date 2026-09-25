@@ -21,6 +21,7 @@
 #include "geometry_preview.hpp"
 #include "rws/animation.hpp"
 #include "rws/document.hpp"
+#include "rws/world_queries.hpp"
 
 #include <algorithm>
 #include <array>
@@ -149,6 +150,34 @@ struct AuthoringSession {
     bool reload_when_saved{};  // the map was rebuilt while the mission had unsaved edits
 };
 
+// The mission editing panel's Assets and Presets tabs (editor plan stage 4).
+struct AuthoringTools {
+    // Classes of every discovered mission, for placing and importing.
+    struct CatalogEntry {
+        std::filesystem::path package;  // the mission package root it comes from
+        std::string package_name;
+        std::int32_t class_id{};
+        std::string name, type;
+    };
+    std::vector<CatalogEntry> catalog;
+    std::filesystem::path catalog_root;  // the resource root it was built for
+    std::array<char, 96> asset_filter{};
+    // Ground heights of the open mission (its collision map), built on demand.
+    std::shared_ptr<const rws::GroundQuery> ground;
+    const rws::Document* ground_source{};  // the collision document it was built from
+    // The preset being set up.
+    enum class Preset : std::uint8_t { guard_patrol, guard_idle, animal_patrol, cover_group, walk_grid };
+    Preset preset{Preset::guard_patrol};
+    int class_id{};
+    std::array<char, 64> name{}, route_name{}, script_name{};
+    std::vector<csf::Vec3> points;  // route or cover points, collected from the view
+    float heading{}, pause{3.0F}, cover_facing{90.0F};
+    int cover_group{};              // 0: none
+    std::array<char, 128> idle_loop{};  // "1881:2-4,1385"
+    int walk_animation{};
+    float grid_spacing{1000.0F}, grid_avoid{300.0F};
+};
+
 // Transient UI state that is not part of a document.
 struct UiState {
     bool maximize_viewport{};     // Ctrl+Space: hide every panel but the center.
@@ -207,6 +236,8 @@ struct UiState {
     bool export_overwrite{}, export_install{};
     // Mission editing pickers in the Changes panel.
     std::array<char, 64> class_filter{};
+    // A mission editing tab to bring to the front ("Assets", "Presets"), once.
+    const char* mission_edit_tab{};
     std::array<char, 1024> import_donor{};
     int import_class_id{-1};
 
@@ -259,6 +290,7 @@ struct AppState {
     std::unique_ptr<rws::Document> collision_document;
     MissionState mission;
     AuthoringSession authoring;
+    AuthoringTools tools;
     std::size_t selected_program_document{}, selected_program_script{};
 
     std::string collision_status = "No document loaded";

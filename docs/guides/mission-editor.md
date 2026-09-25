@@ -35,10 +35,13 @@ to save or discard them.
 | Target | Operations |
 | --- | --- |
 | Actors (`.BICHOS`) | Position, heading, pitch, name, class, model (keeping behaviour), faction, collision/flags/secondary explosion, per-actor scripts, animation overrides; duplicate, add, delete |
-| Dummies | Position, rotation, pitch; duplicate, delete |
+| Dummies | Position, rotation, pitch; add, duplicate, delete |
 | Lights | Position, color, radius, modulation; duplicate, delete |
-| Navigation | Move points (with the actor standing on them), add points, link and unlink points within or across groups, delete points |
-| Areas | Move, insert and remove vertices; height |
+| Navigation | Move points (with the actor standing on them), add points, link and unlink points within or across groups, delete points; add and delete groups |
+| Areas | Move, insert and remove vertices; height; add and delete zones |
+| Assets | Place any class of any discovered mission (**Changes > Assets**): imported when missing, then placed at the view centre |
+| Presets | Guard on patrol, guard idling, animal on patrol, cover group, walk grid (**Changes > Presets**): each writes the actor, its groups and its script as one undo step |
+| New mission | **Mission > Start a new mission in this slot** empties actors, navigation, zones, dummies, lights, effects and scripts, keeping the environment |
 | Mission | Starting player, available commandos, maximum/minimum score, every scalar `.MUNDOVIS` environment field |
 | Scripts (`.gsc`, `.csc`) | Edit any script as text, toggle trigger/enabled, add and delete scripts |
 | Map props | Move and turn static props (CSF scene instances in the map `.rws`) |
@@ -204,6 +207,15 @@ dummies and lights: `--add-nav-point <group> <x> <y> <z>`, `--move-nav-point`,
 `--remove-area-point`, `--area-height`, `--duplicate-dummy`, `--delete-dummy`
 and `--delete-light`. A rejected operation saves nothing.
 
+`csf-mod mission-ops <workspace> <scene> <ops-file>` runs a text file of
+operations and presets, one per line (`new-mission`, `actor`, `prop`,
+`nav-group`, `link`, `link-nearest`, `dummy`, `area`, `look`, `script`,
+`guard-patrol`, `guard-idle`, `animal-patrol`, `cover-group`, `walk-grid`; the
+full syntax is in `include/csf/mission_ops.hpp`). `--ground <source.csfworld>`
+gives walk grids their heights. Hello world is built this way by
+`tools/hello_world/ops.py`, and `tools/hello_world/parity.sh <project>` checks
+that every mission file matches the `scene.py` build byte for byte.
+
 ## Mission archives
 
 Each mission is one self-contained PAKC archive in the game's `maps` folder,
@@ -280,7 +292,9 @@ and updates the workspace's records of it.
 
 ## Not yet supported
 
-- Creating a mission from scratch or new map geometry and collision.
+- New map geometry and collision are made in Blender and built by an
+  [authoring project](../plans/editor-project-format.md) (see
+  [blender-authoring.md](blender-authoring.md)), not in this editor.
 - Updating `.phd` physics descriptors for imported classes, and editing particles (`.sp`), UI
   (`.fbs`), audio (`.wad`) and localization.
 - Human animation sets beyond per-actor slot overrides (their naming convention

@@ -477,8 +477,10 @@ void delete_selected_record(AppState& state, const bool force) {
     case MissionRecordKey::Kind::nav_point:
         result = editor.delete_navigation_point(key.id, key.sub_id, force);
         break;
+    case MissionRecordKey::Kind::nav_group: result = editor.delete_navigation_group(key.id, force); break;
+    case MissionRecordKey::Kind::area: result = editor.delete_area(key.id, force); break;
     default:
-        state.warn("Select an actor, dummy, light or navigation point to delete it");
+        state.warn("Select an actor, dummy, light, area, navigation group or point to delete it");
         return;
     }
     if (apply_mission_edit(state, result)) {
@@ -488,15 +490,6 @@ void delete_selected_record(AppState& state, const bool force) {
         state.info("Hold Shift while deleting (Shift+Delete) to delete a referenced " + record_label(key) +
                    " and leave its references dangling");
     }
-}
-
-void add_actor_at_view(AppState& state, const std::int32_t class_id) {
-    if (!mission_editable(state)) return;
-    const auto target = state.preview.view_target();
-    std::int32_t id{};
-    const auto result = state.mission.editor->add_actor(class_id, {csf_point(target), 0.0F, 0.0F}, "",
-                                                        std::nullopt, &id);
-    if (apply_mission_edit(state, result)) select_after_refresh(state, {MissionRecordKey::Kind::actor, id, 0});
 }
 
 void update_mission_gizmo(AppState& state) {

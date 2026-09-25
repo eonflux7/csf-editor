@@ -53,7 +53,6 @@ void export_mission_archive(AppState& state, const std::filesystem::path& origin
 void duplicate_selected_record(AppState& state);
 void delete_selected_record(AppState& state, bool force = false);
 // Adds an actor of `class_id` at the viewport target (ground under the view center).
-void add_actor_at_view(AppState& state, std::int32_t class_id);
 // Feeds the gizmo the selected record and applies finished drags. Call once per
 // frame before the viewport draws.
 void update_mission_gizmo(AppState& state);

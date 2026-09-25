@@ -9,6 +9,7 @@
 #include "app_util.hpp"
 #include "commands.hpp"
 #include "file_dialogs.hpp"
+#include "mission_authoring.hpp"
 #include "mission_editing.hpp"
 #include "navigation.hpp"
 #include "ui/fonts.hpp"
@@ -717,21 +718,150 @@ void draw_mission_properties(AppState& state) {
     ImGui::TreePop();
 }
 
-void draw_add_actor(AppState& state) {
-    dim_text("Adds an actor of a class from this mission's Objetos.bdd at the ground under the "
-             "viewport center, on a new placement point of the nearest actor's navigation group.");
-    search_input("##class_filter", "filter classes", state.ui.class_filter.data(), state.ui.class_filter.size());
-    if (ImGui::BeginChild("##classes", {0, 160.0F * ui_scale()}, ImGuiChildFlags_Borders)) {
-        for (const auto& [id, label] : class_items(state)) {
-            if (!matches(label, state.ui.class_filter.data())) continue;
-            ImGui::PushID(id);
-            if (ImGui::SmallButton(icons::LC_PLUS)) add_actor_at_view(state, id);
-            ImGui::SameLine();
-            ImGui::TextUnformatted(label.c_str());
-            ImGui::PopID();
+void draw_assets(AppState& state) {
+    auto& tools = state.tools;
+    dim_text("Places a class at the ground under the viewport centre: characters on a new placement point, "
+             "props and pickups without one. Classes from other missions are imported first (with their "
+             "models, textures and animations); one undo step either way.");
+    search_input("##asset_filter", "filter by ID, name, type or mission", tools.asset_filter.data(),
+                 tools.asset_filter.size());
+    const char* filter = tools.asset_filter.data();
+    if (ImGui::BeginChild("##assets", {0, 200.0F * ui_scale()}, ImGuiChildFlags_Borders)) {
+        section("This mission");
+        if (state.mission.objects)
+            for (const auto& definition : state.mission.objects->definitions()) {
+                if (!definition.class_id) continue;
+                const auto label = std::to_string(*definition.class_id) + "  " + definition.name.value_or("") + "  " +
+                                   definition.type.value_or("");
+                if (!matches(label, filter)) continue;
+                ImGui::PushID(*definition.class_id);
+                if (ImGui::SmallButton(icons::LC_PLUS))
+                    place_asset(state, {state.mission.editor->package_root(), "this mission", *definition.class_id,
+                                        definition.name.value_or(""), definition.type.value_or("")});
+                ImGui::SameLine();
+                ImGui::TextUnformatted(label.c_str());
+                ImGui::PopID();
+            }
+        section("Other missions");
+        if (tools.catalog_root != state.settings.resource_root || tools.catalog.empty()) {
+            ImGui::BeginDisabled(state.discovered.empty());
+            if (ImGui::SmallButton("List their classes")) build_asset_catalog(state);
+            ImGui::EndDisabled();
+            if (state.discovered.empty()) dim_text("Set the resource root in Preferences to find other missions.");
+        } else {
+            std::size_t shown = 0;
+            for (std::size_t i = 0; i < tools.catalog.size(); ++i) {
+                const auto& entry = tools.catalog[i];
+                const auto label = std::to_string(entry.class_id) + "  " + entry.name + "  " + entry.type + "  (" +
+                                   entry.package_name + ")";
+                if (!matches(label, filter)) continue;
+                if (++shown > 300) {
+                    dim_text("Refine the filter to see more.");
+                    break;
+                }
+                ImGui::PushID(static_cast<int>(i));
+                if (ImGui::SmallButton(icons::LC_PLUS)) place_asset(state, entry);
+                ImGui::SameLine();
+                ImGui::TextUnformatted(label.c_str());
+                ImGui::PopID();
+            }
         }
     }
     ImGui::EndChild();
+}
+
+void draw_presets(AppState& state) {
+    auto& tools = state.tools;
+    using Preset = AuthoringTools::Preset;
+    dim_text("Behaviour presets write the actor, its navigation groups and its script together, as one undo "
+             "step. Points are taken at the ground under the viewport centre.");
+    static constexpr std::array<const char*, 5> names{"Guard on patrol", "Guard idling", "Animal on patrol",
+                                                      "Cover group", "Walk grid"};
+    int preset = static_cast<int>(tools.preset);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::Combo("##preset", &preset, names.data(), static_cast<int>(names.size())))
+        tools.preset = static_cast<Preset>(preset);
+    const bool actor = tools.preset == Preset::guard_patrol || tools.preset == Preset::guard_idle ||
+                       tools.preset == Preset::animal_patrol;
+    const bool route = tools.preset == Preset::guard_patrol || tools.preset == Preset::animal_patrol;
+    if (begin_fields("##preset_fields")) {
+        if (actor) {
+            begin_row("Class");
+            if (const auto picked = filtered_combo("##preset_class", class_label(state, tools.class_id), class_items(state)))
+                tools.class_id = *picked;
+        }
+        begin_row(tools.preset == Preset::cover_group || tools.preset == Preset::walk_grid ? "Group name" : "Name");
+        ImGui::InputText("##preset_name", tools.name.data(), tools.name.size());
+        if (actor) {
+            begin_row("Heading");
+            ImGui::DragFloat("##preset_heading", &tools.heading, 1.0F, -180.0F, 180.0F, "%.1f deg");
+            begin_row("Script name");
+            ImGui::InputTextWithHint("##preset_script", "from the name", tools.script_name.data(), tools.script_name.size());
+        }
+        if (route) {
+            begin_row("Route name");
+            ImGui::InputTextWithHint("##preset_route", "from the name", tools.route_name.data(), tools.route_name.size());
+        }
+        if (tools.preset == Preset::guard_patrol) {
+            begin_row("Pause");
+            ImGui::DragFloat("##preset_pause", &tools.pause, 0.1F, 0.0F, 60.0F, "%.1f s");
+        }
+        if (tools.preset == Preset::guard_patrol || tools.preset == Preset::guard_idle) {
+            begin_row("Cover group");
+            std::vector<std::pair<int, std::string>> groups{{0, "(none)"}};
+            std::string current = "(none)";
+            if (state.mission.scene)
+                for (const auto& group : state.mission.scene->navigation())
+                    if (group.id && group.type == 3) {
+                        groups.emplace_back(*group.id, std::to_string(*group.id) + "  " + group.name.value_or(""));
+                        if (*group.id == tools.cover_group) current = groups.back().second;
+                    }
+            if (const auto picked = filtered_combo("##preset_cover", current, groups)) tools.cover_group = *picked;
+        }
+        if (tools.preset == Preset::guard_idle) {
+            begin_row("Idle loop");
+            ImGui::InputTextWithHint("##preset_idle", "animation IDs, e.g. 1881:2-4,1385", tools.idle_loop.data(),
+                                     tools.idle_loop.size());
+        }
+        if (tools.preset == Preset::animal_patrol) {
+            begin_row("Walk animation");
+            ImGui::InputInt("##preset_walk", &tools.walk_animation, 0, 0);
+        }
+        if (tools.preset == Preset::cover_group) {
+            begin_row("Facing");
+            ImGui::DragFloat("##preset_facing", &tools.cover_facing, 1.0F, -180.0F, 180.0F, "%.1f deg");
+        }
+        if (tools.preset == Preset::walk_grid) {
+            begin_row("Spacing");
+            ImGui::DragFloat("##preset_spacing", &tools.grid_spacing, 10.0F, 100.0F, 5000.0F, "%.0f cm");
+            begin_row("Clear of props");
+            ImGui::DragFloat("##preset_avoid", &tools.grid_avoid, 10.0F, 0.0F, 2000.0F, "%.0f cm");
+        }
+        ImGui::EndTable();
+    }
+    if (route || tools.preset == Preset::cover_group) {
+        if (ImGui::Button("Add point at view")) add_preset_point(state);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(tools.points.empty());
+        if (ImGui::Button("Remove last")) tools.points.pop_back();
+        ImGui::SameLine();
+        if (ImGui::Button("Clear")) tools.points.clear();
+        ImGui::EndDisabled();
+        for (std::size_t i = 0; i < tools.points.size(); ++i)
+            dim_text("%zu: %.0f %.0f %.0f", i + 1, tools.points[i].x, tools.points[i].y, tools.points[i].z);
+    }
+    const bool ready = !actor || tools.class_id != 0;
+    ImGui::BeginDisabled(!ready);
+    if (ImGui::Button(tools.preset == Preset::walk_grid ? "Generate" : "Create")) apply_preset(state);
+    ImGui::EndDisabled();
+    if (!ready) {
+        ImGui::SameLine();
+        dim_text("Pick a class (import it in Assets first).");
+    }
+    ImGui::Separator();
+    if (ImGui::Button("Start a new mission here")) start_new_mission(state);
+    ImGui::SameLine();
+    dim_text("Empties this slot's actors, navigation, zones, dummies and scripts (undoable).");
 }
 
 void draw_import(AppState& state) {
@@ -897,8 +1027,17 @@ void draw_changes(AppState& state) {
         draw_mission_properties(state);
         ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Add actor")) {
-        draw_add_actor(state);
+    const auto tab = [&](const char* name) {
+        const bool focus = state.ui.mission_edit_tab && std::strcmp(state.ui.mission_edit_tab, name) == 0;
+        if (focus) state.ui.mission_edit_tab = nullptr;
+        return ImGui::BeginTabItem(name, nullptr, focus ? ImGuiTabItemFlags_SetSelected : 0);
+    };
+    if (tab("Assets")) {
+        draw_assets(state);
+        ImGui::EndTabItem();
+    }
+    if (tab("Presets")) {
+        draw_presets(state);
         ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Import")) {

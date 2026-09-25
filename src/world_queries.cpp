@@ -143,8 +143,26 @@ GroundQuery::GroundQuery(const WorldSource& source) {
             triangles_.push_back({source.vertices.at(face.vertices[0]).position,
                                   source.vertices.at(face.vertices[1]).position,
                                   source.vertices.at(face.vertices[2]).position});
+    index();
+}
+
+GroundQuery GroundQuery::from_world(const WorldModel& world) {
+    GroundQuery query;
+    for (const auto& sector : world.sectors)
+        for (const auto& triangle : sector.triangles)
+            if (std::ranges::all_of(triangle.vertices, [&](const auto v) { return v < sector.positions.size(); }))
+                query.triangles_.push_back({sector.positions[triangle.vertices[0]], sector.positions[triangle.vertices[1]],
+                                            sector.positions[triangle.vertices[2]]});
+    query.index();
+    return query;
+}
+
+void GroundQuery::index() {
     if (triangles_.empty()) return;
-    float maximum_x = triangles_.front().a.x, maximum_z = triangles_.front().a.z;
+    float& maximum_x = maximum_x_;
+    float& maximum_z = maximum_z_;
+    maximum_x = triangles_.front().a.x;
+    maximum_z = triangles_.front().a.z;
     minimum_x_ = maximum_x;
     minimum_z_ = maximum_z;
     for (const auto& t : triangles_)
@@ -173,6 +191,11 @@ GroundQuery::GroundQuery(const WorldSource& source) {
         for (auto r = z0; r <= z1; ++r)
             for (auto c = x0; c <= x1; ++c) cells_[r * columns_ + c].push_back(i);
     }
+}
+
+std::optional<std::array<float, 4>> GroundQuery::bounds() const {
+    if (triangles_.empty()) return std::nullopt;
+    return std::array{minimum_x_, minimum_z_, maximum_x_, maximum_z_};
 }
 
 std::optional<GroundQuery::Hit> GroundQuery::highest(const float x, const float z) const {

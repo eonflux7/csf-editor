@@ -289,6 +289,24 @@ radio, the guards, the dog and the pickup, and set up the patrols and the cover
 with forms and viewport tools. Parity with `scene.py` for the placements,
 navigation and actor scripts.
 
+**Done (2026-09-25).** `MissionEditor` gains `add_actor_record`, navigation
+groups, areas and dummies (add, delete, kept in ID order), `new_mission` and
+`batch` (one undo step, all or nothing). `csf/mission_recipes` holds the
+presets (guard patrol and idle with cover, animal patrol, cover group, walk
+grid, link-to-nearest) and `csf/mission_ops` runs them from text
+(`csf-mod mission-ops`). `tools/hello_world/ops.py` + `parity.sh` build hello
+world through these operations: **every mission file is byte-identical to the
+`scene.py` build** (scene, programs, databases, imports). The walk-grid preset
+reproduces hello world's grid (76 points, 130 links, heights within 0.05 cm).
+GUI: **Changes > Assets** (classes of every discovered mission, imported and
+placed in one step; characters get a placement point, props and pickups do
+not, by `.TIPO`), **Changes > Presets** (forms, route and cover points taken at
+the view centre, walk grid over the collision map clear of props), **Start a
+new mission in this slot**, and delete for groups and areas. Presets that are
+still raw script text in the parity run (objectives, the intro) are stages 5
+and 6. Not yet: placing by clicking in the viewport (points come from the view
+centre) and snapping a new actor onto another object.
+
 ### 5. Mission flow, objectives and text
 
 First build the read-only event/program/objective graph. Then add authoring
@@ -364,7 +382,6 @@ gameplay behavior.
 
 v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
-the earlier confirmed fallback. Stage 1 is done. Stage 2: the project format,
-hello world's migration, the sector map, the ground query, the height report
-and rebuilding from the editor are done; stage 3, the Blender add-on, is done.
+the earlier confirmed fallback. Stages 1-4 are done (stage 4: structure,
+assets and presets, with byte-identical hello-world parity).
 The stage 2 acceptance playtest (change the hill in Blender, play) is open.

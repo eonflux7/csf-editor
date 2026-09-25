@@ -22,6 +22,7 @@ struct ObjectDefinition {
     std::optional<std::int32_t> class_id;
     std::optional<std::int32_t> id;
     std::optional<std::string> name;
+    std::optional<std::string> type;  // .TIPO: ALEMAN, DECORATIVO, ITEM_ARMA, ...
     std::vector<std::int32_t> weapon_ids;
     std::vector<ObjectReference> references;
     std::vector<RawField> unknown_fields;

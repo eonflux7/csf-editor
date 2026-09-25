@@ -192,6 +192,7 @@ if(RWSMAN_BUILD_GUI)
         app/geometry_preview_overlays.cpp
         app/mission_editing.cpp
         app/authoring.cpp
+        app/mission_authoring.cpp
         app/mission_loader.cpp
         app/mission_overlays.cpp
         app/navigation.cpp

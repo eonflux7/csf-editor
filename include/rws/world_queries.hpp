@@ -1,7 +1,9 @@
 #pragma once
 
+#include "rws/world_model.hpp"
 #include "rws/world_source.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -30,6 +32,8 @@ struct SectorMap {
 class GroundQuery {
 public:
     explicit GroundQuery(const WorldSource& source);
+    // Every triangle of a compiled World (a map's _col.rws).
+    [[nodiscard]] static GroundQuery from_world(const WorldModel& world);
 
     struct Hit {
         float height{};
@@ -39,16 +43,20 @@ public:
     // 1 cm tolerance), so a query from inside a building finds its floor.
     [[nodiscard]] std::optional<Hit> highest(float x, float z) const;
     [[nodiscard]] std::optional<Hit> below(float x, float y, float z) const;
+    // The XZ extent of the faces: min x, min z, max x, max z.
+    [[nodiscard]] std::optional<std::array<float, 4>> bounds() const;
 
 private:
     struct Triangle {
         Vec3 a, b, c;
     };
+    GroundQuery() = default;
+    void index();
     [[nodiscard]] std::optional<Hit> query(float x, float z, std::optional<float> ceiling) const;
 
     std::vector<Triangle> triangles_;
     std::vector<std::vector<std::uint32_t>> cells_;
-    float minimum_x_{}, minimum_z_{}, cell_size_{1.0F};
+    float minimum_x_{}, minimum_z_{}, maximum_x_{}, maximum_z_{}, cell_size_{1.0F};
     std::size_t columns_{}, rows_{};
 };
 

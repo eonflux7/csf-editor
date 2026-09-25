@@ -92,6 +92,8 @@ void draw_panels(AppState& state, const Workspace workspace) {
     static std::array<int, 6> console_focus_frames{{4, 4, 4, 4, 4, 4}};
     const bool bottom_visible = settings.show_bottom_dock && !maximized;
     auto& pending_focus = console_focus_frames[static_cast<std::size_t>(workspace)];
+    // A tab asked for by a command wins over the Console's first showing.
+    if (state.ui.focus_bottom_tab >= 0) pending_focus = 0;
     if (bottom_visible && pending_focus > 0 && state.ui.focus_bottom_tab < 0) {
         state.ui.focus_bottom_tab = 0;
         --pending_focus;

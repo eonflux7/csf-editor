@@ -4,6 +4,7 @@
 #include "app_util.hpp"
 #include "authoring.hpp"
 #include "file_dialogs.hpp"
+#include "mission_authoring.hpp"
 #include "mission_editing.hpp"
 #include "navigation.hpp"
 
@@ -494,6 +495,23 @@ void register_commands(AppState& state) {
         b.add("mission.edit_panel", "Mission editing panel", "Mission", "",
               [&s] { toggle_bottom_panel(s, &UiState::show_changes); })
             .keywords = "changes history project export properties";
+        b.add("mission.assets", "Place assets", "Mission", "",
+              [&s] {
+                  toggle_bottom_panel(s, &UiState::show_changes);
+                  s.ui.mission_edit_tab = "Assets";
+              },
+              editable)
+            .keywords = "class import place prop actor browser";
+        b.add("mission.presets", "Behaviour presets", "Mission", "",
+              [&s] {
+                  toggle_bottom_panel(s, &UiState::show_changes);
+                  s.ui.mission_edit_tab = "Presets";
+              },
+              editable)
+            .keywords = "patrol guard cover walk grid dog idle";
+        b.add("mission.new_mission", "Start a new mission in this slot", "Mission", "",
+              [&s] { start_new_mission(s); }, editable)
+            .keywords = "empty clear slot";
     }
     b.add("mission.references", "Show references of selection", "Mission", "",
           [&s] { toggle_bottom_panel(s, &UiState::show_references); },

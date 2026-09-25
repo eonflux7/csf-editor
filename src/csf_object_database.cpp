@@ -118,6 +118,8 @@ ObjectDatabase ObjectDatabase::project(const Document& document) {
             definition.id = integer(*value);
         if (const auto* value = field(document, *record, {"NOMBRE", "NAME"}))
             definition.name = string_value(document, *value);
+        if (const auto* value = field(document, *record, {"TIPO", "TYPE"}))
+            definition.type = string_value(document, *value);
         if (const auto* weapons = field(document, *record, {"ARMAS", "WEAPONS"})) {
             if (const auto value = integer(*weapons)) definition.weapon_ids.push_back(*value);
             for (const auto& item : weapons->children)
