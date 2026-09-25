@@ -23,6 +23,7 @@
 #include "rws/obj_export.hpp"
 #include "rws/physics_inspection.hpp"
 #include "rws/scene_export.hpp"
+#include "rws/model_edit.hpp"
 #include "rws/texture_image.hpp"
 #include "rws/world_model.hpp"
 #include "rws/world_queries.hpp"
@@ -2471,6 +2472,28 @@ int main() {
         CHECK(geometry.value->computed_size == struct_size);
         CHECK(geometry.value->morph_targets[0].has_vertices);
         CHECK(geometry.value->morph_targets[0].has_normals);
+    }
+    {
+        // Scaling a model scales positions and the bounding sphere, not normals.
+        constexpr std::uint32_t struct_size = 120;
+        std::vector<std::byte> bytes;
+        append_header(bytes, 0x0F, 12 + struct_size);
+        append_header(bytes, 0x01, struct_size);
+        for (const auto value : {0x12U, 1U, 3U, 1U, 0U, 0U}) append_u32(bytes, value);
+        for (const auto value : {1.0F, 2.0F, 3.0F, 4.0F}) append_f32(bytes, value);  // sphere
+        append_u32(bytes, 1);
+        append_u32(bytes, 1);
+        for (int i = 0; i < 9; ++i) append_f32(bytes, static_cast<float>(i));  // positions
+        for (int i = 0; i < 9; ++i) append_f32(bytes, 0.5F);                    // normals
+        const auto scaled = rws::scale_clump(bytes, 2.0F);
+        CHECK(scaled && scaled.value->size() == bytes.size());
+        const auto document = rws::Document::from_bytes(*scaled.value);
+        const auto geometry = rws::decode_geometry(document.chunks()[0], document.bytes());
+        const auto at = static_cast<std::size_t>(geometry.value->morph_targets[0].vertices_offset);
+        const auto f32 = [&](const std::size_t offset) { return std::bit_cast<float>(read_u32_le(*scaled.value, offset)); };
+        CHECK(f32(at - 24) == 2.0F && f32(at - 12) == 8.0F);          // sphere centre x and radius
+        CHECK(f32(at + 4 * 8) == 16.0F && f32(at + 4 * 9) == 0.5F);  // last position, first normal
+        CHECK(!rws::scale_clump(bytes, 0.0F) && !rws::scale_clump(std::vector<std::byte>(16), 2.0F));
     }
     {
         constexpr std::uint32_t struct_size = 68;

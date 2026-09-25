@@ -7,6 +7,7 @@
 #include "csf/authoring.hpp"
 
 #include <chrono>
+#include <limits>
 #include <fstream>
 #include <iterator>
 #include <span>
@@ -128,10 +129,16 @@ void finish_job(AppState& state, AuthoringSession::Outcome outcome) {
     for (const auto& line : outcome.report.lines)
         if (!line.starts_with("note\t")) state.info("Project: " + line);
     register_lightmaps(state);
+    // The first check after opening sets what counts as known.
+    const auto before = session.checked ? session.findings.size() : std::numeric_limits<std::size_t>::max();
+    session.checked = true;
     session.findings = std::move(outcome.findings);
     if (!session.findings.empty()) {
-        session.show_heights = true;
-        state.warn(std::to_string(session.findings.size()) + " placements or actors are off their height rules");
+        // Open the report after a rebuild or when something new is off; known
+        // findings on opening the project only go to the status bar.
+        if (outcome.report.rebuilt || session.findings.size() > before) session.show_heights = true;
+        state.warn(std::to_string(session.findings.size()) + " placements or actors are off their height rules" +
+                   (session.show_heights ? "" : " (Mission > Authoring project > Height report)"));
     }
     if (!outcome.report.rebuilt) return;
     // The build refreshed the workspace's records of the files it rebuilt;

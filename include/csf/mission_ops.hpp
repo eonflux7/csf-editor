@@ -24,6 +24,7 @@
 //   link from=<group>/<point> to=<group>/<point>       link-nearest group= target=
 //   dummy [id=] name= pos= [rot=] [pitch=]             area [id=] name= height= points=
 //   look actor= class=                                 player actor=
+//   scale-class class= scale=                         (a scaled copy of a class, IDs from 500)
 //   script file=<path>          cutscene-script file=<path>   (relative to the ops file)
 //   guard-patrol [id=] name= class= [heading=] route= route-name= points= [pause=] [cover=]
 //                [script=] script-name= [loop=0]

@@ -420,6 +420,11 @@ class) has had no in-game spike. Characters, rigs and animation export need
 format and game-class compatibility work. Each gets a spike with a go/no-go
 gate before any editor work.
 
+**Started (2026-09-25)**: [editor-spikes.md](editor-spikes.md). Spike A1 (a
+class with a new, scaled model file: `add_scaled_class`, `rws::scale_clump`) is
+built with a test archive and waits for its in-game gate; A2 (a new mesh) and
+B1 (a new animation clip on a vanilla skeleton) are planned behind it.
+
 ## Implementation boundaries
 
 `csf::MissionEditor` remains the canonical mission-tree writer; UI operations
@@ -441,5 +446,6 @@ v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
 the earlier confirmed fallback. Stages 1-6 are done: hello world is
 byte-identical when built entirely through the editor's operations. Stage 7
-(baking) is built and waits for its in-game check (the bake test build).
+(baking) and spike A1 of stage 8 are built and wait for their in-game checks
+(the bake test and scaled-prop test builds).
 The stage 2 acceptance playtest (change the hill in Blender, play) is open.

@@ -191,6 +191,8 @@ EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOpt
     if (op == "area")
         return editor.add_area(line.text("name"), number<float>(line.text("height")), vec3_list(line.text("points")),
                                optional_id(line));
+    if (op == "scale-class")
+        return editor.add_scaled_class(number<std::int32_t>(line.text("class")), number<float>(line.text("scale")));
     if (op == "look")
         return editor.set_actor_look(number<std::int32_t>(line.text("actor")), number<std::int32_t>(line.text("class")));
     if (op == "player") return editor.set_player_actor(number<std::int32_t>(line.text("actor")));

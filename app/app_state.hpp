@@ -147,6 +147,7 @@ struct AuthoringSession {
     // report sees the actors where the mission has them.
     bool job_queued{}, job_force{};
     std::vector<csf::HeightFinding> findings;
+    bool checked{};  // a check has finished since the project was opened
     bool show_heights{};
     bool reload_when_saved{};  // the map was rebuilt while the mission had unsaved edits
 };

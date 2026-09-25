@@ -3,6 +3,7 @@
 #include "csf/authoring.hpp"
 #include "csf/mission.hpp"
 #include "csf/mod_project.hpp"
+#include "rws/model_edit.hpp"
 #include "csf/script_signatures.hpp"
 #include "csf/source_text.hpp"
 
@@ -427,6 +428,13 @@ void collect_texture_names(const std::span<const std::byte> bytes, std::size_t b
         }
         begin = payload + size;
     }
+}
+
+// A package path as stored (Windows-1252, backslashes) to a generic path.
+std::filesystem::path windows_path_to_generic(const std::string_view windows_1252) {
+    auto text = windows_1252_to_utf8(windows_1252);
+    std::ranges::replace(text, '\\', '/');
+    return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
 }
 
 std::string windows_path(std::string value) {
@@ -2392,6 +2400,95 @@ EditResult MissionEditor::batch(std::string label, const std::function<EditResul
     cursor_ = start + 1;
     if (saved_position_ > start && saved_position_ <= end) saved_position_ = ~std::size_t{};
     return result;
+}
+
+EditResult MissionEditor::add_scaled_class(const std::int32_t source_class, const float scale, std::int32_t* new_class) {
+    return run(*this, "Scale class " + std::to_string(source_class), [&](MissionTransaction& t) {
+        if (!(scale > 0.05F && scale < 20.0F)) throw std::invalid_argument("The scale must be between 0.05 and 20");
+        const auto objects_file = file_of_kind(MissionFileKind::objects);
+        if (!objects_file) throw std::runtime_error("The package has no Objetos.bdd");
+        auto& list = required(root_of(t.tree(*objects_file)), ".LISTADATOS");
+        const auto* source = find_record(list, source_class);
+        if (!source) throw std::invalid_argument("Class " + std::to_string(source_class) + " is not in this mission's Objetos.bdd");
+        auto copy = *source;
+        auto* model = copy.child(".MODELO");
+        if (!model || !model->as_string() || copy.child(".MODELO_TERCERA"))
+            throw std::invalid_argument("Only classes with a single body model can be scaled");
+        for (const auto& child : copy.children)
+            if (child.label && child.name().starts_with(".LOD") && !child.name().ends_with("_DIST"))
+                throw std::invalid_argument("Classes with LOD models are not scaled yet");
+        if (const auto* collision = copy.child(".MODELO_COLISION"))
+            if (collision->child(".CO_MODEL_EX") || collision->child(".CO_MODEL"))
+                throw std::invalid_argument("Classes with a collision model (.cmo) are not scaled yet");
+        // The body model: the package's .rpc for the class's .dff name.
+        const auto dff = std::string(*model->as_string());
+        auto rpc = std::filesystem::path(windows_path_to_generic(dff));
+        rpc.replace_extension(".rpc");
+        std::vector<std::byte> bytes;
+        if (const auto file = find_file(rpc)) bytes = files_[*file].bytes();
+        else if (std::filesystem::is_regular_file(package_root_ / rpc)) bytes = read_file(package_root_ / rpc);
+        else throw std::invalid_argument("The model " + display(dff) + " is not in this mission; import the class first");
+        auto scaled = rws::scale_clump(bytes, scale);
+        if (!scaled) throw std::invalid_argument("The model could not be scaled: " + scaled.error);
+        const auto percent = std::to_string(static_cast<int>(std::lround(scale * 100)));
+        auto target = rpc;
+        target.replace_filename(rpc.stem().string() + "_x" + percent + ".rpc");
+        if (find_file(target)) throw std::invalid_argument("A model " + path_utf8(target) + " already exists");
+        MissionFile file;
+        file.relative_path = target;
+        file.raw = std::move(*scaled.value);
+        t.add_file(std::move(file));
+        auto new_dff = dff.substr(0, dff.find_last_of("\\/") + 1) + target.stem().string() + ".dff";
+        model->set_string(new_dff);
+        const auto id = std::max(first_look_class_id, next_id(list));
+        required(copy, ".ID").set_int(id);
+        if (auto* name = copy.child(".NOMBRE")) name->set_string(record_name(*source) + " x" + std::to_string(scale).substr(0, 4));
+        const auto grow = [&](TreeNode* node) {
+            if (const auto value = vec3(node)) assign_vec3(*node, {value->x * scale, value->y * scale, value->z * scale});
+        };
+        if (auto* box = copy.child(".BBOX")) {
+            grow(box->child(".INF"));
+            grow(box->child(".SUP"));
+        }
+        if (auto* collision = copy.child(".MODELO_COLISION")) {
+            grow(collision->child(".TAM"));
+            grow(collision->child(".EXTERNAL_SHAPE_OFFSET"));
+        }
+        insert_record(list, copy);
+        // The model index lists every model the mission loads.
+        std::vector<std::string> warnings;
+        if (const auto index = file_of_kind(MissionFileKind::model_index)) {
+            auto& raw = t.raw(*index);
+            auto records = read_index(raw, 4);
+            records.push_back({new_dff, {std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF}}});
+            raw = write_index(records);
+        } else {
+            warnings.push_back("The package has no model index (.m3d) to list the new model in");
+        }
+        // The physics descriptor gets the class's entry with the new model and box.
+        if (const auto physics_file = file_of_kind(MissionFileKind::physics_index)) {
+            auto entries = read_physics(files_[*physics_file].raw);
+            const auto original = physics_of(*source), needed = physics_of(copy);
+            const auto found = entries && original ? std::ranges::find_if(*entries, [&](const PhysicsEntry& e) {
+                return same_physics(e, *original);
+            }) : std::vector<PhysicsEntry>::iterator{};
+            if (!entries || !original || !needed || found == entries->end()) {
+                warnings.push_back("The physics descriptor (.phd) has no entry for class " + std::to_string(source_class) +
+                                   ", so none was added for the copy");
+            } else {
+                auto entry = *found;
+                entry.model = needed->model;
+                entry.values = needed->values;
+                entries->push_back(std::move(entry));
+                auto& raw = t.raw(*physics_file);
+                raw = write_physics(raw, *entries);
+            }
+        }
+        if (new_class) *new_class = id;
+        return t.commit("Added class " + std::to_string(id) + " (class " + std::to_string(source_class) + " at " +
+                            percent + "%, model " + display(new_dff) + ")",
+                        std::move(warnings));
+    });
 }
 
 EditResult MissionEditor::add_texture_list_entries(const std::vector<std::string>& entries) {

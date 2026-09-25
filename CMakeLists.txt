@@ -15,6 +15,7 @@ add_library(rws_core
     src/world_model.cpp
     src/world_source.cpp
     src/world_queries.cpp
+    src/model_edit.cpp
     src/map_assembly.cpp
     src/obj_export.cpp
     src/scene_export.cpp

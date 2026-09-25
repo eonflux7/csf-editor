@@ -202,6 +202,12 @@ public:
     // that did not apply (its operation was rejected), everything it applied
     // is undone and forgotten.
     EditResult batch(std::string label, const std::function<EditResult()>& body);
+    // A class that is `source_class` scaled: its body model scaled into a new
+    // model file (<stem>_x<percent>.rpc beside it, listed in the model index),
+    // a copy of its record naming that model with the box, basic collision
+    // box and physics entry scaled. Classes with a collision model (.cmo) or
+    // LOD models are refused. New class IDs start at 500.
+    EditResult add_scaled_class(std::int32_t source_class, float scale, std::int32_t* new_class = nullptr);
     // Appends package paths (Maps\\FR03\\Textures\\X_Lm.dds) the map's texture
     // list (.txl) does not have yet, as the game loads the map's textures
     // from it.
