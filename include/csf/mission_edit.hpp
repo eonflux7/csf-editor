@@ -117,6 +117,10 @@ public:
     // Case-insensitive, separator-insensitive lookup of a present file.
     [[nodiscard]] std::optional<std::size_t> find_file(const std::filesystem::path& relative) const;
     [[nodiscard]] std::optional<std::size_t> file_of_kind(MissionFileKind kind) const;
+    // `base` (the package's index) with every present file that is not read
+    // from its package path overlaid: project and imported files resolve to the
+    // file their content came from, whose directory also holds their textures.
+    [[nodiscard]] ResourceIndex resource_index(const ResourceIndex& base) const;
     [[nodiscard]] std::size_t scene_file() const noexcept { return scene_file_; }
     // Parsed view of a CSFFBS file; its source path is the package path.
     [[nodiscard]] Document document(std::size_t file) const;

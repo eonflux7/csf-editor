@@ -68,7 +68,7 @@ void draw_actor_animation(AppState& state, const csf::ActorAssociation& associat
             if (variant == animation.variants.end())
                 throw std::runtime_error("Animation has no uniquely resolved ANM variant");
             const auto& resource =
-                mission.graph->index().resources()[variant->resolution->candidate_indices.front()];
+                mission.resources.resources()[variant->resolution->candidate_indices.front()];
             const auto animation_document = rws::Document::load(resource.path);
             if (animation_document.chunks().empty() ||
                 animation_document.chunks().front().type != 0x1B)

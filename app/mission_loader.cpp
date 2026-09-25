@@ -213,6 +213,9 @@ void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_
                     return candidate_editor->document(*index);
                 return csf::Document::load(file);
             };
+            // Project and imported files (models, animations, maps) resolve to
+            // their project copies; the package index alone would miss them.
+            auto candidate_resources = candidate_editor->resource_index(candidate_graph->index());
             auto candidate_document =
                 std::make_unique<csf::Document>(candidate_editor->scene_document());
             auto candidate_scene = std::make_unique<csf::MissionScene>(
@@ -263,7 +266,7 @@ void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_
                     *candidate_weapons = csf::WeaponDatabase::project(load_csf(node.resolved_path));
                 if (name == "anims.bdd" && node.state == csf::LoadState::available)
                     *candidate_animations = csf::AnimationCatalog::project(
-                        load_csf(node.resolved_path), &candidate_graph->index());
+                        load_csf(node.resolved_path), &candidate_resources);
                 if (node.kind == csf::ResourceKind::cutscene_script &&
                     node.state == csf::LoadState::available) {
                     const auto cutscene_document = load_csf(node.resolved_path);
@@ -273,7 +276,7 @@ void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_
                 }
             }
             auto candidate_associations = csf::associate_actors(
-                *candidate_scene, *candidate_objects, candidate_graph->index());
+                *candidate_scene, *candidate_objects, candidate_resources);
             csf::ProgramReferenceIndex candidate_program_references;
             for (const auto& [program_path, program] : candidate_programs) {
                 (void)program_path;
@@ -283,7 +286,7 @@ void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_
             set_stage(5, "Loading actor models");
             auto candidate_cache = std::make_shared<ActorModelCache>();
             auto candidate_actor_models = build_actor_models(
-                *candidate_scene, candidate_associations, *candidate_weapons, candidate_graph->index(),
+                *candidate_scene, candidate_associations, *candidate_weapons, candidate_resources,
                 *candidate_cache,
                 [this](const float value) { fraction_ = (4.0F + value) / stage_count; },
                 [this] { return cancel_.load(); });
@@ -317,9 +320,19 @@ void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_
             }
             std::unique_ptr<rws::Document> candidate_collision;
             const auto collision_path = resolved(csf::DependencyKind::collision_map);
-            if (!collision_path.empty())
+            if (!collision_path.empty()) {
                 candidate_collision =
                     std::make_unique<rws::Document>(rws::Document::load(collision_path));
+                // As for the visual map: a project that replaces the collision map.
+                std::error_code error;
+                const auto relative = std::filesystem::weakly_canonical(collision_path, error)
+                                          .lexically_relative(candidate_editor->package_root());
+                if (const auto file = candidate_editor->find_file(relative)) {
+                    const auto bytes = candidate_editor->files()[*file].bytes();
+                    if (!std::ranges::equal(bytes, candidate_collision->bytes()))
+                        candidate_collision->replace_bytes(bytes);
+                }
+            }
             check_cancelled();
             set_stage(7, "Building overlays");
             auto overlays = make_mission_overlays(*candidate_scene);
@@ -343,6 +356,7 @@ void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_
         mission.program_documents = std::move(candidate_program_documents);
         mission.program_references = std::move(candidate_program_references);
         mission.actor_associations = std::move(candidate_associations);
+        mission.resources = std::move(candidate_resources);
         mission.weapons = std::move(candidate_weapons);
         mission.model_cache = std::move(candidate_cache);
         mission.applied_revision = candidate_editor->revision();

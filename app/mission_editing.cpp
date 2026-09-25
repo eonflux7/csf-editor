@@ -209,7 +209,8 @@ void refresh_mission_from_editor(AppState& state) {
         mission.editor->revision() == mission.applied_revision)
         return;
     auto& editor = *mission.editor;
-    const auto& index = mission.graph->index();
+    mission.resources = editor.resource_index(mission.graph->index());
+    const auto& index = mission.resources;
     refresh_map(state);
     try {
         auto document = std::make_unique<csf::Document>(editor.scene_document());

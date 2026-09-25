@@ -1372,6 +1372,24 @@ void test_mission_editor() {
     CHECK(!reopened.objects().find_class(40).empty());
     CHECK(reopened.find_file("Models/Vehi/Tank.rpc"));
     CHECK(reopened.modified_files().size() == written.size());
+    {
+        // Imported models resolve to the project's copy, next to its textures,
+        // through the overlaid index; the package index alone misses them.
+        csf::ResourceIndex package_index;
+        package_index.add_root(package);
+        package_index.build();
+        CHECK(package_index.resolve("Models\\Vehi\\Tank.dff").status == csf::ResolutionStatus::missing);
+        auto resources = reopened.resource_index(package_index);
+        const auto tank = resources.resolve("Models\\Vehi\\Tank.dff");
+        CHECK(tank.status == csf::ResolutionStatus::mapped_dff_to_rpc && tank.candidate_indices.size() == 1);
+        CHECK(resources.resources()[tank.candidate_indices.front()].path ==
+              (workspace / "authored" / "Models" / "Vehi" / "Tank.rpc").lexically_normal());
+        CHECK(resources.resolve("Maps/M1/M1.scn").candidate_indices ==
+              package_index.resolve("Maps/M1/M1.scn").candidate_indices);
+        // Overlays survive a rebuild of the index.
+        resources.build();
+        CHECK(resources.resolve("Models\\Vehi\\Tank.dff").candidate_indices.size() == 1);
+    }
     // Undoing to the source content removes the file from the project on save.
     while (editor.undo()) {
     }

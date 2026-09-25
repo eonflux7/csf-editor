@@ -21,6 +21,10 @@ record order. Keep `scene.py` as a test fixture until the editor reproduces all
 of it. Playtests are then needed only for new gameplay behavior, not for
 regressions in recipes the parity test already covers.
 
+**Decisions (user, 2026-09-25).** Terrain is modelled in Blender only; the
+editor imports and rebuilds it and gets no terrain tools. New missions replace
+a shipped mission's slot; registering extra missions is not a goal.
+
 ## What the editor does today, and the gaps
 
 | Hello-world feature | `scene.py` / tool | `MissionEditor` / GUI today | Gap |
@@ -130,6 +134,14 @@ independent work and the editor needs it before any placement work.
 **Accept:** opening the v13 project shows the crate, the doberman and the radio
 model given by `set_actor_look`, with a test covering imported-class
 resolution.
+
+**Done (2026-09-25).** The preview also drew Convoy's original collision map
+under the project's World. `ResourceIndex::add_overlay` and
+`MissionEditor::resource_index` now resolve every project or imported file to
+the file its content came from, and the app resolves models, weapons and
+animations through that index (`MissionState::resources`). The collision map is
+replaced from the project like the visual map. Checked by rendering the v13
+project: textured crate and doberman, and the generated 16-sector collision.
 
 ### 2. Project manifest, World import and core geometry queries
 
@@ -248,4 +260,5 @@ gameplay behavior.
 
 v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
-the earlier confirmed fallback. Next: stage 1.
+the earlier confirmed fallback. Stage 1 is done; next: stage 2, starting with
+the project manifest specification.

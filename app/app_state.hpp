@@ -71,6 +71,9 @@ struct MissionRecordKey {
 // struct closes the mission.
 struct MissionState {
     std::unique_ptr<csf::MissionGraph> graph;
+    // The graph's index with the project's and imported files overlaid
+    // (MissionEditor::resource_index); resolve assets through it.
+    csf::ResourceIndex resources;
     std::unique_ptr<csf::Document> document;
     std::unique_ptr<csf::MissionScene> scene;
     std::unique_ptr<csf::MissionSymbolIndex> symbols;

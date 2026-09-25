@@ -556,6 +556,20 @@ std::optional<std::size_t> MissionEditor::file_of_kind(const MissionFileKind kin
     return std::nullopt;
 }
 
+ResourceIndex MissionEditor::resource_index(const ResourceIndex& base) const {
+    auto index = base;
+    std::error_code error;
+    for (const auto& file : files_) {
+        if (!file.present || file.source_path.empty()) continue;
+        const auto package = package_root_ / file.relative_path;
+        if (std::filesystem::exists(file.source_path, error) &&
+            std::filesystem::equivalent(file.source_path, package, error))
+            continue;
+        index.add_overlay(file.relative_path, file.source_path);
+    }
+    return index;
+}
+
 std::filesystem::path MissionEditor::package_path(const std::size_t file) const {
     return package_root_ / files_.at(file).relative_path;
 }

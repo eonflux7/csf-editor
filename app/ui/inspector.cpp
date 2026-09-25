@@ -382,10 +382,10 @@ void draw_database_record(AppState& state, const SelectionRef& ref) {
                     Options options = derived(Provenance::unknown, "No mission resource index");
                     SelectionRef target;
                     if (state.mission.graph) {
-                        const auto resolution = state.mission.graph->index().resolve(reference.path);
+                        const auto resolution = state.mission.resources.resolve(reference.path);
                         options = derived(provenance_of(resolution.status), std::string("Resolver: ") + csf::resolution_status_name(resolution.status) + " (" + reference.field + ")");
                         if (resolution.candidate_indices.size() == 1)
-                            target = SelectionRef::resource_path(path_utf8(state.mission.graph->index().resources()[resolution.candidate_indices.front()].path));
+                            target = SelectionRef::resource_path(path_utf8(state.mission.resources.resources()[resolution.candidate_indices.front()].path));
                     }
                     grid.link(csf::object_reference_kind_name(reference.kind), reference.path, target, options);
                 }
@@ -426,7 +426,7 @@ void draw_database_record(AppState& state, const SelectionRef& ref) {
                             if (variant.resolution) {
                                 options = derived(provenance_of(variant.resolution->status), std::string("Resolver: ") + csf::resolution_status_name(variant.resolution->status));
                                 if (variant.resolution->candidate_indices.size() == 1 && state.mission.graph)
-                                    target = SelectionRef::resource_path(path_utf8(state.mission.graph->index().resources()[variant.resolution->candidate_indices.front()].path));
+                                    target = SelectionRef::resource_path(path_utf8(state.mission.resources.resources()[variant.resolution->candidate_indices.front()].path));
                             }
                             grid.link(variant.field.c_str(), variant.reference, target, options);
                         }

@@ -483,25 +483,55 @@ void ResourceIndex::build() {
             const auto relative = path.lexically_relative(roots_[root_index]);
             const auto key =
                 normalize(path_generic_string(relative, "resource-index relative path"));
-            const auto index = resources_.size();
             const auto size =
                 std::filesystem::is_regular_file(path, error)
                     ? static_cast<std::uint64_t>(std::filesystem::file_size(path, error))
                     : 0;
-            resources_.push_back({root_index, roots_[root_index], path, relative, key, size});
-            normalized_[key].push_back(index);
-            static const std::array anchors{"anims/", "bdd/",    "gfx/",    "maps/",
-                                            "menus/", "models/", "sounds/", "texts/"};
-            for (const auto anchor : anchors) {
-                const auto position = key.find(anchor);
-                if (position == 0 || (position != std::string::npos && key[position - 1] == '/')) {
-                    logical_[key.substr(position)].push_back(index);
-                    break;
-                }
-            }
+            insert({root_index, roots_[root_index], path, relative, key, size});
             error.clear();
         }
     }
+    for (const auto& [relative, physical] : overlays_) apply_overlay(relative, physical);
+}
+
+void ResourceIndex::insert(IndexedResource resource) {
+    const auto index = resources_.size();
+    const auto key = resource.normalized_key;
+    resources_.push_back(std::move(resource));
+    normalized_[key].push_back(index);
+    static const std::array anchors{"anims/", "bdd/",    "gfx/",    "maps/",
+                                    "menus/", "models/", "sounds/", "texts/"};
+    for (const auto anchor : anchors) {
+        const auto position = key.find(anchor);
+        if (position == 0 || (position != std::string::npos && key[position - 1] == '/')) {
+            logical_[key.substr(position)].push_back(index);
+            break;
+        }
+    }
+}
+
+void ResourceIndex::add_overlay(const std::filesystem::path& relative,
+                                const std::filesystem::path& physical) {
+    if (roots_.empty()) throw std::runtime_error("Resource overlay needs a root");
+    overlays_.emplace_back(relative, std::filesystem::absolute(physical).lexically_normal());
+    apply_overlay(overlays_.back().first, overlays_.back().second);
+}
+
+void ResourceIndex::apply_overlay(const std::filesystem::path& relative,
+                                  const std::filesystem::path& physical) {
+    const auto key = normalize(path_generic_string(relative, "resource overlay path"));
+    if (const auto found = normalized_.find(key); found != normalized_.end())
+        for (const auto index : found->second)
+            if (resources_[index].root_index == 0) {
+                resources_[index].path = physical;
+                resources_[index].relative_path = relative;
+                return;
+            }
+    std::error_code error;
+    const auto size = std::filesystem::is_regular_file(physical, error)
+                          ? static_cast<std::uint64_t>(std::filesystem::file_size(physical, error))
+                          : 0;
+    insert({0, roots_.front(), physical, relative, key, size});
 }
 
 std::string ResourceIndex::normalize(const std::string_view path) {

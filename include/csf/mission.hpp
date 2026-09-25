@@ -101,6 +101,10 @@ class ResourceIndex {
 public:
     void add_root(const std::filesystem::path& root);
     void build();
+    // Serves `physical` for the package-relative path `relative` of the first
+    // root: it replaces a file indexed there or is added as a new one, so every
+    // resolution rule (exact, .dff to .rpc, logical) finds it. Kept across build().
+    void add_overlay(const std::filesystem::path& relative, const std::filesystem::path& physical);
 
     [[nodiscard]] const std::vector<std::filesystem::path>& roots() const noexcept {
         return roots_;
@@ -117,7 +121,11 @@ public:
     [[nodiscard]] static std::string normalize_path(const std::filesystem::path& path);
 
 private:
+    void insert(IndexedResource resource);
+    void apply_overlay(const std::filesystem::path& relative, const std::filesystem::path& physical);
+
     std::vector<std::filesystem::path> roots_;
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> overlays_;
     std::vector<IndexedResource> resources_;
     std::unordered_map<std::string, std::vector<std::size_t>> normalized_;
     std::unordered_map<std::string, std::vector<std::size_t>> logical_;
