@@ -2394,6 +2394,25 @@ EditResult MissionEditor::batch(std::string label, const std::function<EditResul
     return result;
 }
 
+EditResult MissionEditor::add_texture_list_entries(const std::vector<std::string>& entries) {
+    return run(*this, "List textures", [&](MissionTransaction& t) {
+        const auto file = file_of_kind(MissionFileKind::texture_index);
+        if (!file) throw std::invalid_argument("The mission has no texture list (.txl)");
+        auto& raw = t.raw(*file);
+        std::string text(reinterpret_cast<const char*>(raw.data()), raw.size());
+        const auto present = lower(text);
+        std::size_t added = 0;
+        for (const auto& entry : entries) {
+            if (entry.empty() || present.find(lower(entry)) != std::string::npos) continue;
+            if (!text.empty() && text.back() != '\n') text += "\r\n";
+            text += entry + "\r\n";
+            ++added;
+        }
+        raw.assign(reinterpret_cast<const std::byte*>(text.data()), reinterpret_cast<const std::byte*>(text.data() + text.size()));
+        return t.commit("Listed " + std::to_string(added) + " texture(s)");
+    });
+}
+
 EditResult MissionEditor::new_mission() {
     return run(*this, "New mission", [&](MissionTransaction& t) {
         auto scene = t.scene();

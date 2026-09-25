@@ -60,6 +60,91 @@ std::string material_texture_name(const std::span<const std::byte> material) {
     return decoded ? decoded.value->name : std::string{};
 }
 
+namespace {
+
+std::uint32_t u32_at(const std::span<const std::byte> bytes, const std::size_t at) {
+    std::uint32_t value = 0;
+    for (int i = 3; i >= 0; --i) value = value << 8U | std::to_integer<std::uint32_t>(bytes[at + static_cast<std::size_t>(i)]);
+    return value;
+}
+
+// The embedded Texture (0x06) chunk inside a Material Effects payload, found by
+// its header: type 6 with a Struct (0x01) first child of the same stamp.
+std::optional<std::size_t> lightmap_texture_at(const std::span<const std::byte> bytes, const Chunk& material) {
+    const auto* extension = find_child(material, 0x03U);
+    const auto* effects = extension ? find_child(*extension, 0x120U) : nullptr;
+    if (!effects) return std::nullopt;
+    const auto begin = effects->payload_offset, end = effects->payload_offset + effects->available_size;
+    for (auto at = begin; at + 36 <= end; at += 4)
+        if (u32_at(bytes, at) == 0x06U && u32_at(bytes, at + 8) == effects->library_id &&
+            u32_at(bytes, at + 12) == 0x01U && u32_at(bytes, at + 20) == effects->library_id)
+            return at;
+    return std::nullopt;
+}
+
+} // namespace
+
+std::string material_lightmap_name(const std::span<const std::byte> material) {
+    Document holder;
+    const auto chunk = material_chunk(material, holder);
+    if (!chunk) return {};
+    const auto bytes = holder.bytes();
+    const auto texture = lightmap_texture_at(bytes, *chunk);
+    if (!texture) return {};
+    const auto name = *texture + 12 + 12 + u32_at(bytes, *texture + 16);  // after the Struct
+    if (name + 12 > bytes.size() || u32_at(bytes, name) != 0x02U) return {};
+    std::string text;
+    for (auto at = name + 12; at < name + 12 + u32_at(bytes, name + 4) && at < bytes.size(); ++at) {
+        const auto c = static_cast<char>(bytes[at]);
+        if (c == '\0') break;
+        text.push_back(c);
+    }
+    return text;
+}
+
+DecodeResult<std::vector<std::byte>> replace_material_lightmap(const std::span<const std::byte> material,
+                                                               const std::string_view lightmap) {
+    DecodeResult<std::vector<std::byte>> result;
+    Document holder;
+    const auto chunk = material_chunk(material, holder);
+    if (!chunk) {
+        result.error = "not a Material chunk";
+        return result;
+    }
+    const auto bytes = holder.bytes();
+    const auto texture = lightmap_texture_at(bytes, *chunk);
+    if (!texture) {
+        result.error = "the material has no lightmap (Material Effects dual pass)";
+        return result;
+    }
+    const auto name = *texture + 12 + 12 + u32_at(bytes, *texture + 16);
+    if (name + 12 > bytes.size() || u32_at(bytes, name) != 0x02U) {
+        result.error = "the material's lightmap texture has no name string";
+        return result;
+    }
+    const auto old_size = u32_at(bytes, name + 4);
+    // RenderWare strings: the text, a terminating zero, padded to four bytes.
+    const auto new_size = static_cast<std::uint32_t>((lightmap.size() + 4) & ~std::size_t{3});
+    std::vector<std::byte> out(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(name + 12));
+    for (std::size_t i = 0; i < new_size; ++i)
+        out.push_back(static_cast<std::byte>(i < lightmap.size() ? lightmap[i] : '\0'));
+    out.insert(out.end(), bytes.begin() + static_cast<std::ptrdiff_t>(name + 12 + old_size), bytes.end());
+    const auto delta = static_cast<std::int64_t>(new_size) - static_cast<std::int64_t>(old_size);
+    const auto grow = [&](const std::size_t header) {
+        const auto size = static_cast<std::uint32_t>(static_cast<std::int64_t>(u32_at(out, header + 4)) + delta);
+        for (int i = 0; i < 4; ++i) out[header + 4 + static_cast<std::size_t>(i)] = static_cast<std::byte>(size >> (8 * i) & 0xFFU);
+    };
+    const auto* extension = find_child(*chunk, 0x03U);
+    const auto* effects = find_child(*extension, 0x120U);
+    // Every chunk that encloses the name: the string, the texture, the
+    // effects plug-in, the extension and the material.
+    for (const auto header : {name, *texture, static_cast<std::size_t>(effects->offset),
+                              static_cast<std::size_t>(extension->offset), static_cast<std::size_t>(chunk->offset)})
+        grow(header);
+    result.value = std::move(out);
+    return result;
+}
+
 std::string material_surface_name(const std::span<const std::byte> material) {
     Document holder;
     const auto chunk = material_chunk(material, holder);
@@ -93,13 +178,16 @@ DecodeResult<WorldSource> parse_world_source(const std::string_view text) {
             continue;
         }
         if (parts[0] == "material") {
-            if (parts.size() != 3 && parts.size() != 4) return fail("material <texture> <surface> [<shade>]");
-            WorldSourceMaterial material{std::string(parts[1]), std::string(parts[2])};
-            if (parts.size() == 4) {
+            if (parts.size() < 3 || parts.size() > 5) return fail("material <texture> <surface> [<shade> [<lightmap>]]");
+            WorldSourceMaterial material;
+            material.texture = std::string(parts[1]);
+            material.surface = std::string(parts[2]);
+            if (parts.size() >= 4) {
                 unsigned shade{};
                 if (!number(parts[3], shade) || shade > 255U) return fail("shade must be 0-255");
                 material.shade = static_cast<std::uint8_t>(shade);
             }
+            if (parts.size() == 5) material.lightmap = std::string(parts[4]);
             source.materials.push_back(std::move(material));
         } else if (parts[0] == "v") {
             if (parts.size() != 9 && parts.size() != 11) return fail("v needs 8 or 10 numbers");
@@ -201,11 +289,11 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
                 triangle.vertices[c].texcoords[1] = options.lightmap_uv;
         }
         if (face.visual) {
-            const auto key = lower(material.texture);
+            const auto key = lower(material.texture) + '|' + lower(material.lightmap);
             auto slot = visual_slot.find(key);
             if (slot == visual_slot.end()) {
                 const auto found = std::ranges::find_if(*visual_materials.value, [&](const auto& chunk) {
-                    return lower(material_texture_name(chunk)) == key;
+                    return lower(material_texture_name(chunk)) == lower(material.texture);
                 });
                 if (found == visual_materials.value->end()) {
                     result.error = "no donor visual material uses texture '" + material.texture + "'";
@@ -215,7 +303,17 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
                                          std::to_string(found - visual_materials.value->begin()) +
                                          " (texture " + material.texture + ")");
                 slot = visual_slot.emplace(key, static_cast<std::uint16_t>(visual_list.size())).first;
-                visual_list.push_back(*found);
+                if (material.lightmap.empty()) {
+                    visual_list.push_back(*found);
+                } else {
+                    auto lit = replace_material_lightmap(*found, material.lightmap);
+                    if (!lit) {
+                        result.error = "texture '" + material.texture + "': " + lit.error;
+                        return result;
+                    }
+                    compiled.notes.back() += ", lightmap " + material.lightmap;
+                    visual_list.push_back(std::move(*lit.value));
+                }
             }
             triangle.material = slot->second;
             visual.push_back(triangle);
@@ -407,6 +505,7 @@ std::string write_world_source(const WorldSource& source) {
     for (const auto& material : source.materials) {
         out += "material " + material.texture + ' ' + material.surface;
         put(out, static_cast<unsigned>(material.shade));
+        if (!material.lightmap.empty()) out += ' ' + material.lightmap;
         out += '\n';
     }
     for (std::size_t i = 0; i < source.vertices.size(); ++i) {
@@ -459,7 +558,8 @@ void append_world_source(WorldSource& target, const WorldSource& part,
     std::vector<std::uint32_t> materials;
     for (const auto& material : part.materials) {
         const auto found = std::ranges::find_if(target.materials, [&](const WorldSourceMaterial& m) {
-            return m.texture == material.texture && m.surface == material.surface && m.shade == material.shade;
+            return m.texture == material.texture && m.surface == material.surface && m.shade == material.shade &&
+                   m.lightmap == material.lightmap;
         });
         materials.push_back(static_cast<std::uint32_t>(found - target.materials.begin()));
         if (found == target.materials.end()) target.materials.push_back(material);

@@ -347,7 +347,14 @@ void poll_mission_load(AppState& state) {
                                  ? "Loaded mission collision map " + path_utf8(result->collision_path)
                                  : "Mission collision map is unresolved";
     state.preview.clear();
-    state.preview.set_texture_catalog(mission.graph->textures());
+    // The donor's textures, and what the mission's own texture list adds (a
+    // project's baked lightmaps), resolved to their project copies.
+    auto textures = mission.graph->textures();
+    if (mission.editor)
+        if (const auto file = mission.editor->file_of_kind(csf::MissionFileKind::texture_index))
+            textures.add(csf::read_txl(mission.editor->files()[*file].raw, mission.editor->package_path(*file)),
+                         mission.resources);
+    state.preview.set_texture_catalog(std::move(textures));
     state.preview.set_mission_overlays(result->overlays);
     state.preview.set_mission_actor_models(std::move(result->actor_models));
     state.display_names = resolve_chunk_display_names(

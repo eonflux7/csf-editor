@@ -62,6 +62,13 @@ struct ProjectText {
     std::string text;
 };
 
+// A baked lightmap of the project's World (the Blender add-on's bake): the
+// PNG source, built into a DXT1 DDS at <map folder>/Textures/<name>.dds.
+struct ProjectLightmap {
+    std::string name;  // e.g. TERRAIN_Lm, as the World materials name it
+    std::filesystem::path source;
+};
+
 struct ProjectOutput {
     std::filesystem::path path;
     std::string kind;  // "world" or "sectors"
@@ -116,6 +123,7 @@ public:
     std::vector<ProjectPlacement> placements;
     std::vector<ProjectAnchor> anchors;
     std::vector<ProjectText> strings;
+    std::vector<ProjectLightmap> lightmaps;
     std::vector<ProjectOutput> outputs;
     ProjectLocal local;
 
@@ -142,6 +150,12 @@ public:
     // donor's (GlobalEK in the corpus), into build/<archive stem>/<file>, when
     // stale. Nothing to do without a texts record and strings.
     ProjectBuildReport build_texts(bool force = false);
+    // Every lightmap's DDS, into build/<map folder>/Textures/<name>.dds, when
+    // stale. The mission must list and package them too: see
+    // lightmap_package_path and MissionEditor::add_texture_list_entries.
+    ProjectBuildReport build_lightmaps(bool force = false);
+    // The package path of a lightmap's DDS (Maps/FR03/Textures/<name>.dds).
+    [[nodiscard]] std::filesystem::path lightmap_package_path(const ProjectLightmap& lightmap) const;
     // The next free string ID in the reserved range, if any is left.
     [[nodiscard]] std::optional<std::string> next_text_id() const;
 

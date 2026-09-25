@@ -201,6 +201,8 @@ private:
 
 [[nodiscard]] AdapterResult read_vis(const std::filesystem::path& path);
 [[nodiscard]] AdapterResult read_txl(const std::filesystem::path& path);
+// A texture list already in memory (an edited .txl); `path` labels its references.
+[[nodiscard]] AdapterResult read_txl(std::span<const std::byte> bytes, const std::filesystem::path& path);
 [[nodiscard]] AdapterResult read_m3d(const std::filesystem::path& path);
 [[nodiscard]] AdapterResult read_and(const std::filesystem::path& path);
 [[nodiscard]] AdapterResult read_phd_candidates(const std::filesystem::path& path);

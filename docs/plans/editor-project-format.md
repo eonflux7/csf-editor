@@ -107,6 +107,8 @@ output build/Maps/Secs/Convoy.sec sectors sha256:<output> inputs sha256:<...>
 | `prop <id> <donor-instances> <x y z> <yaw> <height>` | donor scene instances (and their Clumps), placed |
 | `anchor actor <actor-id> <height>` | height relation of a scene actor |
 | `text <id> <string>` | a mission string (UTF-8) for the texts file; the ID is within the reserved range |
+| `lightmap <name> <source.png>` | a baked lightmap; built into `build/<map folder>/Textures/<name>.dds` (DXT1) |
+| `building <id> <asset> <x y z> <yaw> <height>` | (see above) a building placement stands on the terrain |
 | `output <path> <kind> <hash> inputs <hash>` | a generated file, its hash and the hash of what it was built from |
 
 `<id>` is a project-unique name (`[A-Za-z0-9_-]+`). The editor assigns one on

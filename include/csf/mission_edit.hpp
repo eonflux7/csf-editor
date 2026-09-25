@@ -202,6 +202,10 @@ public:
     // that did not apply (its operation was rejected), everything it applied
     // is undone and forgotten.
     EditResult batch(std::string label, const std::function<EditResult()>& body);
+    // Appends package paths (Maps\\FR03\\Textures\\X_Lm.dds) the map's texture
+    // list (.txl) does not have yet, as the game loads the map's textures
+    // from it.
+    EditResult add_texture_list_entries(const std::vector<std::string>& entries);
     // Empties the scene for a new mission in this slot: actors, effects,
     // water, navigation, dummies, areas, lights, scene objects, bridges and
     // their folders, and every script of the mission and cutscene programs.

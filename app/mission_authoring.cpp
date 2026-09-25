@@ -365,6 +365,29 @@ void create_intro(AppState& state) {
     if (apply_mission_edit(state, result)) tools.shots.clear();
 }
 
+void place_building(AppState& state, const std::string& asset) {
+    auto* project = state.authoring.project.get();
+    if (!project) return;
+    const auto at = view_ground_point(state);
+    csf::ProjectPlacement placement;
+    placement.kind = csf::ProjectPlacement::Kind::building;
+    placement.asset = asset;
+    for (int n = 1;; ++n) {
+        placement.id = asset + "-" + std::to_string(n);
+        if (std::ranges::none_of(project->placements, [&](const auto& p) { return p.id == placement.id; })) break;
+    }
+    placement.position = {at.x, mission_ground(state, at.x, at.z).value_or(at.y), at.z};
+    placement.height = {csf::HeightRule::Mode::ground, 0.0F, {}, {}};
+    project->placements.push_back(placement);
+    if (const auto problems = project->check(); !problems.empty()) {
+        project->placements.pop_back();
+        return state.warn(problems.front());
+    }
+    save_authoring_project(state);
+    rebuild_authoring_map(state, false);
+    state.ok("Placed " + placement.id + "; the map rebuilds");
+}
+
 void add_preset_point(AppState& state) { state.tools.points.push_back(view_ground_point(state)); }
 
 void apply_preset(AppState& state) {

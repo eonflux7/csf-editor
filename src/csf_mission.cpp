@@ -733,8 +733,9 @@ AdapterResult read_vis(const std::filesystem::path& path) {
     return result;
 }
 
-AdapterResult read_txl(const std::filesystem::path& path) {
-    const auto bytes = read_file(path);
+AdapterResult read_txl(const std::filesystem::path& path) { return read_txl(read_file(path), path); }
+
+AdapterResult read_txl(const std::span<const std::byte> bytes, const std::filesystem::path& path) {
     AdapterResult result;
     std::size_t line_start{};
     std::uint32_t line{};

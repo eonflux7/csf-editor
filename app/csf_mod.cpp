@@ -44,10 +44,13 @@ void usage() {
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod mission-ops <workspace> <scene.scn> <ops-file> [--package <root>] [--ground <source.csfworld>]\n"
            "  csf-mod mission-flow <scene.scn> [--package <root>] [--workspace <dir>]\n"
-           "  csf-mod project-build <project-dir> [--force]\n"
+           "  csf-mod project-build <project-dir> [--force] [--verbose]\n"
            "  csf-mod project-heights <project-dir> [--resnap]\n"
            "  csf-mod project-reference <project-dir> <out-dir>\n"
            "  csf-mod project-asset <project-dir> <id> <terrain|building> <blend> <export>\n"
+           "  csf-mod project-lightmap <project-dir> <name> <source.png>\n"
+           "  csf-mod project-place <project-dir> <id> <building-asset> <x> <y> <z> [<yaw>] [--ground <offset>]\n"
+           "  csf-mod project-lightmaps <project-dir>\n"
            "  csf-mod sector-build <source.csfworld> <new.sec> [--overwrite]\n"
            "  csf-mod world-ground <source.csfworld> <x> <z> [<x> <z>]...\n"
            "  csf-mod init <workspace> <source-root> <name>\n"
@@ -256,15 +259,22 @@ int main(int argc, char** argv) try {
         // Builds an authoring project's World, collision and sector map and its
         // mission text into its build/ directory when they are stale, and
         // records the outputs.
-        if (argc < 3 || argc > 4) { usage(); return 1; }
-        const bool force = argc == 4 && std::string_view(argv[3]) == "--force";
-        if (argc == 4 && !force) throw std::runtime_error("Unknown project-build option: " + std::string(argv[3]));
+        if (argc < 3) { usage(); return 1; }
+        bool force = false, verbose = false;
+        for (int i = 3; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            if (option == "--force") force = true;
+            else if (option == "--verbose") verbose = true;
+            else throw std::runtime_error("Unknown project-build option: " + std::string(option));
+        }
         auto project = csf::AuthoringProject::load(argv[2]);
         const auto world = project.build_world(force);
         const auto texts = project.build_texts(force);
+        const auto lightmaps = project.build_lightmaps(force);
         project.save();
-        for (const auto* report : {&world, &texts})
-            for (const auto& line : report->lines) std::cout << line << '\n';
+        for (const auto* report : {&world, &texts, &lightmaps})
+            for (const auto& line : report->lines)
+                if (verbose || !line.starts_with("note\t")) std::cout << line << '\n';
         return 0;
     }
     if (command == "project-heights") {
@@ -350,6 +360,73 @@ int main(int argc, char** argv) try {
         const auto markers = csf::reference_markers_json(project, editor ? &editor->scene() : nullptr, models);
         std::ofstream(out / "markers.json", std::ios::binary) << markers;
         std::cout << "models\t" << models.size() << "\nmarkers\t" << (out / "markers.json").generic_string() << '\n';
+        return 0;
+    }
+    if (command == "project-place") {
+        // Places a building asset of an authoring project (its triangles join the World).
+        if (argc < 8) { usage(); return 1; }
+        auto project = csf::AuthoringProject::load(argv[2]);
+        csf::ProjectPlacement placement;
+        placement.kind = csf::ProjectPlacement::Kind::building;
+        placement.id = argv[3];
+        placement.asset = argv[4];
+        placement.position = {real(argv[5]), real(argv[6]), real(argv[7])};
+        int i = 8;
+        if (i < argc && std::string_view(argv[i]) != "--ground") placement.yaw_degrees = real(argv[i++]);
+        if (i + 1 < argc && std::string_view(argv[i]) == "--ground") {
+            placement.height = {csf::HeightRule::Mode::ground, real(argv[i + 1]), {}, {}};
+            i += 2;
+        }
+        if (i != argc) { usage(); return 1; }
+        if (std::ranges::any_of(project.placements, [&](const auto& p) { return p.id == placement.id; }))
+            throw std::runtime_error("A placement is already named " + placement.id);
+        project.placements.push_back(placement);
+        if (const auto problems = project.check(); !problems.empty()) throw std::runtime_error(problems.front());
+        project.save();
+        std::cout << "placed\t" << placement.id << '\n';
+        return 0;
+    }
+    if (command == "project-lightmap") {
+        // Registers (or updates) a baked lightmap of an authoring project.
+        if (argc != 5) { usage(); return 1; }
+        auto project = csf::AuthoringProject::load(argv[2]);
+        const std::string name = argv[3];
+        auto lightmap = std::ranges::find(project.lightmaps, name, &csf::ProjectLightmap::name);
+        if (lightmap == project.lightmaps.end()) lightmap = project.lightmaps.insert(project.lightmaps.end(), {name, {}});
+        lightmap->source = argv[4];
+        if (const auto problems = project.check(); !problems.empty()) throw std::runtime_error(problems.front());
+        project.save();
+        std::cout << "lightmap\t" << name << '\n';
+        return 0;
+    }
+    if (command == "project-lightmaps") {
+        // Lists every built lightmap in the mission's texture list and packages
+        // its DDS from build/ (run project-build first).
+        if (argc != 3) { usage(); return 1; }
+        const auto project = csf::AuthoringProject::load(argv[2]);
+        auto [mod, editor] = open_project_mission(project);
+        if (!editor) throw std::runtime_error("The project has no mission workspace");
+        std::vector<std::string> entries;
+        for (const auto& lightmap : project.lightmaps) {
+            const auto relative = project.lightmap_package_path(lightmap);
+            const auto built = project.directory / "build" / relative;
+            if (!std::filesystem::is_regular_file(built))
+                throw std::runtime_error(built.generic_string() + " is not built; run project-build first");
+            csf::ModFile file;
+            file.relative_path = relative;
+            file.authored_path = std::filesystem::absolute(built);
+            file.output_sha256 = csf::sha256(read_bytes(built));
+            if (const auto source = mod->source_root / relative; std::filesystem::is_regular_file(source))
+                file.source_sha256 = csf::sha256(read_bytes(source));
+            mod->add_file(std::move(file));
+            auto entry = relative.generic_string();
+            std::ranges::replace(entry, '/', '\\');
+            entries.push_back(entry);
+        }
+        mod->save();
+        const auto result = editor->add_texture_list_entries(entries);
+        std::cout << result.message << '\n';
+        if (result.applied) (void)editor->save(*mod);
         return 0;
     }
     if (command == "project-asset") {

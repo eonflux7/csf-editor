@@ -45,6 +45,10 @@ void stop_shots(AppState& state);
 void update_shot_preview(AppState& state);  // once per frame
 void create_intro(AppState& state);
 
+// Places a building asset of the authoring project at the ground under the
+// view centre (a project placement; the map rebuilds).
+void place_building(AppState& state, const std::string& asset);
+
 void add_preset_point(AppState& state);
 void apply_preset(AppState& state);
 void start_new_mission(AppState& state);

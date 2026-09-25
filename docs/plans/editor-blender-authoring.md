@@ -393,6 +393,26 @@ building.
 **Accept:** edit and rebake the building in Blender, update it once in the
 editor, and verify its lighting and packaged textures in-game.
 
+**Built (2026-09-25), awaiting the in-game check.** The csf_authoring add-on's
+**Bake lighting** bakes each tagged asset's diffuse light (Cycles, direct and
+indirect, no colour) into `<ASSET>_Lm` on a second UV layer it unwraps when
+missing, stores half the light (CSF's 2x modulation, as the lightmap add-on's
+CSF RGB Scale), saves `sources/lightmaps/<ASSET>_Lm.png` and tags the asset's
+materials with `csf_lightmap` (copying materials shared with other assets).
+`.csfworld` materials take an optional lightmap name; the compiler copies the
+donor material with its Material Effects (0x120) lightmap texture renamed
+(`rws::replace_material_lightmap`) and keeps the Blender UV1. Project
+`lightmap` records build into DXT1 DDS with CSF's header and a full mip chain
+(`rws::encode_dds_dxt1`) at `build/Maps/<map>/Textures/<name>.dds`; the mission
+lists them in its `.txl` and packages them (`csf-mod project-lightmaps`, or
+automatically as an undoable edit in the GUI). `csf-mod project-place` and
+**Assets > Project buildings** place building assets. Found on the way:
+buildings stood on their own triangles in the height report; they now stand on
+the terrain. Test build: `~/dev/csf-mods/hello-world-bake-test` (hello world
+with a sun-baked terrain and a 4 m rock hut near the start, `dist/bake-test/`).
+Not yet: shading the preview with the new lightmaps is unverified; lightmaps of
+props (Clumps) are out of scope.
+
 ### 8. Research spikes: custom props and characters
 
 Not delivery stages. A custom independently placed prop (a new Clump and
@@ -420,5 +440,6 @@ gameplay behavior.
 v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
 the earlier confirmed fallback. Stages 1-6 are done: hello world is
-byte-identical when built entirely through the editor's operations.
+byte-identical when built entirely through the editor's operations. Stage 7
+(baking) is built and waits for its in-game check (the bake test build).
 The stage 2 acceptance playtest (change the hill in Blender, play) is open.

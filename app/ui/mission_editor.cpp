@@ -742,6 +742,22 @@ void draw_assets(AppState& state) {
                 ImGui::TextUnformatted(label.c_str());
                 ImGui::PopID();
             }
+        if (const auto* project = state.authoring.project.get()) {
+            section("Project buildings");
+            bool any = false;
+            for (const auto& asset : project->assets) {
+                if (asset.kind != csf::ProjectAsset::Kind::building || !matches(asset.id, filter)) continue;
+                any = true;
+                ImGui::PushID(asset.id.c_str());
+                if (ImGui::SmallButton(icons::LC_PLUS)) place_building(state, asset.id);
+                ImGui::SameLine();
+                std::size_t placed = 0;
+                for (const auto& placement : project->placements) placed += placement.asset == asset.id;
+                ImGui::Text("%s  (%zu placed)", asset.id.c_str(), placed);
+                ImGui::PopID();
+            }
+            if (!any) dim_text("Tag a mesh as a building in Blender and send it (CSF panel).");
+        }
         section("Other missions");
         if (tools.catalog_root != state.settings.resource_root || tools.catalog.empty()) {
             ImGui::BeginDisabled(state.discovered.empty());

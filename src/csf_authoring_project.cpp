@@ -3,6 +3,7 @@
 #include "csf/authoring.hpp"
 #include "csf/mission_scene.hpp"
 #include "csf/mod_project.hpp"
+#include "rws/texture_image.hpp"
 #include "rws/world_queries.hpp"
 #include "rws/world_source.hpp"
 
@@ -308,6 +309,9 @@ AuthoringProject AuthoringProject::parse(const std::string_view project_text, co
         } else if (record == "anchor") {
             if (f.size() < 3 || f[1] != "actor") throw std::runtime_error("anchor actor <id> <height>");
             project.anchors.push_back({number<std::int32_t>(f[2]), height_rule(f, 3)});
+        } else if (record == "lightmap") {
+            expect(f, 3, "lightmap <name> <source.png>");
+            project.lightmaps.push_back({f[1], path_of(f[2])});
         } else if (record == "text") {
             expect(f, 3, "text <id> <string>");
             project.strings.push_back({f[1], f[2]});
@@ -367,6 +371,8 @@ std::string AuthoringProject::project_text() const {
     if (!anchors.empty()) out += "\n# Height relations of mission actors\n";
     for (const auto& anchor : anchors)
         out += "anchor actor " + std::to_string(anchor.actor_id) + ' ' + text_of(anchor.height) + '\n';
+    if (!lightmaps.empty()) out += "\n# Baked lightmaps\n";
+    for (const auto& lightmap : lightmaps) out += "lightmap " + field(lightmap.name) + ' ' + field(lightmap.source) + '\n';
     if (!strings.empty()) out += "\n# Mission text (GlobalEK)\n";
     for (const auto& string : strings) out += "text " + field(string.id) + ' ' + field(string.text) + '\n';
     if (!outputs.empty()) out += "\n# Generated outputs and what they were made from\n";
@@ -408,6 +414,12 @@ std::vector<std::string> AuthoringProject::check() const {
     const auto kind_name = [](const ProjectPlacement::Kind kind) {
         return kind == ProjectPlacement::Kind::building ? "building" : kind == ProjectPlacement::Kind::piece ? "piece" : "prop";
     };
+    std::set<std::string> lightmap_names;
+    for (const auto& lightmap : lightmaps) {
+        if (!lightmap_names.insert(lightmap.name).second) problems.push_back("Duplicate lightmap " + lightmap.name);
+        if (lightmap.name.empty() || lightmap.name.find_first_of(" \\/.") != std::string::npos)
+            problems.push_back("Lightmap name '" + lightmap.name + "' must be a plain texture name");
+    }
     std::set<std::string> text_ids;
     for (const auto& string : strings) {
         const bool digits = !string.id.empty() &&
@@ -583,6 +595,43 @@ std::vector<std::byte> append_fli_strings(const std::span<const std::byte> donor
     return out;
 }
 
+std::filesystem::path AuthoringProject::lightmap_package_path(const ProjectLightmap& lightmap) const {
+    return donor_map.visual.parent_path() / "Textures" / (lightmap.name + ".dds");
+}
+
+ProjectBuildReport AuthoringProject::build_lightmaps(const bool force) {
+    ProjectBuildReport report;
+    if (lightmaps.empty()) return report;
+    if (const auto problems = check(); !problems.empty()) throw std::runtime_error(problems.front());
+    for (const auto& lightmap : lightmaps) {
+        const auto source = read_bytes(directory / lightmap.source);
+        const auto inputs_hash = hash_of("lightmap 1\n" + hash_of(source));
+        const auto path = std::filesystem::path("build") / lightmap_package_path(lightmap);
+        const auto record = std::ranges::find(outputs, path, &ProjectOutput::path);
+        std::error_code error;
+        if (!force && record != outputs.end() && record->inputs_hash == inputs_hash &&
+            std::filesystem::is_regular_file(directory / path, error) && hash_of(read_bytes(directory / path)) == record->hash) {
+            report.lines.push_back("lightmap\t" + lightmap.name + "\tup to date");
+            continue;
+        }
+        int width{}, height{};
+        std::vector<std::uint8_t> rgba;
+        std::string problem;
+        if (!rws::decode_png(source, width, height, rgba, problem))
+            throw std::runtime_error(lightmap.source.generic_string() + ": " + problem);
+        const auto bytes = rws::encode_dds_dxt1(width, height, rgba);
+        write_atomically(directory / path, bytes);
+        const ProjectOutput output{path, "lightmap", hash_of(bytes), inputs_hash};
+        if (record == outputs.end()) outputs.push_back(output);
+        else *record = output;
+        report.rebuilt = true;
+        report.lines.push_back("lightmap\t" + path.generic_string() + '\t' + std::to_string(width) + 'x' +
+                               std::to_string(height));
+    }
+    refresh_workspace(directory / "mission", directory, outputs);
+    return report;
+}
+
 std::optional<std::string> AuthoringProject::next_text_id() const {
     if (!texts) return std::nullopt;
     std::set<std::int32_t> used;
@@ -663,7 +712,17 @@ rws::WorldSource AuthoringProject::merged_source(const bool with_donor_placement
 
 std::vector<HeightFinding> AuthoringProject::height_report(const ActorPositions& actors) const {
     if (const auto problems = check(); !problems.empty()) throw std::runtime_error(problems.front());
+    // Buildings stand on the terrain (not on themselves); props and actors on
+    // the terrain and the buildings.
     const rws::GroundQuery ground(merged_source(false));
+    rws::WorldSource terrain_only;
+    for (const auto& asset : assets)
+        if (asset.kind == ProjectAsset::Kind::terrain) {
+            auto parsed = rws::parse_world_source(read_text(directory / asset.export_path));
+            if (!parsed) throw std::runtime_error(asset.export_path.generic_string() + ": " + parsed.error);
+            rws::append_world_source(terrain_only, *parsed.value);
+        }
+    const rws::GroundQuery terrain(terrain_only);
     std::map<std::string, const ProjectPlacement*> by_id;
     for (const auto& placement : placements) by_id[placement.id] = &placement;
     std::map<std::int32_t, const ProjectAnchor*> anchored;
@@ -686,7 +745,8 @@ std::vector<HeightFinding> AuthoringProject::height_report(const ActorPositions&
         switch (rule.mode) {
         case HeightRule::Mode::absolute: result.height = at.y; break;
         case HeightRule::Mode::ground:
-            if (const auto hit = ground.highest(at.x, at.z)) result.height = hit->height + rule.offset;
+            if (const auto hit = (key.starts_with("building ") ? terrain : ground).highest(at.x, at.z))
+                result.height = hit->height + rule.offset;
             else result.problem = "has no ground under it";
             break;
         case HeightRule::Mode::on: {
@@ -713,7 +773,8 @@ std::vector<HeightFinding> AuthoringProject::height_report(const ActorPositions&
         if (const auto found = placement_heights.find(id); found != placement_heights.end()) return found->second;
         const auto placement = by_id.find(id);
         if (placement == by_id.end()) return {std::nullopt, "does not exist"};
-        auto result = resolve_rule(placement->second->height, placement->second->position, "placement " + id);
+        const auto kind = placement->second->kind == ProjectPlacement::Kind::building ? "building " : "placement ";
+        auto result = resolve_rule(placement->second->height, placement->second->position, kind + id);
         return placement_heights[id] = result;
     };
     actor_height = [&](const std::int32_t id) -> Resolved {

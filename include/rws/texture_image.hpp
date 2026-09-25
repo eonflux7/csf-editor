@@ -24,4 +24,9 @@ bool decode_png(std::span<const std::byte> bytes, int& width, int& height,
 bool write_png_rgba(const std::filesystem::path& path, int width, int height,
                     std::span<const std::uint8_t> rgba, std::string& error);
 
+// A DXT1 (BC1) DDS with a complete mip chain, as CSF's lightmaps are stored
+// (flags 0xA1007, caps 0x401008, the top level's size as the linear size).
+// Width and height are powers of two; alpha is ignored (opaque).
+[[nodiscard]] std::vector<std::byte> encode_dds_dxt1(int width, int height, std::span<const std::uint8_t> rgba);
+
 } // namespace rws

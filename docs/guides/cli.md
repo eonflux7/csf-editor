@@ -241,6 +241,11 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 ./build/Release/csf-mod mission-ops out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn my.ops
 ./build/Release/csf-mod mission-flow ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn --workspace out/mission
 
+# Buildings and baked lightmaps of an authoring project.
+./build/Release/csf-mod project-place ~/dev/csf-mods/hello-world-project hut-1 hut 3000 16.3 -2500 0 --ground 0
+./build/Release/csf-mod project-lightmap ~/dev/csf-mods/hello-world-project HUT_Lm sources/lightmaps/HUT_Lm.png
+./build/Release/csf-mod project-lightmaps ~/dev/csf-mods/hello-world-project   # list and package them
+
 # What the Blender add-on loads as reference, and how it registers an asset.
 ./build/Release/csf-mod project-reference ~/dev/csf-mods/hello-world-project out/reference
 ./build/Release/csf-mod project-asset ~/dev/csf-mods/hello-world-project hut building \

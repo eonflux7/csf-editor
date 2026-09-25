@@ -54,7 +54,7 @@ add_library(csf_core
 add_library(csf::core ALIAS csf_core)
 target_include_directories(csf_core PUBLIC include)
 # Authoring projects compile Worlds and sector maps (rws_core).
-target_link_libraries(csf_core PUBLIC rws_core)
+target_link_libraries(csf_core PUBLIC rws_core PRIVATE rws_image)
 target_compile_features(csf_core PUBLIC cxx_std_20)
 if(MSVC)
     target_compile_options(csf_core PRIVATE /W4 /permissive-)

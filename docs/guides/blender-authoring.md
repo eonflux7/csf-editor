@@ -47,6 +47,26 @@ together. Materials pick donor textures and surfaces through their
 `csf_texture`, `csf_surface` and `csf_shade` properties (see
 `tools/blender/csf_authoring/csfworld.py`).
 
+## Baked lighting
+
+Add lights (a Sun: its rotation is the light direction), then **Bake lighting**
+(size and samples). Each tagged asset gets its own lightmap, `<ASSET>_Lm`:
+
+- A second UV layer (`CSF_Lightmap`) is unwrapped when the mesh has only one;
+  unwrap it yourself first for a cleaner result.
+- Only light is baked (direct and indirect, no colour), at half strength: the
+  game doubles lightmaps.
+- The asset's materials get `csf_lightmap`; a material another asset uses is
+  copied first, so each asset names its own lightmap.
+- The PNG goes to `sources/lightmaps/` and the project records it.
+
+Then **Send to rws-man**: the project build turns the PNGs into DXT1 DDS files,
+and the mission lists and packages them (rws-man does it as an undoable edit;
+save to keep it). Model a building where it will stand when you bake, so its
+shadow falls on the terrain in the right place; its export ignores the object's
+position. From the command line: `csf-mod project-lightmaps <project>` after
+`project-build`.
+
 **Import donor model** loads a vanilla `.rpc` (through `rws-info`) as an
 editable mesh, as a starting point for a new asset.
 

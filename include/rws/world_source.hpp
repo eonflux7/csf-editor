@@ -18,7 +18,7 @@ namespace rws {
 // source Y up); faces are counter-clockwise seen from their front.
 //
 //   csfworld 1
-//   material <texture> <surface> [<shade 0-255>]    (declaration order = index)
+//   material <texture> <surface> [<shade 0-255> [<lightmap>]]   (declaration order = index)
 //   v <x> <y> <z> <nx> <ny> <nz> <u0> <v0> [<u1> <v1>]
 //   f <a> <b> <c> <material> <visual|collision|both>
 //   prop <donor-instance-id>[,<id>...] <x> <y> <z> [<yaw-degrees>]
@@ -36,6 +36,10 @@ struct WorldSourceMaterial {
     std::string texture;
     std::string surface;
     std::uint8_t shade{228};  // collision per-triangle byte; the most common shipped value
+    // A lightmap texture of the World's own (e.g. TERRAIN_Lm): the donor
+    // material is copied with its Material Effects lightmap renamed, and the
+    // vertices' second UV set samples it. Empty: the donor's lightmap.
+    std::string lightmap;
 };
 
 struct WorldSourceFace {
@@ -116,6 +120,12 @@ struct WorldSourcePlacement {
 };
 void append_world_source(WorldSource& target, const WorldSource& part,
                          const std::optional<WorldSourcePlacement>& placed = std::nullopt);
+
+// A Material (0x07) chunk with the texture of its Material Effects (0x120)
+// dual pass, the lightmap, renamed; fails when it has none.
+[[nodiscard]] DecodeResult<std::vector<std::byte>> replace_material_lightmap(std::span<const std::byte> material,
+                                                                             std::string_view lightmap);
+[[nodiscard]] std::string material_lightmap_name(std::span<const std::byte> material);
 
 // Texture name of a Material (0x07) chunk, or its Pyro surface name.
 [[nodiscard]] std::string material_texture_name(std::span<const std::byte> material);

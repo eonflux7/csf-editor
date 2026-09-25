@@ -73,6 +73,13 @@ void append_u32(std::vector<std::byte>& bytes, const std::uint32_t value) {
     }
 }
 
+std::uint32_t read_u32_le(const std::vector<std::byte>& bytes, const std::size_t offset) {
+    std::uint32_t value = 0;
+    for (int i = 3; i >= 0; --i)
+        value = value << 8U | std::to_integer<std::uint32_t>(bytes.at(offset + static_cast<std::size_t>(i)));
+    return value;
+}
+
 void append_header(std::vector<std::byte>& bytes, const std::uint32_t type,
                    const std::uint32_t size, const std::uint32_t stamp = 0x1C020037) {
     append_u32(bytes, type);
@@ -3825,6 +3832,20 @@ int main() {
         // .csfworld: parse errors name the line; compile resolves donor materials
         // by texture and surface name and splits faces by role.
         CHECK(!rws::parse_world_source("csfworld 2\n"));
+        {
+            // A material may name a lightmap of its own; it round-trips.
+            const auto lit = rws::parse_world_source("csfworld 1\nmaterial GROUND Tierra 228 HW_Lm\n"
+                                                     "v 0 0 0 0 1 0 0 0 0.5 0.5\nv 0 0 1 0 1 0 0 1 0.5 0.6\n"
+                                                     "v 1 0 1 0 1 0 1 1 0.6 0.6\nf 0 1 2 0 both\n");
+            CHECK(lit && lit.value->materials[0].lightmap == "HW_Lm");
+            CHECK(rws::parse_world_source(rws::write_world_source(*lit.value)).value->materials[0].lightmap == "HW_Lm");
+            // A material without Material Effects has no lightmap to rename.
+            std::vector<std::byte> plain;
+            append_header(plain, 0x07, 12 + 28);
+            append_header(plain, 0x01, 28);
+            for (int i = 0; i < 7; ++i) append_u32(plain, 0);
+            CHECK(!rws::replace_material_lightmap(plain, "X_Lm") && rws::material_lightmap_name(plain).empty());
+        }
         const auto bad = rws::parse_world_source("csfworld 1\nmaterial A Tierra\nf 0 1 2 0 both\n");
         CHECK(!bad && bad.error.starts_with("line 3"));
         const auto source = rws::parse_world_source(
@@ -4025,6 +4046,14 @@ int main() {
         heights.resnap(findings);
         findings = heights.height_report(actors);
         CHECK(findings.size() == 2 && find("away") != findings.end() && find("6") != findings.end());
+        // A building stands on the terrain, not on its own triangles (the hut
+        // export is the same flat triangle, placed 50 up).
+        auto with_building = heights;
+        with_building.assets.push_back({"hut", csf::ProjectAsset::Kind::building, "sources/hut.blend", "sources/hut.csfworld"});
+        with_building.placements.push_back({csf::ProjectPlacement::Kind::building, "hut-9", "hut", {}, {}, {},
+                                            {0, 50, 0}, 0, {csf::HeightRule::Mode::ground, 0, {}, {}}});
+        findings = with_building.height_report(actors);
+        CHECK(find("hut-9") != findings.end() && find("hut-9")->resolved == 0.0F);
         std::filesystem::remove_all(root);
     }
     {
@@ -4070,6 +4099,42 @@ int main() {
         // Truncated data must fail cleanly and report an error.
         CHECK(!rws::decode_png(std::span(png).first(20), width, height, rgba, error));
         CHECK(!error.empty());
+    }
+    {
+        // Lightmap DDS: a 16 x 8 grey-ish gradient (colours on a line, as a
+        // smooth lightmap's are) through DXT1 and back stays within a few
+        // steps per channel; the header is CSF's (mips down to 1 x 1).
+        constexpr int w = 16, h = 8;
+        std::vector<std::uint8_t> rgba(w * h * 4);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                auto* p = &rgba[static_cast<std::size_t>(y * w + x) * 4];
+                p[0] = static_cast<std::uint8_t>(x * 12 + y * 4);
+                p[1] = static_cast<std::uint8_t>(x * 12 + y * 4);
+                p[2] = static_cast<std::uint8_t>(x * 6 + y * 2 + 40);
+                p[3] = 255;
+            }
+        const auto dds = rws::encode_dds_dxt1(w, h, rgba);
+        CHECK(read_u32_le(dds, 8) == 0xA1007U && read_u32_le(dds, 28) == 5 && read_u32_le(dds, 108) == 0x401008U);
+        CHECK(dds.size() == 128 + (4 * 2 + 2 * 1 + 1 + 1 + 1) * 8);  // 16x8, 8x4, 4x2, 2x1, 1x1 levels
+        const auto path = std::filesystem::temp_directory_path() / "rwsman-lightmap-test.dds";
+        write_bytes(path, dds);
+        int width = 0, height = 0;
+        std::vector<std::uint8_t> decoded;
+        std::string error;
+        CHECK(rws::decode_texture_image(path, width, height, decoded, error) && width == w && height == h);
+        int worst = 0;
+        for (std::size_t i = 0; i < rgba.size(); ++i)
+            if (i % 4 != 3) worst = std::max(worst, std::abs(static_cast<int>(decoded[i]) - static_cast<int>(rgba[i])));
+        CHECK(worst <= 10);
+        std::filesystem::remove(path);
+        bool rejected = false;
+        try {
+            (void)rws::encode_dds_dxt1(12, 8, std::vector<std::uint8_t>(12 * 8 * 4));
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        CHECK(rejected);
     }
     {
         // A byte-oriented uncompressed 32-bit DDS exercises the moved decoder.

@@ -4,7 +4,12 @@
 #include "app_util.hpp"
 #include "mission_editing.hpp"
 
+#include "csf/authoring.hpp"
+
 #include <chrono>
+#include <fstream>
+#include <iterator>
+#include <span>
 
 namespace rwsman {
 namespace {
@@ -52,8 +57,10 @@ void start_job(AppState& state) {
         AuthoringSession::Outcome outcome;
         try {
             outcome.report = project.build_world(force);
-            auto texts = project.build_texts(force);
-            outcome.report.lines.insert(outcome.report.lines.end(), texts.lines.begin(), texts.lines.end());
+            for (auto part : {project.build_texts(force), project.build_lightmaps(force)}) {
+                outcome.report.lines.insert(outcome.report.lines.end(), part.lines.begin(), part.lines.end());
+                outcome.report.rebuilt = outcome.report.rebuilt || part.rebuilt;
+            }
             outcome.findings = project.height_report(actors);
             outcome.project = std::move(project);
         } catch (const std::exception& error) {
@@ -69,6 +76,42 @@ void reload_mission(AppState& state) {
     start_mission_load(state, state.mission.graph->scene_path(), state.mission.project->workspace_root);
 }
 
+// Lists the project's built lightmaps in the open mission's texture list and
+// packages them from build/ (an undoable edit; saving keeps it).
+void register_lightmaps(AppState& state) {
+    const auto& project = *state.authoring.project;
+    auto* workspace = state.mission.project.get();
+    if (project.lightmaps.empty() || !workspace || !mission_editable(state)) return;
+    std::vector<std::string> entries;
+    for (const auto& lightmap : project.lightmaps) {
+        const auto relative = project.lightmap_package_path(lightmap);
+        const auto built = project.directory / "build" / relative;
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(built, error)) continue;
+        if (std::ranges::none_of(workspace->files, [&](const csf::ModFile& file) { return file.relative_path == relative; })) {
+            csf::ModFile file;
+            file.relative_path = relative;
+            file.authored_path = std::filesystem::absolute(built);
+            std::ifstream input(built, std::ios::binary);
+            const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+            file.output_sha256 = csf::sha256(std::as_bytes(std::span(bytes)));
+            workspace->add_file(std::move(file));
+        }
+        auto entry = path_utf8(relative);
+        std::ranges::replace(entry, '/', '\\');
+        entries.push_back(entry);
+    }
+    auto& editor = *state.mission.editor;
+    const auto file = editor.file_of_kind(csf::MissionFileKind::texture_index);
+    if (!file || entries.empty()) return;
+    const auto& raw = editor.files()[*file].raw;
+    const auto listed = lower_ascii(std::string(reinterpret_cast<const char*>(raw.data()), raw.size()));
+    if (std::ranges::all_of(entries, [&](const std::string& e) { return listed.find(lower_ascii(e)) != std::string::npos; }))
+        return;
+    if (apply_mission_edit(state, editor.add_texture_list_entries(entries)))
+        state.notify(LogLevel::info, "Listed the project's lightmaps in the mission; save to keep them");
+}
+
 void finish_job(AppState& state, AuthoringSession::Outcome outcome) {
     auto& session = state.authoring;
     if (!outcome.error.empty()) {
@@ -82,7 +125,9 @@ void finish_job(AppState& state, AuthoringSession::Outcome outcome) {
     } catch (const std::exception& error) {
         state.notify(LogLevel::error, std::string("Project not saved: ") + error.what());
     }
-    for (const auto& line : outcome.report.lines) state.info("Project: " + line);
+    for (const auto& line : outcome.report.lines)
+        if (!line.starts_with("note\t")) state.info("Project: " + line);
+    register_lightmaps(state);
     session.findings = std::move(outcome.findings);
     if (!session.findings.empty()) {
         session.show_heights = true;

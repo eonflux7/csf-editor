@@ -8,6 +8,9 @@
 #include <bit>
 #include <cctype>
 #include <cstring>
+#include <string_view>
+#include <stdexcept>
+#include <cmath>
 #include <fstream>
 #include <limits>
 
@@ -320,6 +323,150 @@ bool write_png_rgba(const std::filesystem::path& path, const int width, const in
         return false;
     }
     return true;
+}
+
+namespace {
+
+std::uint16_t to_565(const float r, const float g, const float b) {
+    const auto q = [](const float v, const int bits) {
+        const int levels = (1 << bits) - 1;
+        return static_cast<std::uint16_t>(std::clamp(static_cast<int>(std::lround(v / 255.0F * levels)), 0, levels));
+    };
+    return static_cast<std::uint16_t>(q(r, 5) << 11 | q(g, 6) << 5 | q(b, 5));
+}
+
+std::array<float, 3> from_565(const std::uint16_t c) {
+    const auto r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31;
+    return {static_cast<float>((r << 3) | (r >> 2)), static_cast<float>((g << 2) | (g >> 4)),
+            static_cast<float>((b << 3) | (b >> 2))};
+}
+
+// One 4x4 block: endpoints at the extremes of the colours along their main
+// axis, four-colour mode (endpoint 0 > endpoint 1), each texel to the nearest.
+void encode_block(const std::array<std::array<float, 3>, 16>& texels, std::vector<std::byte>& out) {
+    std::array<float, 3> mean{};
+    for (const auto& t : texels)
+        for (int c = 0; c < 3; ++c) mean[c] += t[c] / 16.0F;
+    // Power iteration for the principal axis of the covariance.
+    std::array<float, 6> cov{};  // xx xy xz yy yz zz
+    for (const auto& t : texels) {
+        const float x = t[0] - mean[0], y = t[1] - mean[1], z = t[2] - mean[2];
+        cov[0] += x * x; cov[1] += x * y; cov[2] += x * z; cov[3] += y * y; cov[4] += y * z; cov[5] += z * z;
+    }
+    std::array<float, 3> axis{1.0F, 1.0F, 1.0F};
+    for (int i = 0; i < 8; ++i) {
+        const std::array<float, 3> next{cov[0] * axis[0] + cov[1] * axis[1] + cov[2] * axis[2],
+                                        cov[1] * axis[0] + cov[3] * axis[1] + cov[4] * axis[2],
+                                        cov[2] * axis[0] + cov[4] * axis[1] + cov[5] * axis[2]};
+        const float length = std::sqrt(next[0] * next[0] + next[1] * next[1] + next[2] * next[2]);
+        if (length < 1e-6F) break;
+        axis = {next[0] / length, next[1] / length, next[2] / length};
+    }
+    float low = std::numeric_limits<float>::max(), high = std::numeric_limits<float>::lowest();
+    for (const auto& t : texels) {
+        const float d = (t[0] - mean[0]) * axis[0] + (t[1] - mean[1]) * axis[1] + (t[2] - mean[2]) * axis[2];
+        low = std::min(low, d);
+        high = std::max(high, d);
+    }
+    auto c0 = to_565(mean[0] + axis[0] * high, mean[1] + axis[1] * high, mean[2] + axis[2] * high);
+    auto c1 = to_565(mean[0] + axis[0] * low, mean[1] + axis[1] * low, mean[2] + axis[2] * low);
+    if (c0 < c1) std::swap(c0, c1);
+    std::uint32_t indices = 0;
+    if (c0 != c1) {
+        const auto a = from_565(c0), b = from_565(c1);
+        std::array<std::array<float, 3>, 4> palette{a, b, {}, {}};
+        for (int c = 0; c < 3; ++c) {
+            palette[2][c] = (2 * a[c] + b[c]) / 3.0F;
+            palette[3][c] = (a[c] + 2 * b[c]) / 3.0F;
+        }
+        for (std::size_t i = 0; i < 16; ++i) {
+            std::uint32_t best = 0;
+            float best_distance = std::numeric_limits<float>::max();
+            for (std::uint32_t k = 0; k < 4; ++k) {
+                float d = 0;
+                for (int c = 0; c < 3; ++c) d += (texels[i][c] - palette[k][c]) * (texels[i][c] - palette[k][c]);
+                if (d < best_distance) {
+                    best_distance = d;
+                    best = k;
+                }
+            }
+            indices |= best << (2 * i);
+        }
+    }
+    for (const auto value : {static_cast<std::uint32_t>(c0), static_cast<std::uint32_t>(c1)}) {
+        out.push_back(static_cast<std::byte>(value & 0xFF));
+        out.push_back(static_cast<std::byte>(value >> 8));
+    }
+    for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<std::byte>((indices >> shift) & 0xFF));
+}
+
+void put_u32(std::vector<std::byte>& out, const std::uint32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) out.push_back(static_cast<std::byte>((value >> shift) & 0xFF));
+}
+
+} // namespace
+
+std::vector<std::byte> encode_dds_dxt1(const int width, const int height, const std::span<const std::uint8_t> rgba) {
+    const auto power_of_two = [](const int v) { return v > 0 && (v & (v - 1)) == 0; };
+    if (!power_of_two(width) || !power_of_two(height) ||
+        rgba.size() != static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4)
+        throw std::runtime_error("DXT1 lightmaps need power-of-two RGBA images");
+    std::uint32_t levels = 1;
+    for (int w = width, h = height; w > 1 || h > 1; w = std::max(w / 2, 1), h = std::max(h / 2, 1)) ++levels;
+    std::vector<std::byte> out;
+    for (const char c : std::string_view("DDS ", 4)) out.push_back(static_cast<std::byte>(c));
+    put_u32(out, 124);
+    put_u32(out, 0xA1007);  // caps, height, width, pixel format, mip count, linear size
+    put_u32(out, static_cast<std::uint32_t>(height));
+    put_u32(out, static_cast<std::uint32_t>(width));
+    put_u32(out, static_cast<std::uint32_t>(std::max(width / 4, 1) * std::max(height / 4, 1) * 8));
+    put_u32(out, 0);
+    put_u32(out, levels);
+    for (int i = 0; i < 11; ++i) put_u32(out, 0);
+    put_u32(out, 32);  // pixel format
+    put_u32(out, 0x4);  // FOURCC
+    for (const char c : std::string_view("DXT1", 4)) out.push_back(static_cast<std::byte>(c));
+    for (int i = 0; i < 5; ++i) put_u32(out, 0);
+    put_u32(out, 0x401008);  // complex, texture, mipmap
+    for (int i = 0; i < 4; ++i) put_u32(out, 0);
+    // Levels as floats, each a 2x2 box filter of the one above.
+    std::vector<float> level(rgba.size() / 4 * 3);
+    for (std::size_t i = 0; i < rgba.size() / 4; ++i)
+        for (int c = 0; c < 3; ++c) level[i * 3 + c] = rgba[i * 4 + c];
+    int w = width, h = height;
+    for (std::uint32_t l = 0; l < levels; ++l) {
+        for (int by = 0; by < h; by += 4)
+            for (int bx = 0; bx < w; bx += 4) {
+                std::array<std::array<float, 3>, 16> texels{};
+                for (int y = 0; y < 4; ++y)
+                    for (int x = 0; x < 4; ++x) {
+                        const auto sx = std::min(bx + x, w - 1), sy = std::min(by + y, h - 1);
+                        const auto i = static_cast<std::size_t>(sy * w + sx) * 3;
+                        texels[static_cast<std::size_t>(y * 4 + x)] = {level[i], level[i + 1], level[i + 2]};
+                    }
+                encode_block(texels, out);
+            }
+        if (l + 1 == levels) break;
+        const int nw = std::max(w / 2, 1), nh = std::max(h / 2, 1);
+        std::vector<float> next(static_cast<std::size_t>(nw * nh) * 3);
+        for (int y = 0; y < nh; ++y)
+            for (int x = 0; x < nw; ++x)
+                for (int c = 0; c < 3; ++c) {
+                    float sum = 0;
+                    int count = 0;
+                    for (int dy = 0; dy < 2; ++dy)
+                        for (int dx = 0; dx < 2; ++dx) {
+                            const int sx = std::min(x * 2 + dx, w - 1), sy = std::min(y * 2 + dy, h - 1);
+                            sum += level[static_cast<std::size_t>(sy * w + sx) * 3 + c];
+                            ++count;
+                        }
+                    next[static_cast<std::size_t>(y * nw + x) * 3 + c] = sum / static_cast<float>(count);
+                }
+        level = std::move(next);
+        w = nw;
+        h = nh;
+    }
+    return out;
 }
 
 } // namespace rws

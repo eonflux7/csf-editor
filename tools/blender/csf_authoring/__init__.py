@@ -6,6 +6,8 @@ Blender owns mesh sources; rws-man owns placements and mission records
 * Project: the authoring project folder (with project.csfproj) and csf-mod.
 * Asset: tag selected meshes as the project's terrain or as a building (a
   building is exported about its own origin; rws-man places it).
+* Bake lighting: bakes each tagged asset's light (Cycles, no colour) into its
+  own lightmap, saved into the project; Send then uses it.
 * Send to rws-man: saves the .blend, exports every tagged asset into the
   project and registers new ones. An open rws-man rebuilds the map by itself.
 * Load reference: the built map, actor models and the mission's placements,
@@ -205,6 +207,146 @@ def send(context) -> list[str]:
             run(context, "project-asset", project, ident, kind, blend_field or "-", export)
         lines.append(f"{ident}: {stats['faces']} faces")
     return lines
+
+
+LIGHTMAP_UV = "CSF_Lightmap"
+
+
+def lightmap_name(ident: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]+", "_", ident).upper() + "_Lm"
+
+
+def ensure_lightmap_uv(obj) -> None:
+    """A second UV layer for the lightmap, unwrapped when the object has none."""
+    mesh = obj.data
+    if len(mesh.uv_layers) >= 2:
+        return
+    if not mesh.uv_layers:
+        mesh.uv_layers.new(name="UVMap")
+    layer = mesh.uv_layers.new(name=LIGHTMAP_UV)
+    mesh.uv_layers.active = layer
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(island_margin=0.02)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    mesh.uv_layers.active = mesh.uv_layers[0]
+
+
+def own_materials(objects, ident: str) -> list:
+    """The asset's materials, copied when another object uses them too, so each
+    asset's materials name its own lightmap."""
+    owned = []
+    members = set(objects)
+    for obj in objects:
+        for slot in obj.material_slots:
+            material = slot.material
+            if material is None:
+                continue
+            others = [o for o in bpy.data.objects if o not in members and any(
+                s.material == material for s in getattr(o, "material_slots", []))]
+            if others:
+                material = material.copy()
+                material.name = f"{slot.material.name}.{ident}"
+                slot.material = material
+            if material not in owned:
+                owned.append(material)
+    return owned
+
+
+def bake_lightmaps(context, size: int, samples: int) -> list[str]:
+    """Bake each tagged asset's diffuse lighting (direct and indirect, no colour)
+    into <ASSET>_Lm and save it into the project for rws-man to build."""
+    import numpy as np
+    project = project_dir(context)
+    assets = tagged_assets(context.scene)
+    if not assets:
+        raise RuntimeError("No tagged assets to bake")
+    scene = context.scene
+    if not any(obj.type == "LIGHT" for obj in scene.objects) and scene.world is None:
+        raise RuntimeError("The scene has no lights; add a Sun (its rotation sets the light direction)")
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = samples
+    scene.render.bake.use_pass_direct = True
+    scene.render.bake.use_pass_indirect = True
+    scene.render.bake.use_pass_color = False
+    scene.render.bake.margin = 4
+    out_dir = project / "sources" / "lightmaps"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for ident, (_, objects) in sorted(assets.items()):
+        name = lightmap_name(ident)
+        for obj in objects:
+            ensure_lightmap_uv(obj)
+        image = bpy.data.images.get(name) or bpy.data.images.new(name, size, size, float_buffer=True, alpha=False)
+        if tuple(image.size) != (size, size):
+            image.scale(size, size)
+        image.colorspace_settings.name = "Non-Color"
+        materials = own_materials(objects, ident)
+        nodes = []
+        for material in materials:
+            material.use_nodes = True
+            node = material.node_tree.nodes.new("ShaderNodeTexImage")
+            node.image = image
+            material.node_tree.nodes.active = node
+            nodes.append((material, node))
+            material["csf_lightmap"] = name
+        active_uv = {}
+        for obj in objects:
+            active_uv[obj] = obj.data.uv_layers.active_index
+            obj.data.uv_layers.active_index = 1
+        try:
+            bpy.ops.object.select_all(action="DESELECT")
+            for obj in objects:
+                obj.select_set(True)
+            context.view_layer.objects.active = objects[0]
+            bpy.ops.object.bake(type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"}, margin=4, use_clear=True)
+        finally:
+            for obj, index in active_uv.items():
+                obj.data.uv_layers.active_index = index
+            for material, node in nodes:
+                material.node_tree.nodes.remove(node)
+        # CSF modulates lightmaps 2x: store half the light (the lightmap add-on's CSF RGB Scale).
+        pixels = np.empty(size * size * 4, dtype=np.float32)
+        image.pixels.foreach_get(pixels)
+        pixels[0::4] *= 0.5
+        pixels[1::4] *= 0.5
+        pixels[2::4] *= 0.5
+        pixels[3::4] = 1.0
+        np.clip(pixels, 0.0, 1.0, out=pixels)
+        png = bpy.data.images.new(name + "_png", size, size, alpha=False)
+        png.colorspace_settings.name = "Non-Color"
+        png.pixels.foreach_set(pixels)
+        target = out_dir / f"{name}.png"
+        png.filepath_raw = str(target)
+        png.file_format = "PNG"
+        png.save()
+        bpy.data.images.remove(png)
+        run(context, "project-lightmap", project, name, target.relative_to(project).as_posix())
+        lines.append(f"{name} ({size}x{size})")
+    return lines
+
+
+class CSF_OT_bake(bpy.types.Operator):
+    """Bake the tagged assets' lighting into lightmaps for the project (Cycles, light only)"""
+    bl_idname = "csf.bake"
+    bl_label = "Bake lighting"
+    size: EnumProperty(items=(("512", "512", ""), ("1024", "1024", ""), ("2048", "2048", "")), default="1024")
+    samples: bpy.props.IntProperty(name="Samples", default=64, min=1, max=4096)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        try:
+            lines = bake_lightmaps(context, int(self.size), self.samples)
+        except (RuntimeError, OSError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, "Baked " + "; ".join(lines) + ". Send to rws-man to use them.")
+        return {"FINISHED"}
 
 
 class CSF_OT_send(bpy.types.Operator):
@@ -418,6 +560,7 @@ class CSF_PT_authoring(bpy.types.Panel):
             row.operator("csf.untag_asset", text="", icon="X")
         else:
             box.label(text="Select a mesh to tag it")
+        layout.operator("csf.bake", icon="LIGHT_SUN")
         layout.operator("csf.send", icon="EXPORT")
         row = layout.row(align=True)
         row.operator("csf.load_reference", icon="LINKED")
@@ -425,7 +568,7 @@ class CSF_PT_authoring(bpy.types.Panel):
         layout.operator("csf.import_model", icon="IMPORT")
 
 
-CLASSES = (CsfPreferences, CSF_OT_tag_asset, CSF_OT_untag_asset, CSF_OT_send, CSF_OT_load_reference,
+CLASSES = (CsfPreferences, CSF_OT_tag_asset, CSF_OT_untag_asset, CSF_OT_bake, CSF_OT_send, CSF_OT_load_reference,
            CSF_OT_clear_reference, CSF_OT_import_model, CSF_PT_authoring)
 
 

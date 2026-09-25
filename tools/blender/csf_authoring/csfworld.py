@@ -13,7 +13,9 @@ Conventions
 * Per material, custom properties override the defaults:
   ``csf_texture`` (default: the first Image Texture node's image name without
   extension, else the material name), ``csf_surface`` (default ``Tierra``) and
-  ``csf_shade`` (0-255, default 228).
+  ``csf_shade`` (0-255, default 228). ``csf_lightmap`` names a baked lightmap
+  of the project (the add-on's Bake lighting sets it); the second UV layer then
+  maps it.
 * Per object, ``csf_role`` is ``both`` (default), ``visual`` or ``collision``.
 """
 
@@ -81,10 +83,11 @@ def export(path: str, scene=None, objects=None, local: bool = False) -> dict:
                 slot = obj.material_slots[triangle.material_index].material if obj.material_slots else None
                 key = (material_texture(slot),
                        str(slot.get("csf_surface", DEFAULT_SURFACE)) if slot else DEFAULT_SURFACE,
-                       int(slot.get("csf_shade", DEFAULT_SHADE)) if slot else DEFAULT_SHADE)
+                       int(slot.get("csf_shade", DEFAULT_SHADE)) if slot else DEFAULT_SHADE,
+                       str(slot.get("csf_lightmap", "")) if slot else "")
                 if key not in materials:
                     materials[key] = len(materials)
-                    material_lines.append(f"material {key[0]} {key[1]} {key[2]}")
+                    material_lines.append(f"material {key[0]} {key[1]} {key[2]}" + (f" {key[3]}" if key[3] else ""))
                 first = len(vertex_lines)
                 for loop in triangle.loops:
                     co = mesh.vertices[mesh.loops[loop].vertex_index].co
