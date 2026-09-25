@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -70,6 +71,25 @@ struct ActorPlacement {
     Vec3 position;
     float heading_degrees{};
     float pitch_degrees{};
+};
+
+// A new actor with every field given (MissionEditor::add_actor_record).
+struct ActorSpec {
+    std::optional<std::int32_t> id;  // the next free ID when empty
+    std::string name;                // UTF-8
+    std::int32_t class_id{};
+    ActorPlacement placement;
+    // Its placement point; none (-1 -1, as prop actors in shipped missions)
+    // when empty.
+    std::optional<std::pair<std::int32_t, std::int32_t>> cell;
+    std::vector<std::int32_t> scripts;
+    std::optional<std::string> portrait;  // UTF-8, e.g. Menus\\Retratos\\FotoOficial.fbs
+};
+
+struct NavPointSpec {
+    Vec3 position;
+    float rotation_radians{};
+    float pitch_radians{};
 };
 
 struct ActorAnimationOverride {
@@ -175,12 +195,26 @@ public:
     // Refuses when scripts or mission properties still reference the actor,
     // unless `force` is set.
     EditResult delete_actor(std::int32_t actor_id, bool force = false);
+    // An actor with every field given; its cell must name an existing point.
+    EditResult add_actor_record(const ActorSpec& spec, std::int32_t* new_id = nullptr);
+
+    // Runs several operations as one undo step. When `body` returns a result
+    // that did not apply (its operation was rejected), everything it applied
+    // is undone and forgotten.
+    EditResult batch(std::string label, const std::function<EditResult()>& body);
+    // Empties the scene for a new mission in this slot: actors, effects,
+    // water, navigation, dummies, areas, lights, scene objects, bridges and
+    // their folders, and every script of the mission and cutscene programs.
+    // The environment (.MUNDOVIS), player and scores, and the databases stay.
+    EditResult new_mission();
 
     // Dummies, lights, navigation and areas.
     EditResult set_dummy_placement(std::int32_t dummy_id, Vec3 position, float rotation_radians,
                                    float pitch_radians);
     EditResult duplicate_dummy(std::int32_t dummy_id, Vec3 offset, std::int32_t* new_id = nullptr);
     EditResult delete_dummy(std::int32_t dummy_id, bool force = false);
+    EditResult add_dummy(std::string_view utf8_name, Vec3 position, float rotation_radians, float pitch_radians,
+                         std::optional<std::int32_t> id = {}, std::int32_t* new_id = nullptr);
     EditResult set_light(std::int32_t light_id, const LightEdit& edit);
     EditResult duplicate_light(std::int32_t light_id, Vec3 offset, std::int32_t* new_id = nullptr);
     EditResult delete_light(std::int32_t light_id);
@@ -197,10 +231,24 @@ public:
     EditResult disconnect_navigation_points(std::int32_t origin_group, std::int32_t origin_point,
                                             std::int32_t destination_group,
                                             std::int32_t destination_point);
+    // A group (.TIPO 0 for routes and walk grids, 3 for cover) with its points
+    // (IDs 1..n) and links between them (pairs of point IDs).
+    EditResult add_navigation_group(std::string_view utf8_name, std::int32_t type,
+                                    const std::vector<NavPointSpec>& points,
+                                    const std::vector<std::pair<std::int32_t, std::int32_t>>& links,
+                                    std::optional<std::int32_t> id = {}, std::int32_t* new_id = nullptr);
+    // Refuses while actors stand on its points or scripts name it, unless
+    // `force`; its cross-group links go with it.
+    EditResult delete_navigation_group(std::int32_t group_id, bool force = false);
     EditResult set_area_point(std::int32_t area_id, std::size_t index, Vec3 position);
     EditResult insert_area_point(std::int32_t area_id, std::size_t index, Vec3 position);
     EditResult remove_area_point(std::int32_t area_id, std::size_t index);
     EditResult set_area_height(std::int32_t area_id, float height);
+    // A zone polygon (XZ, at the points' height) `height` tall.
+    EditResult add_area(std::string_view utf8_name, float height, const std::vector<Vec3>& points,
+                        std::optional<std::int32_t> id = {}, std::int32_t* new_id = nullptr);
+    // Refuses while scripts name the zone, unless `force`.
+    EditResult delete_area(std::int32_t area_id, bool force = false);
 
     // Static map props: the CSF scene-instance records in the visual map
     // stream, addressed by record offset. Only the rotation and position are

@@ -1,6 +1,7 @@
 #include "csf/authoring.hpp"
 #include "csf/authoring_project.hpp"
 #include "csf/mission_edit.hpp"
+#include "csf/mission_ops.hpp"
 #include "csf/mission.hpp"
 #include "csf/mod_project.hpp"
 #include "csf/object_database.hpp"
@@ -40,6 +41,7 @@ void usage() {
            "  csf-mod world-rebuild <map.rws> <new-map.rws> [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod world-build <source.csfworld> <donor-map.rws> <new-map.rws>\n"
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
+           "  csf-mod mission-ops <workspace> <scene.scn> <ops-file> [--package <root>] [--ground <source.csfworld>]\n"
            "  csf-mod project-build <project-dir> [--force]\n"
            "  csf-mod project-heights <project-dir> [--resnap]\n"
            "  csf-mod project-reference <project-dir> <out-dir>\n"
@@ -713,6 +715,58 @@ int main(int argc, char** argv) try {
         file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
         if (!file) throw std::runtime_error("Cannot write compiled output");
         std::cout << "compiled\t" << output.generic_string() << "\nsha256\t" << csf::sha256(bytes) << '\n';
+        return 0;
+    }
+    if (command == "mission-ops") {
+        // Runs a mission operations file (include/csf/mission_ops.hpp) and saves
+        // the result into the workspace; nothing is saved when a line fails.
+        if (argc < 5) { usage(); return 1; }
+        const std::filesystem::path workspace = argv[2], scene = argv[3], ops = argv[4];
+        std::filesystem::path package, ground_source;
+        for (int i = 5; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            if (option == "--package" && i + 1 < argc) package = argv[++i];
+            else if (option == "--ground" && i + 1 < argc) ground_source = argv[++i];
+            else throw std::runtime_error("Unknown mission-ops option: " + std::string(option));
+        }
+        if (package.empty())
+            for (auto dir = std::filesystem::weakly_canonical(scene).parent_path(); !dir.empty(); dir = dir.parent_path()) {
+                if (std::filesystem::is_directory(dir / "BDD")) {
+                    package = dir;
+                    break;
+                }
+                if (dir == dir.parent_path()) break;
+            }
+        if (package.empty()) throw std::runtime_error("Cannot find the mission root; pass --package");
+        auto project = std::filesystem::is_regular_file(workspace / ".csf-mod-state")
+                           ? csf::ModProject::load(workspace)
+                           : csf::ModProject::create(workspace, package, scene.stem().string(), "0.1.0");
+        auto editor = csf::MissionEditor::open(scene, package, &project);
+        if (!csf::read_mission_project_info(workspace))
+            csf::write_mission_project_info(workspace, {editor.files()[editor.scene_file()].relative_path, {}});
+        csf::MissionOpsOptions options;
+        options.base_directory = std::filesystem::absolute(ops).parent_path();
+        std::optional<rws::GroundQuery> ground;
+        if (!ground_source.empty()) {
+            const auto bytes = read_bytes(ground_source);
+            const auto source = rws::parse_world_source({reinterpret_cast<const char*>(bytes.data()), bytes.size()});
+            if (!source) throw std::runtime_error(ground_source.generic_string() + ": " + source.error);
+            ground.emplace(*source.value);
+            options.ground = [&ground](const float x, const float z) -> std::optional<float> {
+                if (const auto hit = ground->highest(x, z)) return hit->height;
+                return std::nullopt;
+            };
+        }
+        const auto bytes = read_bytes(ops);
+        const auto outcomes = csf::run_mission_ops(editor, {reinterpret_cast<const char*>(bytes.data()), bytes.size()},
+                                                   options);
+        for (const auto& outcome : outcomes) {
+            std::cout << (outcome.result.applied ? "applied\t" : "failed\t") << ops.filename().generic_string() << ':'
+                      << outcome.line << '\t' << outcome.op << '\t' << outcome.result.message << '\n';
+            for (const auto& warning : outcome.result.warnings) std::cout << "warning\t" << outcome.line << '\t' << warning << '\n';
+        }
+        if (!outcomes.empty() && !outcomes.back().result.applied) return 2;
+        for (const auto& path : editor.save(project)) std::cout << "wrote\t" << path.generic_string() << '\n';
         return 0;
     }
     if (command == "mission-edit") {

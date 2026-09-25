@@ -468,9 +468,9 @@ def scripts() -> dict[int, str]:
     }
 
 
-def cutscene() -> str:
+def cutscene_records() -> list[str]:
     """Convoy.csc's structure (CUT_INICIO runs its INIT, camera and END scripts)
-    with the hello-world camera script."""
+    with the hello-world camera script, one script record each."""
     camera = []
     for k, (ident, _, _, seconds) in enumerate(SHOTS):
         speed = math.hypot(*SHOT_TRAVEL[k]) / seconds
@@ -488,8 +488,12 @@ def cutscene() -> str:
         script(3, "CUT_INICIOEND", 1, [], ["WAIT_CONDICION (CUTSCENE_FINISHED (CUTSCENE 28))"]),
         script(28, "CUT_INICIO_GENERAL_Camara", 1, [], camera),
     ]
+    return records
+
+
+def cutscene() -> str:
     body = "".join("\n".join("    " + line for line in record.rstrip("\n").split("\n")) + "\n"
-                   for record in records)
+                   for record in cutscene_records())
     return "[\n  .SCRIPTS (\n" + body + "  )\n  .POOL ()\n]\n"
 
 

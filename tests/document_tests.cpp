@@ -5,6 +5,8 @@
 #include "csf/document.hpp"
 #include "csf/export.hpp"
 #include "csf/mission_edit.hpp"
+#include "csf/mission_ops.hpp"
+#include "csf/mission_recipes.hpp"
 #include "csf/mod_project.hpp"
 #include "csf/script_signatures.hpp"
 #include "csf/source_text.hpp"
@@ -1417,6 +1419,92 @@ void test_mission_editor() {
     }
     CHECK(editor.modified_files().empty());
     CHECK(editor.save(project).empty() && project.files.empty());
+
+    {
+        // Mission structure and presets (stage 4): records are created with
+        // given or next IDs in ID order, a preset is one undo step, and the
+        // ops text runs them with line-numbered failures.
+        auto fresh = csf::MissionEditor::open(map / "M1.scn", package);
+        std::int32_t group{};
+        CHECK(!fresh.add_navigation_group("R", 0, {{{0, 0, 0}}, {{10, 0, 0}}}, {{1, 1}}).applied);  // self link
+        CHECK(fresh.add_navigation_group("R", 0, {{{0, 0, 0}}, {{10, 0, 0}}, {{10, 0, 10}}}, {{1, 2}, {2, 3}, {3, 1}},
+                                         std::nullopt, &group).applied);
+        CHECK(group == 3 && fresh.scene().navigation().back().connections.size() == 3);
+        CHECK(!fresh.add_navigation_group("again", 0, {{{0, 0, 0}}}, {}, 3).applied);  // ID taken
+        CHECK(!fresh.add_area("flat", 100, {{0, 0, 0}, {10, 0, 0}, {20, 0, 0}}).applied);  // collinear
+        std::int32_t area{};
+        CHECK(fresh.add_area("Z2", 100, {{0, 0, 0}, {10, 0, 0}, {10, 0, 10}}, std::nullopt, &area).applied && area == 2);
+        CHECK(fresh.add_dummy("CAM", {1, 2, 3}, 0.5F, 0.1F, 7).applied && fresh.scene().dummies().back().id == 7);
+        CHECK(!fresh.add_actor_record({std::nullopt, "BAD", 10, {{0, 0, 0}, 0, 0}, std::pair{9, 9}, {}, {}}).applied);
+        CHECK(!fresh.add_actor_record({std::nullopt, "HERO", 10, {}, {}, {}, {}}).applied);  // name taken
+        CHECK(fresh.add_actor_record({3, "PROP", 10, {{5, 0, 5}, 45, 0}, std::nullopt, {}, std::string("P\\x.fbs")}).applied);
+        // Kept in ID order between actors 1 and 5.
+        CHECK(fresh.scene().actors()[1].id == 3 && fresh.scene().actors()[1].cell == -1);
+        CHECK(fresh.scene().actors()[1].portrait == "P\\x.fbs");
+
+        csf::GuardPatrol patrol;
+        patrol.actor = {20, "PATROL", 10, {{0, 0, 0}, -90, 0}, std::nullopt, {}, {}};
+        patrol.route = {30, "ROUTE", {{{0, 0, 0}}, {{100, 0, 0}}, {{100, 0, 100}}}, true};
+        patrol.pause_seconds = 2;
+        patrol.cover_group = 3;
+        patrol.script = {9000, "PATROL_LOOP"};
+        const auto history = [&] {
+            std::size_t n = 0;
+            for (; fresh.can_undo() && n < 100; ++n) (void)fresh.undo();
+            for (std::size_t k = 0; k < n; ++k) (void)fresh.redo();
+            return n;
+        };
+        const auto history_before = history();
+        const auto result = csf::add_guard_patrol(fresh, patrol);
+        CHECK(result.applied);
+        const auto program = *fresh.file_of_kind(csf::MissionFileKind::mission_script);
+        const auto text = fresh.script_text(program, 9000);
+        CHECK(text && text->find("SELECT_GRUPO_PARAPETO (THIS) (GRUPO_PATHPOINT 3)") != std::string::npos);
+        CHECK(text->find("IR_A_PATHPOINT (THIS) (PATHPOINT 30 3)") != std::string::npos);
+        const auto& guard = *std::ranges::find(fresh.scene().actors(), std::optional<std::int32_t>(20), &csf::MissionActor::id);
+        CHECK(guard.cell == 1 && guard.group == 30 && guard.script_ids == std::vector<std::int32_t>{9000});
+        CHECK(history() == history_before + 1);  // the preset is one step
+        CHECK(fresh.undo() && !fresh.script_text(program, 9000) && fresh.scene().navigation().size() == 3);
+        CHECK(fresh.redo() && fresh.script_text(program, 9000));
+        // A failing preset leaves nothing behind: route 30 exists now.
+        const auto actors_before = fresh.scene().actors().size();
+        patrol.actor.id = 21;
+        patrol.actor.name = "PATROL2";
+        patrol.script.id = 9001;
+        CHECK(!csf::add_guard_patrol(fresh, patrol).applied);
+        CHECK(fresh.scene().actors().size() == actors_before && !fresh.script_text(program, 9001));
+
+        // Walk grid: 3 x 3 with rows 0 and 2 shifted half a step (x 50 150 250,
+        // without ground at 250) and row 1 at x 0 100 200, (200, 100) excluded.
+        csf::WalkGrid grid;
+        grid.id = 40;
+        grid.spacing = 100;
+        grid.max_x = grid.max_z = 200;
+        grid.excluded_boxes.push_back({150, 100, 250, 100});
+        grid.ground = [](const float x, const float) -> std::optional<float> { return x > 240 ? std::nullopt : std::optional(1.0F); };
+        CHECK(csf::add_walk_grid(fresh, grid).applied);
+        const auto& walk = fresh.scene().navigation().back();
+        CHECK(walk.id == 40 && walk.points.size() == 6 && walk.points.front().position->x == 50.0F);
+        CHECK(walk.connections.size() == 7);  // one within each row, two between neighbouring rows
+        CHECK(csf::link_to_nearest(fresh, 30, 40).applied);
+        CHECK(fresh.scene().cross_group_connections().size() == 3);
+
+        // The ops text: a failing line names its number and stops the run.
+        const auto outcomes = csf::run_mission_ops(fresh, "# comment\ndummy id=8 name=D pos=1,2,3\narea name=A height=1\n"
+                                                          "dummy id=9 pos=0,0,0 name=E\n");
+        CHECK(outcomes.size() == 2 && outcomes[0].result.applied && !outcomes[1].result.applied);
+        CHECK(outcomes[1].line == 3 && outcomes[1].result.message == "missing points=");
+        CHECK(csf::run_mission_ops(fresh, "dummy id=10 name=F pos=1,2,3 colour=red\n")[0].result.warnings ==
+              std::vector<std::string>{"ignored colour="});
+        CHECK(csf::script_number(3) == "3.0" && csf::script_number(0.25F) == "0.25");
+
+        // A new mission keeps the environment and empties the rest.
+        CHECK(fresh.new_mission().applied);
+        const auto& emptied = fresh.scene();
+        CHECK(emptied.actors().empty() && emptied.navigation().empty() && emptied.dummies().empty() &&
+              emptied.areas().empty() && emptied.lights().empty() && emptied.effects().empty());
+        CHECK(!fresh.script_text(program, 7) && emptied.metadata().maximum_score == 2000);
+    }
     std::filesystem::remove_all(root);
 }
 

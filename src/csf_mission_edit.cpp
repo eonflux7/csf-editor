@@ -664,7 +664,9 @@ void MissionEditor::restore(const FileSnapshot& snapshot, const bool forward) {
 bool MissionEditor::undo() {
     if (!can_undo()) return false;
     --cursor_;
-    for (const auto& snapshot : history_[cursor_].files) restore(snapshot, false);
+    // Backwards: a batch holds several snapshots of the same file in order.
+    const auto& files = history_[cursor_].files;
+    for (auto snapshot = files.rbegin(); snapshot != files.rend(); ++snapshot) restore(*snapshot, false);
     return true;
 }
 
@@ -2182,7 +2184,8 @@ TreeNode parse_script(const std::string_view text) {
     if (script.kind != ValueKind::array || script.label)
         throw std::invalid_argument("A script must be one unlabelled [ ... ] record");
     if (!record_id(script)) throw std::invalid_argument("A script needs an integer .ID");
-    if (!script.child(".ACCIONES")) throw std::invalid_argument("A script needs an .ACCIONES block");
+    // A record without .ACCIONES is valid: shipped cutscene programs have such
+    // INIT records (Convoy.csc CUT_INICIOINIT).
     return script;
 }
 
@@ -2298,6 +2301,263 @@ EditResult MissionEditor::delete_script(const std::size_t file, const std::int32
         std::vector<std::string> warnings;
         if (operand_uses) warnings.push_back("Operands still name the deleted script");
         return t.commit("Deleted script " + std::to_string(script_id), std::move(warnings));
+    });
+}
+
+// ---- Mission structure --------------------------------------------------------
+
+namespace {
+
+std::int32_t take_id(const TreeNode& list, const std::optional<std::int32_t> wanted, const char* what) {
+    if (!wanted) return next_id(list);
+    if (*wanted < 0) throw std::invalid_argument(std::string(what) + " IDs are not negative");
+    if (find_record(const_cast<TreeNode&>(list), *wanted))
+        throw std::invalid_argument(std::string(what) + " " + std::to_string(*wanted) + " already exists");
+    return *wanted;
+}
+
+TreeNode nav_point_record(const std::int32_t id, const NavPointSpec& spec) {
+    auto point = TreeNode::array(std::nullopt);
+    point.children = {TreeNode::integer(".ID", id), TreeNode::string(".NOMBRE", ""), make_vec3(".POS", spec.position),
+                      TreeNode::real(".ROT", spec.rotation_radians), TreeNode::real(".ROT_X", spec.pitch_radians)};
+    return point;
+}
+
+} // namespace
+
+EditResult MissionEditor::add_actor_record(const ActorSpec& spec, std::int32_t* new_id) {
+    const bool known_class = !objects().find_class(spec.class_id).empty();
+    return run(*this, "Add actor " + spec.name, [&](MissionTransaction& t) {
+        if (!known_class)
+            throw std::invalid_argument("Class " + std::to_string(spec.class_id) +
+                                        " is not in this mission's Objetos.bdd; import it first");
+        if (!finite(spec.placement.position) || !std::isfinite(spec.placement.heading_degrees) ||
+            !std::isfinite(spec.placement.pitch_degrees))
+            throw std::invalid_argument("Position and angles must be finite");
+        auto scene = t.scene();
+        auto& actors = scene.actors();
+        const auto id = take_id(actors, spec.id, "Actor");
+        auto name = to_1252(spec.name, "Name");
+        if (name.empty()) name = "Actor_" + std::to_string(id);
+        if (std::ranges::any_of(actors.children, [&](const TreeNode& a) {
+                const auto* n = a.child(".NOMBRE");
+                return n && n->as_string() && *n->as_string() == name;
+            }))
+            throw std::invalid_argument("An actor is already named " + display(name));
+        if (spec.cell && !scene.point(spec.cell->first, spec.cell->second))
+            throw std::invalid_argument("Placement point " + std::to_string(spec.cell->first) + "/" +
+                                        std::to_string(spec.cell->second) + " does not exist");
+        auto actor = TreeNode::array(std::nullopt);
+        actor.children = {TreeNode::string(".NOMBRE", name),
+                          TreeNode::integer(".ID", id),
+                          TreeNode::integer(".CLASSID", spec.class_id),
+                          make_vec3(".POS", spec.placement.position),
+                          TreeNode::real(".ANGULO", spec.placement.heading_degrees),
+                          TreeNode::real(".ANGULO_X", spec.placement.pitch_degrees),
+                          TreeNode::integer(".COLISION", 1),
+                          TreeNode::integer(".FLAGS", 0),
+                          TreeNode::integer(".SEGUNDA_EXPLOSION", 0)};
+        if (spec.portrait)
+            insert_ordered(actor, TreeNode::string(".PORTRAIT", to_1252(*spec.portrait, "Portrait")), actor_order);
+        if (!spec.scripts.empty()) {
+            auto list = TreeNode::group(".SCRIPT");
+            for (const auto script : spec.scripts) list.children.push_back(TreeNode::integer(std::nullopt, script));
+            insert_ordered(actor, std::move(list), actor_order);
+        }
+        set_actor_cell(actor, spec.cell ? spec.cell->first : -1, spec.cell ? spec.cell->second : -1);
+        insert_record(actors, std::move(actor));
+        if (new_id) *new_id = id;
+        return t.commit("Added " + display(name) + " (" + std::to_string(id) + ")");
+    });
+}
+
+EditResult MissionEditor::batch(std::string label, const std::function<EditResult()>& body) {
+    const auto start = cursor_;
+    const auto saved = saved_position_;
+    auto result = body();
+    if (!result.applied) {
+        while (cursor_ > start) undo();
+        history_.resize(start);
+        saved_position_ = saved;
+        return result;
+    }
+    if (cursor_ - start <= 1) return result;
+    // One entry whose snapshots replay in order (undo walks them backwards).
+    HistoryEntry merged{std::move(label), {}};
+    for (auto i = start; i < cursor_; ++i)
+        for (auto& snapshot : history_[i].files) merged.files.push_back(std::move(snapshot));
+    const auto end = cursor_;
+    history_.resize(start);
+    history_.push_back(std::move(merged));
+    cursor_ = start + 1;
+    if (saved_position_ > start && saved_position_ <= end) saved_position_ = ~std::size_t{};
+    return result;
+}
+
+EditResult MissionEditor::new_mission() {
+    return run(*this, "New mission", [&](MissionTransaction& t) {
+        auto scene = t.scene();
+        const auto clear = [](TreeNode* list) {
+            if (list) list->children.clear();
+        };
+        clear(&scene.actors());
+        clear(scene.root.child(".EFECTOS"));
+        clear(scene.root.child(".AGUAS"));
+        clear(&scene.groups());
+        clear(scene.navigation().child(".CONEXIONES"));
+        clear(&scene.dummies());
+        clear(&scene.areas());
+        clear(&scene.lights());
+        if (auto* objects = scene.root.child(".MALLA_SCENE_OBJS")) clear(objects->child(".SCENEOBJS"));
+        clear(scene.root.child(".BRIDGES"));
+        // Folders name the removed records.
+        for (const auto* owner : {".MALLA_DUMMIES", ".MALLA_LUCES", ".MALLA_AREAS", ".MALLA_NAVEGACION"})
+            if (auto* node = scene.root.child(owner)) remove_child(*node, ".CARPETAS");
+        remove_child(scene.root, ".CARPETAS");
+        for (std::size_t i = 0; i < files_.size(); ++i)
+            if (files_[i].present && is_program(files_[i].kind) && files_[i].tree)
+                script_list(t.tree(i)).children.clear();
+        return t.commit("Emptied the scene and its scripts for a new mission");
+    });
+}
+
+EditResult MissionEditor::add_dummy(const std::string_view utf8_name, const Vec3 position, const float rotation_radians,
+                                    const float pitch_radians, const std::optional<std::int32_t> id,
+                                    std::int32_t* new_id) {
+    return run(*this, "Add dummy", [&](MissionTransaction& t) {
+        if (!finite(position) || !std::isfinite(rotation_radians) || !std::isfinite(pitch_radians))
+            throw std::invalid_argument("Position and angles must be finite");
+        auto scene = t.scene();
+        auto& list = scene.dummies();
+        const auto dummy_id = take_id(list, id, "Dummy");
+        auto name = to_1252(utf8_name, "Name");
+        if (name.empty()) name = "DUMMY_" + std::to_string(dummy_id);
+        auto dummy = TreeNode::array(std::nullopt);
+        dummy.children = {TreeNode::integer(".ID", dummy_id), TreeNode::string(".NOMBRE", name),
+                          make_vec3(".POS", position), TreeNode::real(".ROT", rotation_radians),
+                          TreeNode::real(".ROT_X", pitch_radians)};
+        insert_record(list, std::move(dummy));
+        if (new_id) *new_id = dummy_id;
+        return t.commit("Added dummy " + std::to_string(dummy_id));
+    });
+}
+
+EditResult MissionEditor::add_navigation_group(const std::string_view utf8_name, const std::int32_t type,
+                                               const std::vector<NavPointSpec>& points,
+                                               const std::vector<std::pair<std::int32_t, std::int32_t>>& links,
+                                               const std::optional<std::int32_t> id, std::int32_t* new_id) {
+    return run(*this, "Add navigation group", [&](MissionTransaction& t) {
+        auto scene = t.scene();
+        auto& groups = scene.groups();
+        const auto group_id = take_id(groups, id, "Navigation group");
+        auto group = TreeNode::array(std::nullopt);
+        auto list = TreeNode::group(".PUNTOS");
+        for (std::size_t i = 0; i < points.size(); ++i) {
+            if (!finite(points[i].position)) throw std::invalid_argument("Point positions must be finite");
+            list.children.push_back(nav_point_record(static_cast<std::int32_t>(i + 1), points[i]));
+        }
+        auto connections = TreeNode::group(".CONEXIONES");
+        const auto count = static_cast<std::int32_t>(points.size());
+        std::set<std::pair<std::int32_t, std::int32_t>> seen;
+        for (const auto& [a, b] : links) {
+            if (a < 1 || b < 1 || a > count || b > count || a == b)
+                throw std::invalid_argument("Link " + std::to_string(a) + "-" + std::to_string(b) + " names no two points");
+            if (!seen.insert(std::minmax(a, b)).second)
+                throw std::invalid_argument("Link " + std::to_string(a) + "-" + std::to_string(b) + " is repeated");
+            auto connection = TreeNode::array(std::nullopt);
+            connection.children = {TreeNode::integer(".PUNTO_ORI", a), TreeNode::integer(".PUNTO_DST", b)};
+            connections.children.push_back(std::move(connection));
+        }
+        group.children = {TreeNode::integer(".ID", group_id), TreeNode::string(".NOMBRE", to_1252(utf8_name, "Name")),
+                          TreeNode::integer(".TIPO", type), std::move(list), std::move(connections)};
+        insert_record(groups, std::move(group));
+        if (new_id) *new_id = group_id;
+        return t.commit("Added navigation group " + std::to_string(group_id) + " (" + std::to_string(points.size()) +
+                        " points)");
+    });
+}
+
+EditResult MissionEditor::delete_navigation_group(const std::int32_t group_id, const bool force) {
+    std::size_t script_uses = script_references("GRUPO_PATHPOINT", group_id);
+    for (const auto& file : files_) {
+        if (!file.present || !is_program(file.kind) || !file.tree) continue;
+        for (const auto& root : file.tree->roots)
+            if (const auto* scripts = root.child(".SCRIPTS"))
+                visit_operands(*scripts, [&](const std::string_view tag, const TreeNode& node) {
+                    script_uses += tag == "PATHPOINT" && node.children.size() >= 3 &&
+                                   node.children[1].as_int() == group_id;
+                });
+    }
+    return run(*this, "Delete navigation group " + std::to_string(group_id), [&](MissionTransaction& t) {
+        auto scene = t.scene();
+        auto& groups = scene.groups();
+        auto* group = find_record(groups, group_id);
+        if (!group) throw std::invalid_argument("Navigation group " + std::to_string(group_id) + " does not exist");
+        std::size_t actors = 0;
+        for (const auto& actor : scene.actors().children)
+            if (const auto cell = actor_cell(actor); cell && cell->first == group_id) ++actors;
+        if ((actors || script_uses) && !force)
+            throw std::invalid_argument("Navigation group " + std::to_string(group_id) + " places " +
+                                        std::to_string(actors) + " actor(s) and is named by " +
+                                        std::to_string(script_uses) + " script operand(s)");
+        std::erase_if(groups.children, [&](const TreeNode& value) { return &value == group; });
+        if (auto* links = scene.navigation().child(".CONEXIONES"))
+            std::erase_if(links->children, [&](const TreeNode& link) {
+                return integer(link.child(".GRUPO_ORI")) == group_id || integer(link.child(".GRUPO_DST")) == group_id;
+            });
+        std::vector<std::string> warnings;
+        if (actors) {
+            for (auto& actor : scene.actors().children)
+                if (const auto cell = actor_cell(actor); cell && cell->first == group_id) set_actor_cell(actor, -1, -1);
+            warnings.push_back("Actors placed in the group have no placement point now");
+        }
+        if (script_uses) warnings.push_back("Scripts still name the group");
+        return t.commit("Deleted navigation group " + std::to_string(group_id), std::move(warnings));
+    });
+}
+
+EditResult MissionEditor::add_area(const std::string_view utf8_name, const float height, const std::vector<Vec3>& points,
+                                   const std::optional<std::int32_t> id, std::int32_t* new_id) {
+    return run(*this, "Add area", [&](MissionTransaction& t) {
+        if (!std::isfinite(height) || height <= 0) throw std::invalid_argument("Area height must be positive");
+        if (const auto problems = area_polygon_problems(points); !problems.empty())
+            throw std::invalid_argument("The area " + problems.front() + " (the game crashes loading it)");
+        auto scene = t.scene();
+        auto& list = scene.areas();
+        const auto area_id = take_id(list, id, "Area");
+        auto name = to_1252(utf8_name, "Name");
+        if (name.empty()) name = "ZONA_" + std::to_string(area_id);
+        auto corners = TreeNode::group(".PUNTOS");
+        for (const auto& point : points) {
+            auto corner = TreeNode::array(std::nullopt);
+            corner.children = {make_vec3(".POS", point)};
+            corners.children.push_back(std::move(corner));
+        }
+        auto area = TreeNode::array(std::nullopt);
+        area.children = {TreeNode::integer(".ID", area_id), TreeNode::integer(".FLAGS", 1),
+                         TreeNode::integer(".OCLUSION", 1), TreeNode::string(".NOMBRE", name),
+                         TreeNode::real(".HEIGHT", height), TreeNode::integer(".REVERB", 0),
+                         TreeNode::integer(".LIMITREVERB", 0), std::move(corners)};
+        insert_record(list, std::move(area));
+        if (new_id) *new_id = area_id;
+        return t.commit("Added area " + std::to_string(area_id));
+    });
+}
+
+EditResult MissionEditor::delete_area(const std::int32_t area_id, const bool force) {
+    const auto uses = script_references("ZONA", area_id);
+    return run(*this, "Delete area " + std::to_string(area_id), [&](MissionTransaction& t) {
+        auto scene = t.scene();
+        auto& list = scene.areas();
+        auto* area = find_record(list, area_id);
+        if (!area) throw std::invalid_argument("Area " + std::to_string(area_id) + " does not exist");
+        if (uses && !force)
+            throw std::invalid_argument("Area " + std::to_string(area_id) + " is named by " + std::to_string(uses) +
+                                        " script operand(s)");
+        std::erase_if(list.children, [&](const TreeNode& value) { return &value == area; });
+        std::vector<std::string> warnings;
+        if (uses) warnings.push_back("Scripts still name the area");
+        return t.commit("Deleted area " + std::to_string(area_id), std::move(warnings));
     });
 }
 
