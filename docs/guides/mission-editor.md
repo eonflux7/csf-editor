@@ -44,6 +44,7 @@ to save or discard them.
 | New mission | **Mission > Start a new mission in this slot** empties actors, navigation, zones, dummies, lights, effects and scripts, keeping the environment |
 | Objectives | **Changes > Objectives**: reach a zone, kill an actor, use an object (primary or secondary), the success check, starting equipment and mission tips |
 | Flow | **Changes > Flow**: events and the scripts they start, objectives, and findings such as a mission event nothing raises |
+| Cutscene | **Changes > Cutscene**: capture travelling shots from the viewport, preview them, and create an intro (camera helpers, paths, dummies and both programs' scripts) |
 | Text | **Changes > Texts**: the authoring project's mission strings (GlobalEK) |
 | Mission | Starting player, available commandos, maximum/minimum score, every scalar `.MUNDOVIS` environment field |
 | Scripts (`.gsc`, `.csc`) | Edit any script as text, toggle trigger/enabled, add and delete scripts |
@@ -217,7 +218,7 @@ findings.
 operations and presets, one per line (`new-mission`, `actor`, `prop`,
 `nav-group`, `link`, `link-nearest`, `dummy`, `area`, `look`, `script`,
 `guard-patrol`, `guard-idle`, `animal-patrol`, `cover-group`, `walk-grid`,
-`objective`/`objectives`, `kit`/`equipment`, `tips`; the
+`objective`/`objectives`, `kit`/`equipment`, `tips`, `shot`/`intro`; the
 full syntax is in `include/csf/mission_ops.hpp`). `--ground <source.csfworld>`
 gives walk grids their heights. Hello world is built this way by
 `tools/hello_world/ops.py`, and `tools/hello_world/parity.sh <project>` checks

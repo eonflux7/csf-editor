@@ -3,9 +3,8 @@
 
     tools/hello_world/ops.py TERRAIN.csfworld CORPUS_ROOT OUT_DIR
 
-Writes OUT_DIR/hello.ops (and the raw scripts it names) from scene.py's own
-data, using the editor's presets wherever scene.py follows one of their
-patterns. tools/hello_world/parity.sh runs it with `csf-mod mission-ops` and
+Writes OUT_DIR/hello.ops from scene.py's own data: every record and script
+comes from an editor operation or preset, none from raw script text. tools/hello_world/parity.sh runs it with `csf-mod mission-ops` and
 checks the result against the scene.py build, file for file.
 """
 
@@ -42,8 +41,7 @@ def main(argv: list[str]) -> int:
         return 2
     hw.TERRAIN = hw.Terrain(argv[1])
     corpus, out = Path(argv[2]).resolve(), Path(argv[3])
-    (out / "scripts").mkdir(parents=True, exist_ok=True)
-    scripts = hw.scripts()
+    out.mkdir(parents=True, exist_ok=True)
     ops = ["# hello world through the editor's operations (tools/hello_world/ops.py)", "new-mission"]
     ops += [f"import-class donor={quote(str(corpus / 'Ransom'))} class={hw.DOG_CLASS}",
             f"import-anim donor={quote(str(corpus / 'Ransom'))} anim=2383",
@@ -61,19 +59,7 @@ def main(argv: list[str]) -> int:
                f"points={points(f'{position(x, z)},{rotation(h)}' for _, x, z, h in start)}")
     ops.append(f"cover-group id={hw.G_COVER} name=Parapeto_Campamento "
                f"points={points(f'{position(x, z)},{rotation(90.0)}' for x, z in hw.COVER)}")
-    for k, (_, (x, z, height), _, _) in enumerate(hw.SHOTS):
-        dx, dz = hw.SHOT_TRAVEL[k]
-        heading = math.degrees(math.atan2(dx, dz))
-        end_lift = hw.ground(x, z) + height - hw.ground(x + dx, z + dz)
-        ops.append(f"nav-group id={100 + k} name=Rutas_Cutscene_Inicio_Camara_{k + 1} type=0 "
-                   f"points={position(x, z, height)},{rotation(heading)};"
-                   f"{position(x + dx, z + dz, end_lift)},{rotation(heading)} links=1-2")
-
-    # Scripts in ID order (the program lists them so); presets add their own.
-    def raw(ident: int) -> None:
-        (out / "scripts" / f"{ident}.txt").write_text(scripts[ident], encoding="utf-8")
-        ops.append(f"script file=scripts/{ident}.txt")
-
+    # Scripts come in ID order (the program lists them so): each recipe adds its own.
     # Starting equipment, mission tips and the three objectives (recipes).
     ops += ["kit actor=1 weapons=16,102@100/100,4@100/100,64,37 select=4",
             "kit actor=2 weapons=50,102@100/100,45,44,37,70 disguise=23",
@@ -109,13 +95,20 @@ def main(argv: list[str]) -> int:
                f"route={hw.G_DOG_ROUTE} route-name=RUTA_PERRO "
                f"points={points(position(px, pz) for px, pz in hw.DOG_ROUTE)} walk={hw.DOG_WALK} "
                f"script={hw.S_DOG} script-name=PERRO_RUTA")
-    raw(hw.S_INTRO)
-
-    # The intro cutscene program (.csc).
-    for record in hw.cutscene_records():
-        ident = int(record.split(".ID ")[1].split()[0])
-        (out / "scripts" / f"csc-{ident}.txt").write_text(record, encoding="utf-8")
-        ops.append(f"cutscene-script file=scripts/csc-{ident}.txt")
+    # The travelling-camera intro (scene.py's SHOTS), with its exact rounded
+    # angles and speeds.
+    for k, (_, camera, target, seconds) in enumerate(hw.SHOTS):
+        x, z, height = camera
+        dx, dz = hw.SHOT_TRAVEL[k]
+        heading = math.degrees(math.atan2(dx, dz))
+        end_lift = hw.ground(x, z) + height - hw.ground(x + dx, z + dz)
+        yaw, pitch = hw.look_at(camera, target)
+        speed = math.hypot(dx, dz) / seconds
+        ops.append(f"shot camera={position(x, z, height)} end={position(x + dx, z + dz, end_lift)} "
+                   f"target={position(*target)} seconds={seconds} aim={yaw:.6f},{pitch:.6f} "
+                   f"heading={rotation(heading)} speed={speed:.6f}")
+    ops.append(f"intro class={hw.CAMERA_CLASS} dummy={hw.SHOTS[0][0]} actor=100 group=100 script={hw.S_INTRO} "
+               "script-name=CUTSCENE_INICIO cutscene=1,2,3,28 cutscene-name=CUT_INICIO")
 
     # Players on their start points, the radio, the camp props and the camera helpers.
     for ident, point in ((hw.SNIPER, 2), (hw.SPY, 1)):
@@ -127,18 +120,11 @@ def main(argv: list[str]) -> int:
                f"heading={heading}")
     for ident, name, cls, x, z, heading, _, _, _ in hw.prop_actors():
         ops.append(f"prop id={ident} name={name} class={cls} pos={position(x, z)} heading={heading}")
-    for (ident, name, cls, x, z, heading, nav, _, _), lift in hw.camera_helpers():
-        cell = f" cell={nav[0]}/{nav[1]}" if nav else ""
-        op = "actor" if nav else "prop"
-        ops.append(f"{op} id={ident} name={name} class={cls} pos={position(x, z, lift)} heading={heading}{cell}")
     ops.append(f"look actor={hw.RADIO_GHOST} class=211")
 
-    # Routes join the walking grid; camera dummies; zones.
+    # Routes join the walking grid; zones.
     for group in (hw.G_START, hw.G_CAMP_ROUTE, hw.G_NORTH_ROUTE):
         ops.append(f"link-nearest group={group} target={hw.G_WALK}")
-    for ident, camera, target, _ in hw.SHOTS:
-        yaw, pitch = hw.look_at(camera, target)
-        ops.append(f"dummy id={ident} name=CAMARA_{ident} pos={position(*camera)} rot={yaw:.6f} pitch={pitch:.6f}")
     ops.append(f"area id={hw.ZONE_HOUSE} name=ZONA_CASA height=400.0 "
                "points=-3400.0,0.0,-3350.0;-1600.0,0.0,-3350.0;-1600.0,0.0,-1650.0;-3400.0,0.0,-1650.0")
     ops.append(f"area id={hw.AREA_TOTAL} name=TOTAL height=3000.0 "

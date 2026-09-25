@@ -4149,6 +4149,30 @@ rwsman::CameraSnapshot GeometryPreview::camera() const {
     return snapshot;
 }
 
+rws::Vec3 GeometryPreview::orbit_target() const {
+    return {center_.x + navigation_offset_.x, center_.y + navigation_offset_.y, center_.z + navigation_offset_.z};
+}
+
+rws::Vec3 GeometryPreview::eye_position() const {
+    const auto target = orbit_target();
+    const auto offset = camera_offset(yaw_, pitch_);
+    return {target.x + offset.x, target.y + offset.y, target.z + offset.z};
+}
+
+void GeometryPreview::look_from(const rws::Vec3 eye, const rws::Vec3 target) {
+    // In scene mode the eye sits at target + distance * (cos p sin y, sin p, cos p cos y).
+    const rws::Vec3 d{eye.x - target.x, eye.y - target.y, eye.z - target.z};
+    const auto distance = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (!(distance > 0.001F)) return;
+    pan_x_ = pan_y_ = 0.0F;
+    distance_ = distance;
+    yaw_ = target_yaw_ = std::atan2(d.x, d.z);
+    pitch_ = target_pitch_ = std::asin(std::clamp(d.y / distance, -1.0F, 1.0F));
+    navigation_offset_ = target_navigation_offset_ = {target.x - center_.x, target.y - center_.y, target.z - center_.z};
+    preserve_camera_position_ = false;
+    animating_frame_ = ImGui::GetFrameCount();
+}
+
 void GeometryPreview::set_camera(const rwsman::CameraSnapshot& snapshot) {
     if (!snapshot.valid) return;
     yaw_ = target_yaw_ = snapshot.yaw;

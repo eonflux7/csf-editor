@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstring>
 #include <set>
 
@@ -282,6 +283,86 @@ void create_tips(AppState& state) {
         list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
     }
     if (apply_mission_edit(state, csf::add_tips(*state.mission.editor, recipe))) state.tools.tips[0] = '\0';
+}
+
+namespace {
+
+double now_seconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+rws::Vec3 rws_vec(const csf::Vec3 v) { return {v.x, v.y, v.z}; }
+
+} // namespace
+
+void capture_shot(AppState& state) {
+    const auto eye = state.preview.eye_position(), target = state.preview.orbit_target();
+    AuthoringTools::ShotForm shot;
+    shot.camera = {eye.x, eye.y, eye.z};
+    shot.target = {target.x, target.y, target.z};
+    state.tools.shots.push_back(shot);
+}
+
+void view_shot(AppState& state, const std::size_t index, const float t) {
+    if (index >= state.tools.shots.size()) return;
+    const auto& shot = state.tools.shots[index];
+    state.preview.look_from({shot.camera.x + t * shot.travel_x, shot.camera.y, shot.camera.z + t * shot.travel_z},
+                            rws_vec(shot.target));
+}
+
+void play_shots(AppState& state) {
+    if (state.tools.shots.empty()) return;
+    state.tools.preview_started = now_seconds();
+    update_shot_preview(state);
+}
+
+void stop_shots(AppState& state) { state.tools.preview_started.reset(); }
+
+void update_shot_preview(AppState& state) {
+    auto& tools = state.tools;
+    if (!tools.preview_started) return;
+    auto elapsed = static_cast<float>(now_seconds() - *tools.preview_started);
+    for (std::size_t i = 0; i < tools.shots.size(); ++i) {
+        const auto seconds = std::max(tools.shots[i].seconds, 0.01F);
+        if (elapsed <= seconds) {
+            view_shot(state, i, elapsed / seconds);
+            state.ui.animating = true;
+            return;
+        }
+        elapsed -= seconds;
+    }
+    view_shot(state, tools.shots.size() - 1, 1.0F);
+    tools.preview_started.reset();
+}
+
+void create_intro(AppState& state) {
+    if (!mission_editable(state)) return;
+    auto& tools = state.tools;
+    if (tools.shots.empty()) return state.warn("Capture a shot first");
+    auto& editor = *state.mission.editor;
+    csf::IntroCutscene recipe;
+    recipe.send_init = tools.send_init;
+    for (const auto& form : tools.shots) {
+        csf::CameraShot shot;
+        shot.camera = form.camera;
+        // Constant height, as hello world's shots: the path keeps the camera's height.
+        shot.camera_end = {form.camera.x + form.travel_x, form.camera.y, form.camera.z + form.travel_z};
+        shot.target = form.target;
+        shot.seconds = form.seconds;
+        recipe.shots.push_back(shot);
+    }
+    // The invisible camera actor: Ambush's class 197, imported when missing.
+    const auto ambush = state.settings.resource_root / "Ambush";
+    const bool have_class = !editor.objects().find_class(recipe.camera_class).empty();
+    if (!have_class && !std::filesystem::is_directory(ambush))
+        return state.warn("The cutscene needs Ambush's invisible camera actor (class 197); set the resource root "
+                          "to the unpacked game so it can be imported");
+    const auto result = editor.batch("Add intro cutscene", [&] {
+        if (!have_class)
+            if (auto imported = editor.import_class(ambush, recipe.camera_class); !imported.applied) return imported;
+        return csf::add_intro_cutscene(editor, recipe);
+    });
+    if (apply_mission_edit(state, result)) tools.shots.clear();
 }
 
 void add_preset_point(AppState& state) { state.tools.points.push_back(view_ground_point(state)); }

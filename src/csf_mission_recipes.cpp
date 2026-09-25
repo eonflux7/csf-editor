@@ -127,6 +127,116 @@ std::string number_operand(const std::int32_t n) { return "(NUMERO " + script_nu
 
 } // namespace
 
+std::pair<float, float> look_at(const Vec3 camera, const Vec3 target) {
+    const auto dx = target.x - camera.x, dy = target.y - camera.y, dz = target.z - camera.z;
+    return {std::atan2(dx, dz), std::atan2(-dy, std::hypot(dx, dz))};
+}
+
+EditResult add_intro_cutscene(MissionEditor& editor, const IntroCutscene& recipe) {
+    if (recipe.shots.empty()) return {false, "The cutscene needs a shot", {}};
+    const auto program = mission_program(editor);
+    const auto cutscene_file = editor.file_of_kind(MissionFileKind::cutscene_script);
+    if (!cutscene_file) return {false, "The mission has no cutscene program (.csc)", {}};
+    if (editor.objects().find_class(recipe.camera_class).empty())
+        return {false, "Class " + std::to_string(recipe.camera_class) +
+                           " (the invisible camera actor) is not in this mission; import it (Ambush has it)", {}};
+    const auto& scene = editor.scene();
+    const auto next = [](const auto& records, const std::optional<std::int32_t> wanted) {
+        if (wanted) return *wanted;
+        std::int32_t maximum = 0;
+        for (const auto& record : records)
+            if (record.id) maximum = std::max(maximum, *record.id);
+        return maximum + 1;
+    };
+    const auto first_dummy = next(scene.dummies(), recipe.first_dummy);
+    const auto first_actor = next(scene.actors(), recipe.first_actor);
+    const auto first_group = next(scene.navigation(), recipe.first_group);
+    const auto intro_id = recipe.intro.id.value_or(editor.next_script_id(program));
+    auto cutscene_next = editor.next_script_id(*cutscene_file);
+    std::array<std::int32_t, 4> cutscene{};
+    for (std::size_t k = 0; k < cutscene.size(); ++k) {
+        cutscene[k] = recipe.cutscene_ids[k].value_or(cutscene_next);
+        cutscene_next = std::max(cutscene_next, cutscene[k] + 1);
+    }
+    const auto n = static_cast<std::int32_t>(recipe.shots.size());
+    const auto fade = [](const bool in) {
+        return "FX_FADE (NUMERO 1.0) (BOOL " + std::string(in ? "TRUE" : "FALSE") + ") (VECTOR 0.0 0.0 0.0)";
+    };
+    std::vector<std::string> intro{fade(false), "CUTSCENE_NO_INTERACTIVA (BOOL TRUE)", "PLAYER_TERCERA (BOOL TRUE)"};
+    // INIT is a mission event (KB-scripting-14): the actor scripts that wait
+    // for it start here, as Convoy's intro sends it.
+    if (recipe.send_init) intro.emplace_back("SEND_EVENT (EVENT INIT)");
+    for (std::int32_t k = 0; k < n; ++k)
+        intro.push_back("CREATE_VIEWPOINT (DUMMY " + std::to_string(first_dummy + k) + ") (BICHO " +
+                        std::to_string(first_actor + 2 * k) + ") (BICHO " + std::to_string(first_actor + 2 * k + 1) +
+                        ") (NUMERO 0.0)");
+    intro.push_back("CUTSCENE_EXE (CUTSCENE " + std::to_string(cutscene[0]) + ")");
+    intro.insert(intro.end(), {fade(true), "PAUSE (NUMERO 1.5)", "CUTSCENE_NO_INTERACTIVA (BOOL FALSE)",
+                               "PLAYER_TERCERA (BOOL FALSE)"});
+    for (std::int32_t k = 0; k < n; ++k) intro.push_back("NAVEGACION_STOP (BICHO " + std::to_string(first_actor + 2 * k) + ")");
+    intro.push_back(fade(false));
+
+    std::vector<std::string> camera;
+    for (std::int32_t k = 0; k < n; ++k) {
+        const auto& shot = recipe.shots[static_cast<std::size_t>(k)];
+        const auto travel = std::hypot(shot.camera_end.x - shot.camera.x, shot.camera_end.z - shot.camera.z);
+        const auto speed = shot.speed.value_or(shot.seconds > 0 ? travel / shot.seconds : 0.0F);
+        const auto cameraman = "(BICHO " + std::to_string(first_actor + 2 * k) + ")";
+        camera.insert(camera.end(), {"PAUSE (NUMERO 0.01)", "CAMARA_EN_DUMMY (DUMMY " + std::to_string(first_dummy + k) + ")",
+                                     "CAM_SETFILTRO (CADENA \"<NINGUNO>\")",
+                                     "SET_WANTED_VEL " + cameraman + " (NUMERO " + script_number(speed) + ")",
+                                     "CONTINUE (IR_A_PATHPOINT " + cameraman + " (PATHPOINT " +
+                                         std::to_string(first_group + k) + " 2))",
+                                     "PAUSE (NUMERO " + script_number(shot.seconds) + ")"});
+    }
+    const auto name = recipe.cutscene_name;
+    const auto header_only = [](const std::int32_t id, const std::string& script_name) {
+        return "[\n  .ID " + std::to_string(id) + "\n  .NOMBRE " + script_name +
+               "\n  .CARPETA \"\"\n  .FLAGS [\n    .TRIGGER 1\n    .ENABLED 1\n    .VALIDO 1\n  ]\n]\n";
+    };
+    const std::vector<std::string> cutscene_texts{
+        script_text(cutscene[0], name, 1, {},
+                    {"CUTSCENE_EXE (CUTSCENE " + std::to_string(cutscene[1]) + ")",
+                     "CONTINUE (CUTSCENE_EXE (CUTSCENE " + std::to_string(cutscene[3]) + "))",
+                     "CUTSCENE_EXE (CUTSCENE " + std::to_string(cutscene[2]) + ")"}),
+        header_only(cutscene[1], name + "INIT"),
+        script_text(cutscene[2], name + "END", 1, {},
+                    {"WAIT_CONDICION (CUTSCENE_FINISHED (CUTSCENE " + std::to_string(cutscene[3]) + "))"}),
+        script_text(cutscene[3], name + "_GENERAL_Camara", 1, {}, camera)};
+
+    return editor.batch("Add intro cutscene", [&] {
+        Steps steps;
+        for (std::int32_t k = 0; k < n; ++k) {
+            const auto& shot = recipe.shots[static_cast<std::size_t>(k)];
+            const auto heading = shot.heading.value_or(
+                std::atan2(shot.camera_end.x - shot.camera.x, shot.camera_end.z - shot.camera.z));
+            const auto suffix = std::to_string(k + 1);
+            if (!steps.ok(editor.add_navigation_group("Rutas_Cutscene_Inicio_Camara_" + suffix, 0,
+                                                      {{shot.camera, heading, 0}, {shot.camera_end, heading, 0}},
+                                                      {{1, 2}}, first_group + k)))
+                return steps.last;
+            ActorSpec cameraman{first_actor + 2 * k, "INTRO_CAMERA_" + suffix, recipe.camera_class, {shot.camera, 0, 0},
+                                std::pair{first_group + k, 1}, {}, {}};
+            ActorSpec target{first_actor + 2 * k + 1, "INTRO_TARGET_" + suffix, recipe.camera_class, {shot.target, 0, 0},
+                             std::nullopt, {}, {}};
+            if (!steps.ok(editor.add_actor_record(cameraman)) || !steps.ok(editor.add_actor_record(target)))
+                return steps.last;
+            const auto [yaw, pitch] = shot.aim.value_or(look_at(shot.camera, shot.target));
+            const auto dummy = first_dummy + k;
+            if (!steps.ok(editor.add_dummy("CAMARA_" + std::to_string(dummy), shot.camera, yaw, pitch, dummy)))
+                return steps.last;
+        }
+        if (!steps.ok(editor.add_script(program, script_text(intro_id, recipe.intro.name.empty() ? "CUTSCENE_INICIO"
+                                                                                                 : recipe.intro.name,
+                                                             1, {"START_GAME"}, intro))))
+            return steps.last;
+        for (const auto& text : cutscene_texts)
+            if (!steps.ok(editor.add_script(*cutscene_file, text))) return steps.last;
+        return steps.finish("Added an intro of " + std::to_string(n) + " shot(s): script " + std::to_string(intro_id) +
+                            ", cutscene " + std::to_string(cutscene[0]));
+    });
+}
+
 EditResult add_objectives(MissionEditor& editor, const Objectives& recipe) {
     if (recipe.objectives.empty()) return {false, "No objectives to add", {}};
     auto next = editor.next_script_id(mission_program(editor));

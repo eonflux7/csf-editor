@@ -1070,6 +1070,64 @@ void draw_texts(AppState& state) {
     if (removed) set_project_text(state, *removed, std::nullopt);
 }
 
+void draw_cutscene(AppState& state) {
+    auto& tools = state.tools;
+    dim_text("Travelling shots for an intro cutscene: frame each shot in the viewport and capture it; the camera "
+             "moves by the travel distance at constant height while keeping its target in view. Playing the shots "
+             "here approximates the game (its field of view and timing differ).");
+    if (ImGui::Button("Capture shot from view")) capture_shot(state);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(tools.shots.empty());
+    if (!tools.preview_started) {
+        if (ImGui::Button("Play shots")) play_shots(state);
+    } else if (ImGui::Button("Stop")) {
+        stop_shots(state);
+    }
+    ImGui::EndDisabled();
+    std::optional<std::size_t> removed, raised;
+    for (std::size_t i = 0; i < tools.shots.size(); ++i) {
+        auto& shot = tools.shots[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Separator();
+        ImGui::Text("Shot %zu", i + 1);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Start")) view_shot(state, i, 0.0F);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("End")) view_shot(state, i, 1.0F);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Recapture")) {
+            const auto eye = state.preview.eye_position(), target = state.preview.orbit_target();
+            shot.camera = {eye.x, eye.y, eye.z};
+            shot.target = {target.x, target.y, target.z};
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(i == 0);
+        if (ImGui::SmallButton("Up")) raised = i;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) removed = i;
+        ImGui::SetNextItemWidth(90.0F * ui_scale());
+        ImGui::DragFloat("seconds", &shot.seconds, 0.1F, 0.5F, 60.0F, "%.1f");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(180.0F * ui_scale());
+        float travel[2]{shot.travel_x, shot.travel_z};
+        if (ImGui::DragFloat2("travel x z (cm)", travel, 5.0F, -5000.0F, 5000.0F, "%.0f")) {
+            shot.travel_x = travel[0];
+            shot.travel_z = travel[1];
+        }
+        dim_text("camera %.0f %.0f %.0f, target %.0f %.0f %.0f", shot.camera.x, shot.camera.y, shot.camera.z,
+                 shot.target.x, shot.target.y, shot.target.z);
+        ImGui::PopID();
+    }
+    if (removed) tools.shots.erase(tools.shots.begin() + static_cast<std::ptrdiff_t>(*removed));
+    if (raised) std::swap(tools.shots[*raised], tools.shots[*raised - 1]);
+    ImGui::Separator();
+    ImGui::Checkbox("Start the actors' scripts (raise INIT)", &tools.send_init);
+    ImGui::BeginDisabled(tools.shots.empty());
+    if (ImGui::Button("Create intro cutscene")) create_intro(state);
+    ImGui::EndDisabled();
+}
+
 void draw_import(AppState& state) {
     dim_text("Copies a class (with its models, collision, weapons, textures and animations) or an "
              "animation from another unpacked mission into this one, updating the package indexes.");
@@ -1248,6 +1306,10 @@ void draw_changes(AppState& state) {
     }
     if (tab("Objectives")) {
         draw_objectives(state);
+        ImGui::EndTabItem();
+    }
+    if (tab("Cutscene")) {
+        draw_cutscene(state);
         ImGui::EndTabItem();
     }
     if (tab("Flow")) {

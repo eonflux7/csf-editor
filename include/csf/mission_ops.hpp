@@ -39,6 +39,9 @@
 //   kit actor= weapons=<class>[@<ammo>/<ammo>],... [select=<class>] [disguise=<class>]   (then:)
 //   equipment [script=] [script-name=]
 //   tips tips=<fli>,... [pos=<x>,<y>] [script=] [script-name=]
+//   shot camera=x,y,z [end=x,y,z] target=x,y,z [seconds=] [aim=<rot>,<pitch>] [heading=] [speed=]   (then:)
+//   intro [class=197] [send-init=0] [dummy=] [actor=] [group=] [script=] [script-name=]
+//         [cutscene=<main>,<init>,<end>,<camera>] [cutscene-name=]
 namespace csf {
 
 struct MissionOpsOptions {

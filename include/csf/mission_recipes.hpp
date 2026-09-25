@@ -2,6 +2,7 @@
 
 #include "csf/mission_edit.hpp"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -135,6 +136,39 @@ struct Tips {
     ScriptSpec script;
 };
 
+// An intro cutscene of travelling camera shots (KB-scripting-44, the Ambush
+// pattern proven by hello world v13): per shot an invisible camera actor that
+// travels a two-point path at constant speed, an invisible target actor it
+// keeps aimed at, and a camera dummy registered as their viewpoint. The mission
+// program's START_GAME script fades, disables control, raises INIT (actor
+// scripts start on it) and runs the cutscene program's camera script, which
+// cuts between the shots. Positions are absolute game coordinates.
+struct CameraShot {
+    Vec3 camera, camera_end, target;
+    float seconds{4.0F};
+    // Exact values when given (hello world's recipe rounds them to 6 decimals);
+    // otherwise computed from the positions.
+    std::optional<std::pair<float, float>> aim;  // the dummy's .ROT and .ROT_X, radians
+    std::optional<float> heading;                // the path points' .ROT, radians
+    std::optional<float> speed;                  // SET_WANTED_VEL, cm/s
+};
+
+struct IntroCutscene {
+    std::vector<CameraShot> shots;
+    std::int32_t camera_class{197};  // invisible, physics-free (Ambush); import it when missing
+    bool send_init{true};
+    // First IDs; each shot takes the next dummy and group and two actors.
+    std::optional<std::int32_t> first_dummy, first_actor, first_group;
+    ScriptSpec intro{std::nullopt, "CUTSCENE_INICIO"};
+    // Cutscene program scripts: the cutscene, its INIT and END, the camera.
+    std::array<std::optional<std::int32_t>, 4> cutscene_ids{};
+    std::string cutscene_name{"CUT_INICIO"};
+};
+
+// The dummy aim (.ROT, .ROT_X) looking from `camera` at `target`.
+[[nodiscard]] std::pair<float, float> look_at(Vec3 camera, Vec3 target);
+
+EditResult add_intro_cutscene(MissionEditor& editor, const IntroCutscene& recipe);
 EditResult add_objectives(MissionEditor& editor, const Objectives& recipe);
 EditResult add_equipment(MissionEditor& editor, const Equipment& recipe);
 EditResult add_tips(MissionEditor& editor, const Tips& recipe);

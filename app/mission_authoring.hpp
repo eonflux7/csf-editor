@@ -34,6 +34,17 @@ void create_tips(AppState& state);
 // Adds, edits or removes a string of the authoring project (then rebuilds its text file).
 void set_project_text(AppState& state, const std::string& id, const std::optional<std::string>& text);
 
+// Cutscene shots: capture the viewport camera, look through a shot (t from 0
+// at its start to 1 at its end), play all shots in the viewport (an
+// approximation: the game's field of view and timing differ), and create the
+// intro cutscene from them.
+void capture_shot(AppState& state);
+void view_shot(AppState& state, std::size_t index, float t);
+void play_shots(AppState& state);
+void stop_shots(AppState& state);
+void update_shot_preview(AppState& state);  // once per frame
+void create_intro(AppState& state);
+
 void add_preset_point(AppState& state);
 void apply_preset(AppState& state);
 void start_new_mission(AppState& state);

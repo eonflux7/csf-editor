@@ -70,7 +70,7 @@ the editor reports what no longer sits on the ground (handoff item 5).
 | Walk grid (`MALLA`) and its links to routes | `walk_grid()`, `navigation()` | move, add, delete, link and unlink points in existing groups | add and delete navigation groups; generate a walk grid that avoids obstacles |
 | Patrol routes, cover group (`.TIPO 3`) | `nav_group`, `patrol()` | as above | route tool and presets that write the group and the actor script together |
 | Zones (the house) | `areas()` | move, insert and remove points; height | add and delete areas |
-| Camera dummies and helpers | `dummies()`, `camera_helpers()` | move, duplicate, delete | add dummies; the cutscene editor (stage 6) |
+| Camera dummies and helpers | `dummies()`, `camera_helpers()` | add, move, duplicate, delete; the intro recipe | done (stage 6) |
 | Objectives, events, mission success | `scripts()`, `CHECK_BOTH` | objective, equipment and tips recipes; Flow tab | done (stage 5) |
 | Usable radio on a crate | class 484 with class 211's look, lifted onto class 383 | `set_actor_look` | "usable object" preset; placing on a supporting object |
 | Objective text | `project.csfproj` `text` records → `project-build` | Texts tab | done (stage 5); GUI export of the GlobalEK archive |
@@ -367,6 +367,22 @@ duration, build, play and regain player control at the end. Full parity with
 `scene.py`. From then on the parity tests can use a stored copy of its output
 instead of running it.
 
+**Done (2026-09-25).** `add_intro_cutscene` (`csf/mission_recipes`) writes the
+v13 pattern: per shot a class-197 camera actor on a two-point path, a class-197
+target actor, a camera dummy aimed at the target; the `.gsc` START_GAME script
+(fade, no control, `SEND_EVENT (EVENT INIT)`, `CREATE_VIEWPOINT` per shot,
+`CUTSCENE_EXE`, fade back, `NAVEGACION_STOP`) and the `.csc` cutscene, its INIT
+and END and the camera script (`CAMARA_EN_DUMMY`, `SET_WANTED_VEL`, `CONTINUE
+(IR_A_PATHPOINT ...)`, `PAUSE` per shot). Ops lines `shot`/`intro`. **Hello
+world now builds entirely from editor operations and presets, with no raw
+script text, byte-identical to `scene.py` in every mission file.** GUI:
+**Changes > Cutscene** captures shots from the viewport (eye and orbit target),
+sets duration and travel, looks through a shot's start or end, plays all shots
+in the viewport (approximate: field of view and timing differ from the game),
+and creates the intro (importing Ambush's class 197 when missing); palette
+commands capture and play shots. Not yet: fades and cuts other than hello
+world's, easing, and Blender camera import.
+
 ### 7. Baking
 
 Connect the existing lightmap add-on to project material dependencies and
@@ -403,7 +419,6 @@ gameplay behavior.
 
 v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
-the earlier confirmed fallback. Stages 1-5 are done; hello world is
-byte-identical when built through the editor's operations, except its intro
-(stage 6).
+the earlier confirmed fallback. Stages 1-6 are done: hello world is
+byte-identical when built entirely through the editor's operations.
 The stage 2 acceptance playtest (change the hill in Blender, play) is open.

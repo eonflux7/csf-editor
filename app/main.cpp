@@ -12,6 +12,7 @@
 #include "app_util.hpp"
 #include "app_state.hpp"
 #include "authoring.hpp"
+#include "mission_authoring.hpp"
 #include "commands.hpp"
 #include "file_dialogs.hpp"
 #include "navigation.hpp"
@@ -274,6 +275,7 @@ int run_app(const LaunchOptions& options) {
             rwsman::poll_mission_load(state);
             rwsman::poll_file_dialogs(state);
             rwsman::poll_authoring(state);
+            rwsman::update_shot_preview(state);
 
             // Fonts and style follow the OS content scale and the user override
             // (checked every frame; rebuilt only when one of them changed).

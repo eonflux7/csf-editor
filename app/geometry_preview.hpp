@@ -210,6 +210,11 @@ public:
     bool frame_selection(std::optional<std::uint64_t> chunk_offset);
     [[nodiscard]] rwsman::CameraSnapshot camera() const;
     void set_camera(const rwsman::CameraSnapshot& snapshot);
+    // The scene camera's eye and the point it orbits (game units), and a
+    // camera placed at `eye` looking at `target` (cutscene shots).
+    [[nodiscard]] rws::Vec3 eye_position() const;
+    [[nodiscard]] rws::Vec3 orbit_target() const;
+    void look_from(rws::Vec3 eye, rws::Vec3 target);
     void set_mission_entries_visible(std::span<const std::uint32_t> entries, bool visible);
     [[nodiscard]] bool mission_entry_visible(std::uint32_t entry) const noexcept;
     void draw(const rws::Chunk& geometry_chunk, std::span<const std::byte> bytes,

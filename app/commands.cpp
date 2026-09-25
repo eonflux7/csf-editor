@@ -513,6 +513,7 @@ void register_commands(AppState& state) {
              {std::tuple{"mission.objectives", "Objectives and starting equipment", "Objectives",
                          "goal success kit weapons tips"},
               std::tuple{"mission.flow", "Mission flow", "Flow", "events scripts graph findings objectives"},
+              std::tuple{"mission.cutscene", "Intro cutscene", "Cutscene", "camera shots travelling intro"},
               std::tuple{"mission.texts", "Mission text", "Texts", "strings fli globalek localization"}})
             b.add(id, label, "Mission", "",
                   [&s, tab] {
@@ -521,6 +522,16 @@ void register_commands(AppState& state) {
                   },
                   editable)
                 .keywords = keywords;
+        b.add("mission.capture_shot", "Capture cutscene shot from view", "Mission", "",
+              [&s] {
+                  capture_shot(s);
+                  s.info("Captured shot " + std::to_string(s.tools.shots.size()));
+              },
+              editable)
+            .keywords = "camera intro cutscene";
+        b.add("mission.play_shots", "Play cutscene shots", "Mission", "", [&s] { play_shots(s); },
+              [&s] { return !s.tools.shots.empty(); })
+            .keywords = "camera intro cutscene preview";
         b.add("mission.new_mission", "Start a new mission in this slot", "Mission", "",
               [&s] { start_new_mission(s); }, editable)
             .keywords = "empty clear slot";

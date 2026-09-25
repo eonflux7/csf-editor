@@ -1543,6 +1543,18 @@ void test_mission_editor() {
             CHECK(csf::fli_operand("0900") == "(FLI \"0900\")" && csf::fli_operand("g014") == "(FLI g014)");
         }
 
+        // Intro cutscene: aim straight along +Z and 45 degrees down; the recipe
+        // refuses a mission without a cutscene program or the camera class.
+        {
+            const auto [yaw, pitch] = csf::look_at({0, 100, 0}, {0, 0, 100});
+            CHECK(std::abs(yaw) < 1e-6F && std::abs(pitch - 0.7853982F) < 1e-5F);
+            csf::IntroCutscene intro;
+            CHECK(!csf::add_intro_cutscene(fresh, intro).applied);  // no shots
+            intro.shots.push_back({{0, 100, 0}, {100, 100, 0}, {0, 0, 100}, 3.0F, {}, {}, {}});
+            const auto refused = csf::add_intro_cutscene(fresh, intro);
+            CHECK(!refused.applied && refused.message.find("cutscene program") != std::string::npos);
+        }
+
         // A new mission keeps the environment and empties the rest.
         CHECK(fresh.new_mission().applied);
         const auto& emptied = fresh.scene();

@@ -200,6 +200,17 @@ struct AuthoringTools {
     std::vector<KitForm> kits;
     std::array<char, 128> tips{};  // FLI IDs, comma-separated
     std::array<char, 160> new_text{};
+
+    // The Cutscene tab: travelling shots captured from the viewport.
+    struct ShotForm {
+        csf::Vec3 camera, target;
+        float travel_x{-200.0F}, travel_z{};  // cm the camera moves during the shot
+        float seconds{4.0F};
+    };
+    std::vector<ShotForm> shots;
+    bool send_init{true};
+    // Playing the shots in the viewport: seconds since start, when playing.
+    std::optional<double> preview_started;
 };
 
 // Transient UI state that is not part of a document.

@@ -142,6 +142,7 @@ std::string read_text(const std::filesystem::path& path) {
 struct Pending {
     std::vector<Objective> objectives;
     std::vector<Kit> kits;
+    std::vector<CameraShot> shots;
 };
 
 EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOptions& options, Pending& pending) {
@@ -306,6 +307,40 @@ EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOpt
         pending.kits.clear();
         return add_equipment(editor, recipe);
     }
+    if (op == "shot") {
+        CameraShot shot;
+        shot.camera = vec3(line.text("camera"));
+        shot.camera_end = vec3(line.text_or("end", line.text("camera")));
+        shot.target = vec3(line.text("target"));
+        shot.seconds = number<float>(line.text_or("seconds", "4"));
+        if (line.has("aim")) {
+            const auto v = floats(line.text("aim"));
+            if (v.size() != 2) throw std::invalid_argument("expected aim=<rotation>,<pitch>");
+            shot.aim = std::pair{v[0], v[1]};
+        }
+        if (line.has("heading")) shot.heading = number<float>(line.text("heading"));
+        if (line.has("speed")) shot.speed = number<float>(line.text("speed"));
+        pending.shots.push_back(shot);
+        return {true, "Shot " + std::to_string(pending.shots.size()) + " noted", {}};
+    }
+    if (op == "intro") {
+        IntroCutscene recipe;
+        recipe.shots = std::move(pending.shots);
+        pending.shots.clear();
+        recipe.camera_class = number<std::int32_t>(line.text_or("class", "197"));
+        recipe.send_init = line.text_or("send-init", "1") != "0";
+        recipe.first_dummy = optional_id(line, "dummy");
+        recipe.first_actor = optional_id(line, "actor");
+        recipe.first_group = optional_id(line, "group");
+        recipe.intro = {optional_id(line, "script"), line.text_or("script-name", "CUTSCENE_INICIO")};
+        if (line.has("cutscene")) {
+            const auto ids = split(line.text("cutscene"), ',');
+            if (ids.size() != 4) throw std::invalid_argument("expected cutscene=<main>,<init>,<end>,<camera>");
+            for (std::size_t k = 0; k < 4; ++k) recipe.cutscene_ids[k] = number<std::int32_t>(ids[k]);
+        }
+        recipe.cutscene_name = line.text_or("cutscene-name", "CUT_INICIO");
+        return add_intro_cutscene(editor, recipe);
+    }
     if (op == "tips") {
         Tips recipe{split(line.text("tips"), ','), {0.115F, 0.25F}, {optional_id(line, "script"), line.text_or("script-name", "")}};
         if (line.has("pos")) {
@@ -347,9 +382,11 @@ std::vector<MissionOpOutcome> run_mission_ops(MissionEditor& editor, const std::
         outcomes.push_back(std::move(outcome));
         if (!applied) break;
     }
-    if (!outcomes.empty() && outcomes.back().result.applied && (!pending.objectives.empty() || !pending.kits.empty()))
+    if (!outcomes.empty() && outcomes.back().result.applied &&
+        (!pending.objectives.empty() || !pending.kits.empty() || !pending.shots.empty()))
         outcomes.push_back({number_of_line, "end",
-                            {false, "objective or kit lines were not followed by an objectives or equipment line", {}}});
+                            {false, "objective, kit or shot lines were not followed by their objectives, equipment or "
+                                    "intro line", {}}});
     return outcomes;
 }
 
