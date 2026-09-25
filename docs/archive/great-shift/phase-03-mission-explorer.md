@@ -1,5 +1,5 @@
 > **Archived plan — implemented.** The typed view as built is documented in
-> [Mission Explorer typed-view contract](../../reference/mission-explorer.md); this
+> [Mission Explorer typed-view contract](../../game-knowledge/mission-explorer.md); this
 > document is kept for its rationale, risks, and test plan.
 
 # Phase 03: visual Mission Explorer

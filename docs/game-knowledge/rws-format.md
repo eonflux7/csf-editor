@@ -116,7 +116,7 @@ six-float bounds; Material and Frame records have optional metadata/name records
 Names include Spanish surface terms such as `Baldosa` and `Cemento`. Numeric field
 semantics remain conservative until their runtime consumers are traced.
 
-See [corpus findings](../corpus/rws.md) for the separate RenderWare Physics
+See [corpus findings](rws-corpus.md) for the separate RenderWare Physics
 streams discovered under `Models`.
 
 The Collision plug-in appears on eight World Atomic Sections. Its version `0x37002`
@@ -136,7 +136,7 @@ control flow proves `0x907` is `RwpBodyDef`, `0x909` is `RwpRagdollDef`, and `0x
 is `RwpGenericDef`. The implemented decoder understands the tagged scalar, vector,
 quaternion, matrix, transform, recursive volume, body, joint, and lookup-table
 records required by every supplied Physics stream. See
-[corpus findings](../corpus/rws.md) for tags, reader addresses, and validation.
+[corpus findings](rws-corpus.md) for tags, reader addresses, and validation.
 
 Body-definition typed output exposes the semantics proven by executable data flow:
 mass, center of mass, principal inertia, principal-inertia orientation, scalar
@@ -323,20 +323,29 @@ the scene-registration state: Clump activation toggles `0x001`, scene insertion 
 The supplied placement records use only `0x001`, `0x040`, `0x200`, and `0x400`, in
 the four combinations `0x401`, `0x441`, `0x601`, and `0x641`.
 
-### Pyro World Sector per-vertex data and size defect
+### Pyro World Sector per-triangle data and size defect
 
 The full map corpus adds variable-size Pyro World Sector payloads absent from the
-original ST05 sample. The reader at `0x006BF6F0` reads a version, a presence word,
-then exactly one byte per World Sector vertex. `FUN_006BD470` later copies each byte
-into the high byte of a 16-bit field at offset six in an eight-byte runtime vertex
-record. Its finer gameplay/rendering meaning remains conservatively unnamed.
+original ST05 sample. The reader at `0x006BF6F0` reads a version (`1` in every
+shipped file), a presence word, then, when present, exactly one byte per World
+Sector **triangle** (the `u16` count at sector `+0x84`). `FUN_006BD470` copies
+each byte into the high byte of the triangle's 16-bit material field at offset
+six (KB-world-geometry-4 identifies it as a baked per-triangle shade). In the
+corpus every collision sector with triangles has the bytes (values 44–255 in
+Convoy, 228 most common); visual sectors write presence `0`.
 
 The executable also proves a serializer defect: `PyroWorldSectorMetadataStreamGetSize`
-at `0x006BF6C0` reports `vertex_count + 12`, whereas the writer at `0x006BEEB0`
-emits only `vertex_count + 8` bytes. The declared plug-in payload therefore consumes
-the first four bytes of the following chunk header. This explains several apparent
-collision-World nesting/truncation anomalies; the decoder now excludes that
-four-byte over-declared tail instead of interpreting it as metadata.
+at `0x006BF6C0` reports `triangle_count + 12`, whereas the writer at `0x006BEEB0`
+emits only `triangle_count + 8` bytes. The declared plug-in payload therefore
+consumes the first four bytes of the following chunk header, and every
+enclosing Extension, Atomic Section, Plane Section and World declares 4 bytes
+per sector more than it holds. The engine's plug-in dispatcher never seeks
+after a matched plug-in, so it loads either size (KB-world-geometry-5).
+
+`rws::WorldModel` (`include/rws/world_model.hpp`) parses a World physically
+under exactly this rule and writes it back; `csf-mod world-audit` shows all 42
+shipped Worlds (21 visual, 21 collision) rewrite byte for byte with the
+overstatement reproduced. Authored Worlds declare the actual size.
 
 ### Recovered World sectors
 

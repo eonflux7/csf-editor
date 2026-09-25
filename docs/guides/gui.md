@@ -175,7 +175,7 @@ and **Ctrl+E** exports the mission archive. The **Changes** panel holds the
 history, the changed files, mission properties, adding actors and importing
 classes or animations from another mission. `rws-man --project <folder>` opens a
 saved project. Set the game folder in Preferences so the export finds the shipped
-archive. See [Mission editor](../guides/mission-editor.md).
+archive. See [Mission editor](mission-editor.md).
 
 ## Editing and saving
 

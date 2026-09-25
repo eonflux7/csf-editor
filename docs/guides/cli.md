@@ -101,14 +101,14 @@ root="/path/to/extracted-game"
 Graph export refuses an existing destination. VIS, TXL, M3D, AND, and the
 validated path portions of PHD have bounded adapters; unparsed bytes and partial
 PHD schema status remain explicit. See [Mission package
-resolution](../reference/mission-resolution.md) for the resolution order, graph
+resolution](../game-knowledge/mission-resolution.md) for the resolution order, graph
 schema, and current format evidence. Typed SCN identities, validation, reference
 categories, and scene JSON are documented in [Mission Explorer typed-view
-contract](../reference/mission-explorer.md).
+contract](../game-knowledge/mission-explorer.md).
 
 Actor class/model/CMO/Physics joins, standalone RPC inspection, lossless CMO
 parsing, and ragdoll uncertainty rules are documented in [Actor and Physics
-inspection](../reference/actor-physics-inspection.md). Use
+inspection](../game-knowledge/actor-physics-inspection.md). Use
 `csf-info mission Mission.scn --associations` for an evidence-backed association
 report or `csf-info cmo file.cmo` for the source-backed collision-shape view.
 
@@ -185,7 +185,7 @@ output="/path/to/exports"
 ./build/Release/rws-info "$asset" --export-clump-gltf 0x1234 "$output/clump.gltf"
 ```
 
-See [Geometry and scene export](../guides/export.md) for output layout and file
+See [Geometry and scene export](export.md) for output layout and file
 contents.
 
 ## Scan an extracted corpus
@@ -207,3 +207,31 @@ Linux:
 ```
 
 It is read-only: it does not modify the files it scans.
+
+## Build and rewrite Worlds
+
+`csf-mod` writes map Worlds through `rws::WorldModel`. Each command writes new
+files next to its output path (`<map>.rws` and `<map>_col.rws`) and refuses to
+replace existing ones without `--overwrite`.
+
+```bash
+# Prove the writer: every World rewrites byte for byte; --rebuild also builds a
+# new BSP over each World's triangles and checks it recovers as complete.
+./build/Release/csf-mod world-audit ../CSF_unpacks --rebuild
+
+# Rebuild one map's visual and collision Worlds (new BSP, sectors, plug-ins),
+# keeping its Clumps and scene instances.
+./build/Release/csf-mod world-rebuild ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.rws
+
+# Terrain from Blender: export .csfworld, then compile it with a donor map's
+# materials (visual by texture name, collision by surface name).
+blender --background --factory-startup --python tools/blender/make_test_terrain.py -- \
+    out/terrain.csfworld --size 100 --hill-height 4
+blender --background scene.blend --python tools/blender/export_csf_world.py -- out/scene.csfworld
+./build/Release/csf-mod world-build out/terrain.csfworld \
+    ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.rws [--keep-props]
+```
+
+`--keep-props` keeps the donor's Clumps and scene-instance records in the new
+map. `.csfworld` is documented in `include/rws/world_source.hpp`; the exporter's
+conventions (units, axes, custom properties) are in its module docstring.

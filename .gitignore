@@ -5,3 +5,6 @@
 **/__pycache__/
 *.py[cod]
 *.edited.rws
+
+# The executable reverse-engineering workspace is its own git repository.
+/docs/format-reversal/

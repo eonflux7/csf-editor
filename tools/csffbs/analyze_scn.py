@@ -23,8 +23,8 @@ import csffbs
 
 DEFAULT_ROOT = Path("/mnt/e/dev/re-csf/CSF_unpacks")
 
-# Documented corpus observations from docs/corpus/resources.md
-# and docs/reference/mission-explorer.md, used as an independent cross-check.
+# Documented corpus observations from docs/game-knowledge/resources.md
+# and docs/game-knowledge/mission-explorer.md, used as an independent cross-check.
 DOCUMENTED = {
     "actors": 3564,
     "navigation_groups": 1714,
@@ -218,7 +218,7 @@ def build_report(data: dict[str, Any], root: Path) -> str:
     total_bytes = sum(f["size"] for f in files)
     byte_note = (
         " (matches the 7,163,617 bytes recorded in "
-        "`docs/corpus/resources.md`)"
+        "`docs/game-knowledge/resources.md`)"
         if total_bytes == 7_163_617
         else ""
     )
@@ -343,7 +343,7 @@ def build_report(data: dict[str, Any], root: Path) -> str:
     lines.append("## Cross-check against documented observations")
     lines.append("")
     lines.append(
-        "The values in `docs/corpus/resources.md` and `docs/reference/mission-explorer.md` "
+        "The values in `docs/game-knowledge/resources.md` and `docs/game-knowledge/mission-explorer.md` "
         "were produced by the C++ implementation over the same reference corpus. This Python "
         "decoder must reproduce them independently."
     )

@@ -1,5 +1,5 @@
 > **Archived plan — implemented.** Decoding and playback as built is documented in
-> [Animation and cutscene inspection](../../reference/animation-cutscene-inspection.md);
+> [Animation and cutscene inspection](../../game-knowledge/animation-cutscene-inspection.md);
 > this document is kept for its rationale, risks, and test plan.
 
 # Phase 05: animation and cutscene inspection

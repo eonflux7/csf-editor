@@ -35,4 +35,4 @@ reported; input RWS bytes are never modified.
 
 Every export refuses to replace an existing file unless you choose the
 confirm-before-overwrite policy in Preferences. See the flag table in
-[Command-line usage](../getting-started/cli.md) for the CLI forms.
+[Command-line usage](cli.md) for the CLI forms.

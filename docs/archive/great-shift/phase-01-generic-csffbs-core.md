@@ -1,5 +1,5 @@
 > **Archived plan — implemented.** The original design for Phase 01. The grammar
-> and parser as built are in [CSFFBS container format](../../formats/csffbs-format.md);
+> and parser as built are in [CSFFBS container format](../../game-knowledge/csffbs-format.md);
 > this document is kept for its rationale, risks, and test plan.
 
 # Phase 01: generic CSFFBS core

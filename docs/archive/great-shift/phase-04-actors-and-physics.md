@@ -1,5 +1,5 @@
 > **Archived plan — implemented.** Association and inspection behavior as built is
-> documented in [Actor and Physics inspection](../../reference/actor-physics-inspection.md);
+> documented in [Actor and Physics inspection](../../game-knowledge/actor-physics-inspection.md);
 > this document is kept for its rationale, risks, and test plan.
 
 # Phase 04: actor models and Physics

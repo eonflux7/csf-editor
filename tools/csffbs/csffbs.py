@@ -7,7 +7,7 @@ gameplay databases (``.bdd``), particle systems (``.sp``), UI forms (``.fbs``)
 and some text tables.  This module implements the container grammar and a typed
 mission-scene projection.  It mirrors the reference C++ implementation in
 ``src/csf_document.cpp`` and ``src/csf_mission_scene.cpp`` and the prose grammar
-in ``docs/formats/csffbs-format.md``.
+in ``docs/game-knowledge/csffbs-format.md``.
 
 Properties:
 

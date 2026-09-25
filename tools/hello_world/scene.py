@@ -74,14 +74,15 @@ AREA_TOTAL = 16
 
 # Actor ids. Players keep Convoy's ids 1 and 2 (the kept weapon script names them).
 SNIPER, SPY = 1, 2
-OFFICER, GUARD_CAMP, GUARD_NORTH, GUARD_HOUSE, DOG = 10, 11, 12, 13, 14
+OFFICER, GUARD_CAMP, GUARD_NORTH, GUARD_HOUSE, DOG, RADIO_GHOST = 10, 11, 12, 13, 14, 15
+GHOST_CLASS = 241  # Escape's "Item Ghost": an invisible use point (EVT_GHOST_USADO)
 DOG_CLASS, DOG_WALK = 431, 2383  # Ransom's Doberman and DobermanAndar (imported)
 
 # Nav groups.
 G_WALK, G_START, G_CAMP_ROUTE, G_NORTH_ROUTE, G_DOG_ROUTE, G_COVER = 1, 2, 5, 6, 7, 20
 
 # Script ids (all Convoy scripts are deleted first).
-S_WEAPONS, S_INIT, S_OBJECTIVES, S_ZONE, S_OFFICER_DEAD = 9001, 9002, 9003, 9004, 9005
+S_WEAPONS, S_INIT, S_OBJECTIVES, S_ZONE, S_OFFICER_DEAD, S_RADIO = 9001, 9002, 9003, 9004, 9005, 9006
 S_OFFICER_IDLE, S_CAMP_PATROL, S_NORTH_PATROL, S_HOUSE_IDLE, S_DOG = 9010, 9011, 9012, 9013, 9014
 S_INTRO = 9020
 
@@ -111,6 +112,7 @@ ACTORS = [  # id, name, class, x, z, heading, nav (group, point) or None, script
     (GUARD_NORTH, "GE_NORTH", 21, *NORTH_ROUTE[0], -101.5, (G_NORTH_ROUTE, 1), [S_NORTH_PATROL], []),
     (GUARD_HOUSE, "GE_HOUSE", 3, -1400.0, -2000.0, 90.0, None, [S_HOUSE_IDLE], []),
     (DOG, "DOBERMAN", DOG_CLASS, *DOG_ROUTE[0], -90.0, None, [S_DOG], []),
+    (RADIO_GHOST, "RADIO_GHOST", GHOST_CLASS, 350.0, -2960.0, 180.0, None, [], []),  # in front of CAMP_RADIO
 ]
 
 def prop_actors() -> list[tuple]:
@@ -348,7 +350,17 @@ def scripts() -> dict[int, str]:
             'SET_OBJETIVO_LABEL (NUMERO 1.0) (FLI "0900")',
             "SET_OBJETIVO (NUMERO 2.0) (BOOL FALSE) (NUMERO 2.0)",
             'SET_OBJETIVO_LABEL (NUMERO 2.0) (FLI "0901")',
+            # Secondary objective: use the radio (a ghost use point in front of it).
+            "SET_OBJETIVO (NUMERO 3.0) (BOOL TRUE) (NUMERO 1.0)",
+            'SET_OBJETIVO_LABEL (NUMERO 3.0) (FLI "0904")',
+            f'BICHO_SET_CONTEXT_LABEL (BICHO {RADIO_GHOST}) (FLI "0906")',
+            f"HABILITAR_GHOST (BICHO {RADIO_GHOST}) (BOOL TRUE)",
         ]),
+        S_RADIO: script(S_RADIO, "RADIO_SABOTEADA", 1, ["EVT_GHOST_USADO"], [
+            f"HABILITAR_GHOST (BICHO {RADIO_GHOST}) (BOOL FALSE)",
+            "SET_OBJETIVO_SUCCESS (NUMERO 3.0) (BOOL TRUE)",
+            'TIMED_STRING_V2 (FLI "0905") (NUMERO 5.0) (NUMERO 4.0)',
+        ], [f"CMP_OP_BICHO (EVT_BICHO2) (OP_BOOLEAN 0) (BICHO {RADIO_GHOST})"]),
         S_ZONE: script(S_ZONE, "CASA_ALCANZADA", 1, ["BICHO_ENT_ZONA"], [
             f"ACT_BICHO_EVENT_ZONA (PLAYER) (ZONA {ZONE_HOUSE}) (BOOL FALSE)",
             "SET_OBJETIVO_SUCCESS (NUMERO 1.0) (BOOL TRUE)",
@@ -384,6 +396,10 @@ def scripts() -> dict[int, str]:
             "FX_FADE (NUMERO 1.0) (BOOL FALSE) (VECTOR 0.0 0.0 0.0)",
             "CUTSCENE_NO_INTERACTIVA (BOOL TRUE)",
             "PLAYER_TERCERA (BOOL TRUE)",
+            # INIT is a mission event, not a built-in one (KB-scripting-14): the
+            # actor scripts listening for it (patrols, idles, cover) start here,
+            # as Convoy's intro script sends it.
+            "SEND_EVENT (EVENT INIT)",
             "CUTSCENE_EXE (CUTSCENE 1)",
             "FX_FADE (NUMERO 1.0) (BOOL TRUE) (VECTOR 0.0 0.0 0.0)",
             "PAUSE (NUMERO 1.5)",

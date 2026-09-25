@@ -2,7 +2,8 @@
 # Builds the hello-world mission archive in Convoy's slot (decision D1): the map
 # from build_world.sh, its sector map (build_sec.py) and a scene and scripts
 # written from scratch by scene.py. Only Convoy's environment (.MUNDOVIS) and
-# databases are reused; the doberman is imported from Ransom.
+# databases are reused; the doberman is imported from Ransom and the
+# radio's use point from Escape.
 #
 #   tools/hello_world/build_mission.sh WORKSPACE ORIGINAL_CONVOY_PAK OUT_PAK [CORPUS_ROOT]
 #
@@ -25,8 +26,9 @@ python3 tools/hello_world/scene.py "$tmp/convoy.scn.txt" "$tmp/world/hello.csfwo
 "$csfmod" mission-edit "$ws" "$scene" >/dev/null  # creates the workspace
 "$csfmod" add "$ws" Maps/FR03/Convoy.scn "$tmp/Convoy.scn"
 "$csfmod" add "$ws" Maps/FR03/Convoy.csc "$tmp/Convoy.csc"
-# Ransom's doberman and its walk and run animations.
-ops=(--import-class "$corpus/Ransom" 431 --import-anim "$corpus/Ransom" 2383 --import-anim "$corpus/Ransom" 2384)
+# Ransom's doberman and its walk and run animations; Escape's ghost use point.
+ops=(--import-class "$corpus/Ransom" 431 --import-anim "$corpus/Ransom" 2383 --import-anim "$corpus/Ransom" 2384
+     --import-class "$corpus/Escape" 241)
 ops+=(--force)
 for id in $(./build/Release/csf-info program "$corpus/Convoy/Maps/FR03/Convoy.gsc" --scripts |
             sed -n 's/^SCRIPT\t.*\tid=\([0-9]*\)\t.*/\1/p'); do

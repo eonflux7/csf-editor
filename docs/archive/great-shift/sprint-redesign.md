@@ -1,5 +1,5 @@
 > **Archived plan — implemented.** The workbench as built is documented in
-> [GUI usage](../../getting-started/gui.md); this document is kept for its design
+> [GUI usage](../../guides/gui.md); this document is kept for its design
 > direction, theme tokens, and per-item implementation notes.
 
 # UI sprint: workbench redesign and quality of life

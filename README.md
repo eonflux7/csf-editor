@@ -75,14 +75,14 @@ RenderWare rights holders.
 Full documentation lives in [docs/index.md](docs/index.md). The most useful
 starting points:
 
-- [Command-line usage](docs/getting-started/cli.md) and
-  [GUI usage](docs/getting-started/gui.md).
+- [Command-line usage](docs/guides/cli.md) and
+  [GUI usage](docs/guides/gui.md).
 - [Mission editor](docs/guides/mission-editor.md) and
   [guarded authoring and mods](docs/guides/guarded-authoring-and-mods.md).
-- Format notes in [docs/formats/rws-format.md](docs/formats/rws-format.md) and
-  [docs/formats/csffbs-format.md](docs/formats/csffbs-format.md); corpus results
-  in [docs/corpus/rws.md](docs/corpus/rws.md) and
-  [docs/corpus/resources.md](docs/corpus/resources.md).
+- Format notes in [docs/game-knowledge/rws-format.md](docs/game-knowledge/rws-format.md)
+  and [docs/game-knowledge/csffbs-format.md](docs/game-knowledge/csffbs-format.md);
+  corpus results in [docs/game-knowledge/rws-corpus.md](docs/game-knowledge/rws-corpus.md)
+  and [docs/game-knowledge/resources.md](docs/game-knowledge/resources.md).
 
 ## Requirements
 
@@ -204,7 +204,7 @@ written to `build-core/<Config>`.
 - Modified assets are not guaranteed to load in the game.
 
 Confirmed structures and unresolved questions are documented rather than hidden;
-start with [docs/formats/rws-format.md](docs/formats/rws-format.md) before
+start with [docs/game-knowledge/rws-format.md](docs/game-knowledge/rws-format.md) before
 building new decoders or export behavior.
 
 ## Development

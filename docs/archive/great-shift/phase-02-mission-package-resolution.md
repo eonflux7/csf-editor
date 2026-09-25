@@ -1,5 +1,5 @@
 > **Archived plan — implemented.** The resolver as built is documented in
-> [Mission package resolution](../../reference/mission-resolution.md); this
+> [Mission package resolution](../../game-knowledge/mission-resolution.md); this
 > document is kept for its rationale, risks, and test plan.
 
 # Phase 02: mission package resolution
@@ -42,7 +42,7 @@ The resolver does not claim semantic names for unknown PHD fields. A zero-sized
 VIS reference is retained as a missing optional edge, and M3D/AND terminal bytes
 remain preserved as adapter tails. These are evidence-preserving limitations,
 not guessed schemas. The detailed contract and corpus measurements are in
-[`../../reference/mission-resolution.md`](../../reference/mission-resolution.md).
+[`../../game-knowledge/mission-resolution.md`](../../game-knowledge/mission-resolution.md).
 
 ## In scope
 

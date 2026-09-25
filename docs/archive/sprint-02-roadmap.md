@@ -1,6 +1,6 @@
 > **Archived plan — implemented.** Collision inspection, BSP tooling, and
-> collision-only export as built are in [GUI usage](../getting-started/gui.md) and
-> [CLI usage](../getting-started/cli.md). Kept for its topology/picking design and
+> collision-only export as built are in [GUI usage](../guides/gui.md) and
+> [CLI usage](../guides/cli.md). Kept for its topology/picking design and
 > validation totals.
 
 # Sprint 02 roadmap: collision inspection and spatial tooling
@@ -542,7 +542,7 @@ Deliverables:
 - Add shared validated Plane/leaf topology recovery to `rws_core`.
 - Keep partial topology independent from flat sector recovery.
 - Add `rws-info --bsp-report` and recovered-topology validation.
-- Record confirmed ordering/bounds semantics in `docs/formats/rws-format.md`.
+- Record confirmed ordering/bounds semantics in `docs/game-knowledge/rws-format.md`.
 
 Acceptance criteria:
 
@@ -623,7 +623,7 @@ Acceptance criteria:
 Deliverables:
 
 - Update README controls, pairing, inspection, and export sections.
-- Update `docs/formats/rws-format.md` with confirmed BSP evidence and uncertainty.
+- Update `docs/game-knowledge/rws-format.md` with confirmed BSP evidence and uncertainty.
 - Run Release and Debug validation appropriate to changed code.
 - Manually validate the read-only Ransom reference pair and another collision map.
 

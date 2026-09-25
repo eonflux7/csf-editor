@@ -16,6 +16,9 @@ STRINGS = {
     "0901": "Kill the officer.",
     "0902": "Building reached.",
     "0903": "The officer is dead.",
+    "0904": "Sabotage the camp radio.",
+    "0905": "Radio sabotaged.",
+    "0906": "Sabotage radio",
 }
 
 

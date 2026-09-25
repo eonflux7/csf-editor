@@ -1,6 +1,6 @@
 > **Archived plan — implemented.** The collision-overlay behavior as built is in
-> [GUI usage](../getting-started/gui.md), [CLI usage](../getting-started/cli.md),
-> and [RWS format notes](../formats/rws-format.md). Kept for its core-recovery
+> [GUI usage](../guides/gui.md), [CLI usage](../guides/cli.md),
+> and [RWS format notes](../game-knowledge/rws-format.md). Kept for its core-recovery
 > design, invariants, and validation totals.
 
 # Sprint 01 roadmap: level collision recovery and preview overlay
@@ -521,7 +521,7 @@ Deliverables:
 
 - Update README feature and GUI-usage sections.
 - Record the shared recovery API and any newly confirmed invariants in
-  `docs/formats/rws-format.md`.
+  `docs/game-knowledge/rws-format.md`.
 - Run release and debug validation appropriate to the changed code.
 - Manually validate against the read-only Ransom sample.
 

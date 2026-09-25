@@ -3,7 +3,7 @@
 A small, self-contained, **read-only** decoder for CSFFBS documents and a corpus
 analysis of the `.scn` mission scenes. It is a companion to the C++ core in
 `src/csf_document.cpp` and `src/csf_mission_scene.cpp` and to the prose grammar
-in [`../../docs/formats/csffbs-format.md`](../../docs/formats/csffbs-format.md).
+in [`../../docs/game-knowledge/csffbs-format.md`](../../docs/game-knowledge/csffbs-format.md).
 
 Nothing here mutates the game corpus. Files are opened for reading only, and the
 typed projection is a view over the immutable generic tree.
@@ -62,14 +62,14 @@ labels (`.BICHOS`, `.MALLA_NAVEGACION`, `.MALLA_DUMMIES`, `.MALLA_AREAS`,
 `.MALLA_LUCES`, `.EFECTOS`, `.MUNDOVIS`, `.PLAYER`, `.INICIO_*`). Every typed
 field is optional: a missing field is distinguishable from a source value of
 zero. `raw_next_entry` is the next-sibling entry index (see
-`docs/formats/csffbs-format.md`); this Python reader keeps it raw.
+`docs/game-knowledge/csffbs-format.md`); this Python reader keeps it raw.
 
 ## Validation
 
 `test_csffbs.py` first decodes a synthetic document constructed byte by byte,
 then, when the reference corpus is available, re-derives the aggregate totals
-documented in `docs/corpus/resources.md` and
-`docs/reference/mission-explorer.md`:
+documented in `docs/game-knowledge/resources.md` and
+`docs/game-knowledge/mission-explorer.md`:
 
 | quantity | value |
 | --- | ---: |

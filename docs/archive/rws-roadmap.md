@@ -1,7 +1,7 @@
 > **Archived.** The pre-shift RenderWare implementation roadmap. Most items are
 > implemented; format behavior as built is in
-> [RWS format notes](../formats/rws-format.md) and
-> [Extracted-game RWS corpus](../corpus/rws.md). Kept as the low-level RWS
+> [RWS format notes](../game-knowledge/rws-format.md) and
+> [Extracted-game RWS corpus](../game-knowledge/rws-corpus.md). Kept as the low-level RWS
 > history that predates the mission workbench.
 
 # Implementation roadmap

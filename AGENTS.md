@@ -50,6 +50,16 @@
   `./test.sh` (Linux) after changes to parser, decoder, or export behavior.
 - Locally available unpacked game resources live in `../CSF_unpacks`; treat them
   as read-only reference data and do not copy them into the repository.
+- Executable reverse-engineering work lives in `docs/format-reversal/`, with its
+  own `AGENTS.md`, `roadmap.md`, `state.md` and one folder per workstream; keep
+  that workspace's evidence/confidence conventions and read-only rules. It is a
+  separate git repository nested at that path (rws-man's `.gitignore` excludes
+  it): commit research there, and only rws-man code/docs here.
+- Research automation (queue generator, external tracer driver, `/continue-research`,
+  the `tools/ghidra/gq` export-backed Ghidra CLI and `annotations/*.tsv` write path,
+  and the `tools/kb.py` claims store / knowledge graph over `claims/*.jsonl`) lives in `docs/format-reversal/tools/` and `docs/format-reversal/.opencode/`;
+  see `docs/format-reversal/tasks/README.md`. Generated queue/result files there
+  are gitignored.
 - Preserve unknown/truncated RWS data and write modified assets to new files
   unless the user explicitly requests an overwrite.
 - The worktree may contain ongoing user changes; preserve unrelated modifications.

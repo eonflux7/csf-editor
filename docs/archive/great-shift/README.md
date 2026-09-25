@@ -1,7 +1,7 @@
 > **Archived plan — implemented.** This decision document and the seven phase
 > designs below were the plan for turning the RWS inspector into a mission
 > workbench. Every phase shipped; the behavior as built lives in
-> [`docs/reference/`](../../reference/) and [`docs/guides/`](../../guides/). The
+> [`docs/game-knowledge/`](../../game-knowledge/) and [`docs/guides/`](../../guides/). The
 > phase documents are kept for design rationale and test plans, not as a
 > description of current behavior.
 
@@ -169,11 +169,11 @@ where the project can serialize, reopen, validate, and explain the result.
 
 ## Supporting documents
 
-- [Resource report](../../corpus/resources.md) records the corpus evidence and format
+- [Resource report](../../game-knowledge/resources.md) records the corpus evidence and format
   priorities that motivated the shift.
-- [Existing RWS corpus findings](../../corpus/rws.md) remain the authoritative
+- [Existing RWS corpus findings](../../game-knowledge/rws-corpus.md) remain the authoritative
   detailed record for RenderWare and Physics reverse engineering.
-- [RWS format notes](../../formats/rws-format.md) remain the source for chunk schemas.
+- [RWS format notes](../../game-knowledge/rws-format.md) remain the source for chunk schemas.
 - [Current implementation roadmap](../rws-roadmap.md) describes the pre-shift RWS
   foundation and should be retained as historical/current low-level context.
 

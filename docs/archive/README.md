@@ -2,7 +2,7 @@
 
 Historical plans and roadmaps whose work has shipped. They are kept for design
 rationale, risk analysis, and test plans that the as-built reference and guide
-docs do not repeat. Treat the pages under [`reference/`](../reference/) and
+docs do not repeat. Treat the pages under [`reference/`](../game-knowledge/) and
 [`guides/`](../guides/) as the description of current behavior; these pages are
 the record of how it was decided.
 

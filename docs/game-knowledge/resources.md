@@ -149,8 +149,8 @@ The first root chunk classifies all 410 `.rws` files:
 | `0x00000024` | 4 | Table of Contents roots for combined FR02 streams |
 
 The existing project already parses all of these root families and has detailed,
-evidence-backed Physics schemas. See [the existing corpus findings](rws.md)
-and [RWS format notes](../formats/rws-format.md).
+evidence-backed Physics schemas. See [the existing corpus findings](rws-corpus.md)
+and [RWS format notes](rws-format.md).
 
 The missing feature is association and visualization: a body definition is local
 shape data, not a placed mission entity. `.scn`, BDD, `.phd`, and normalized path
@@ -287,6 +287,10 @@ Representative operations prove that scripts connect directly to the scene:
 Comments and human-readable Spanish descriptions are present in the string table
 and should be preserved and displayed.
 
+The runtime interpreter that executes these programs is described in
+[script-vm.md](script-vm.md) (registry, node/value objects, dispatch, and the
+first opcode traced end to end).
+
 ### `.csc`: cutscene program
 
 CSC uses the same grammar and script structures, focusing on cutscene init/end,
@@ -394,15 +398,28 @@ where possible.
 
 ### `.vis`: mission visual entry point
 
-VIS begins with length-prefixed path strings. Representative paths identify:
+VIS is little-endian and opens with **four length-prefixed path strings**, each a
+`uint32` byte count followed by that many raw bytes (no terminator; length `0` is
+the empty string):
 
-- the visual map `.rws`;
-- the `_col.rws` collision companion;
-- the map texture directory;
-- a sky `.dff` model.
+1. the visual map `.rws`;
+2. the `_col.rws` collision companion;
+3. the map texture directory;
+4. a sky `.dff` model.
 
-Additional numeric tail fields remain unresolved. Phase 02 should first recover
-the known references and preserve the tail verbatim.
+These are followed by **nine `uint32` fields**, a compiled subset of the SCN
+`.MUNDOVIS` environment, in this order: `.CIELOSPEED1`, `.CIELOSPEED2`,
+`.CIELOSPEED3` (little-endian floats, usually `0`), `.GLOW_ON`,
+`.GLOW_CUTCOLOR`, `.GLOW_INTENSITY`, `.GLOW_DISPLACEMENT`, one unresolved
+boolean that is constant `1` in the corpus, and `.CIELO_MODULATE2X`. The three
+boolean fields are written as `1`/`0` and read with a `== 1` test.
+
+The reader is `Mission_Vis_Read` (`0x00504120`), called from `Mission_LoadLevel`
+(`0x00508ad0`) after `<scenario>.vis` is built with the `.vis` extension constant.
+The schema was verified against all 21 shipped `.vis` files and their sibling SCN
+`.MUNDOVIS` values; see the evidence entry
+[`../format-reversal/package-loader/knowledge-base.md`](../format-reversal/package-loader/knowledge-base.md)
+KB-15. The only open field is the constant-1 boolean; preserve it verbatim.
 
 ### `.m3d`, `.phd`, `.and`, and `.txl`
 
@@ -569,15 +586,40 @@ workflow.
    source entry/table identity.
 2. The class-ID normalization and precedence rules between package-local BDD data.
 3. Exact requested `.dff` to extracted `.rpc` mapping rules and collision cases.
-4. Complete VIS numeric tail schema.
+4. ~~Complete VIS numeric tail schema~~ **Resolved for `CommXPC.exe` 1.0:** the
+   `.vis` tail is nine `uint32` fields mapping to a subset of SCN `.MUNDOVIS`
+   (`.CIELOSPEED1/2/3`, `.GLOW_ON`, `.GLOW_CUTCOLOR`, `.GLOW_INTENSITY`,
+   `.GLOW_DISPLACEMENT`, one unresolved constant-1 boolean, `.CIELO_MODULATE2X`);
+   the reader is `Mission_Vis_Read` (`0x00504120`). Verified against all 21
+   corpus files. Evidence:
+   [`../format-reversal/package-loader/knowledge-base.md`](../format-reversal/package-loader/knowledge-base.md)
+   KB-15.
 5. PHD and AND record boundaries and non-path fields.
 6. SEC role and its relation to SCN sector maps and RWS BSPs.
 7. ANM interpolation scheme, keyframe-to-HAnim node mapping, and root motion.
 8. Remaining Physics ragdoll joint semantics.
 9. GSC/CSC opcode signatures, reference operands, and control-flow behavior.
+   **Largely resolved for `CommXPC.exe` 1.0:** the 422-entry opcode/tag registry,
+   both lookups, the id-switch executor, the node/value object model and the
+   first handler traced end to end (`PLAY_ANMBDD`) are recovered — see
+   [script-vm.md](script-vm.md). Per-opcode handler semantics and the exact
+   condition/event driver roles remain open. Evidence:
+   [`../format-reversal/scripting/knowledge-base.md`](../format-reversal/scripting/knowledge-base.md)
+   KB-scripting-1 … KB-scripting-7.
 10. WAD/RenderWare Audio bank structure and mapping from `Sonidos.bdd` IDs.
 11. Whether loose modified files override package data in every game version, or
     whether a rebuilt PAK is always required.
+    **Resolved for `CommXPC.exe` 1.0 (the `GlobalEK` install):** the VFS resolves
+    reads pak-first (`Patch.pak` → `PatchMP.pak` → global/mission archives) and
+    falls back to the raw filesystem only for paths absent from every mounted
+    archive, gated by a "allow disk read" byte that is on by default. A loose
+    file never shadows an archive entry. The shipped `Config/Juego.cfg` has
+    `.bUsePak = 1`, `.bFirstOutPak = 0`, which is what selects archive mode and
+    pak-first order; setting `.bUsePak = 0` makes the mission loaders open the
+    scenario loose instead. To change shipped content a rebuilt PAK is required;
+    to add a brand-new path a loose file can work. Evidence:
+    [`format-reversal/package-loader/knowledge-base.md`](../format-reversal/package-loader/knowledge-base.md)
+    KB-8 … KB-10.
 
 Each question should be answered with samples, byte offsets, cross-file
 correlation, and—when necessary—executable/runtime evidence. Unknowns must remain
