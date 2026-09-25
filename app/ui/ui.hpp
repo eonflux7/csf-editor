@@ -53,6 +53,7 @@ void draw_workspace_tabs(AppState& state);
 void draw_toasts(AppState& state);
 void draw_missions(AppState& state);
 void draw_preferences(AppState& state);
+void draw_height_report(AppState& state);
 // Modal asking whether to replace an existing export (policy: confirm overwrite).
 void draw_overwrite_dialog(AppState& state);
 void draw_load_overlay(AppState& state);

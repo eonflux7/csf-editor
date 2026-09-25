@@ -191,6 +191,7 @@ void draw_frame(AppState& state) {
     draw_palette(state);
     draw_load_overlay(state);
     draw_preferences(state);
+    draw_height_report(state);
     draw_overwrite_dialog(state);
     draw_mission_dialogs(state);
     draw_toasts(state);

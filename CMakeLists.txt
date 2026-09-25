@@ -189,6 +189,7 @@ if(RWSMAN_BUILD_GUI)
         app/geometry_preview_editing.cpp
         app/geometry_preview_overlays.cpp
         app/mission_editing.cpp
+        app/authoring.cpp
         app/mission_loader.cpp
         app/mission_overlays.cpp
         app/navigation.cpp
@@ -210,6 +211,7 @@ if(RWSMAN_BUILD_GUI)
         app/ui/mission_editor.cpp
         app/ui/overlays.cpp
         app/ui/preferences.cpp
+        app/ui/height_report.cpp
         app/ui/palette.cpp
         app/ui/panels.cpp
         app/ui/script_view.cpp

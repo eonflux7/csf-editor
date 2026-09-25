@@ -215,7 +215,13 @@ project: textured crate and doberman, and the generated 16-sector collision.
   way: saving copied a project's `build/` map into `authored/`, detaching it
   from later rebuilds; the build now also refreshes the workspace's hashes.
 - Rebuild from the editor: detect a changed export, run the project build in
-  the background and reload the map between frames.
+  the background and reload the map between frames. **Done:** `app/authoring.cpp`
+  watches the exports of an open authoring project, rebuilds and reports heights
+  on a worker thread, reloads the mission (after a save when it has unsaved
+  edits), and shows the Height report window with Resnap all
+  (`app/ui/height_report.cpp`; commands under Mission > Authoring project).
+  Checked with Release and Debug builds: a raised terrain opens as rebuilt with
+  44 findings; resnap, save and reload leave none.
 
 **Accept:** change the hill in Blender, reimport, reopen the project, build and
 play. Placements keep their positions; those the hill now buries or lifts are
@@ -345,5 +351,6 @@ gameplay behavior.
 v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
 the earlier confirmed fallback. Stage 1 is done. Stage 2: the project format,
-hello world's migration, the sector map, the ground query and the height report
-are done; next is rebuilding from the editor.
+hello world's migration, the sector map, the ground query, the height report
+and rebuilding from the editor are done. Its acceptance playtest (change the hill
+in Blender, play) is open; next is stage 3, the Blender add-on.

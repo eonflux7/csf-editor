@@ -240,7 +240,14 @@ into `authored/` only when an edit in the editor changed it. `csf-mod validate`,
 `conflicts`, `build` and `package` work on it as on any project.
 
 An [authoring project](../plans/editor-project-format.md) keeps its mission
-workspace in `mission/`. After a terrain change, `csf-mod project-heights
+workspace in `mission/`; open the project folder itself (**File > Open mission
+project**, or `rws-man --project <folder>`). While it is open, rws-man checks
+the Blender exports every second: when one changes, it rebuilds the map in the
+background and reloads the mission (after you save, if the mission has unsaved
+edits). The **Height report** (**Mission > Authoring project**) opens by itself
+when something no longer stands where its height rule says; **Resnap all**
+stores the resolved heights (actor moves are ordinary undoable edits; save to
+keep them) and rebuilds the map. The same checks from the command line: After a terrain change, `csf-mod project-heights
 <project>` lists the placements and anchored actors that no longer stand where
 their height rule says, and `--resnap` moves them (placements in the project,
 actors in the mission); `csf-mod project-build <project>` then rebuilds the map

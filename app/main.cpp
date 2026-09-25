@@ -11,6 +11,7 @@
 #include "app_actions.hpp"
 #include "app_util.hpp"
 #include "app_state.hpp"
+#include "authoring.hpp"
 #include "commands.hpp"
 #include "file_dialogs.hpp"
 #include "navigation.hpp"
@@ -272,6 +273,7 @@ int run_app(const LaunchOptions& options) {
             }
             rwsman::poll_mission_load(state);
             rwsman::poll_file_dialogs(state);
+            rwsman::poll_authoring(state);
 
             // Fonts and style follow the OS content scale and the user override
             // (checked every frame; rebuilt only when one of them changed).
@@ -282,7 +284,7 @@ int run_app(const LaunchOptions& options) {
             ImGui::NewFrame();
 
             // Scripted commands (developer aid), one per frame after the UI settled.
-            if (rwsman::mission_load_active(state)) last_busy_frame = frame;
+            if (rwsman::mission_load_active(state) || rwsman::authoring_pending(state)) last_busy_frame = frame;
             if (frame >= 3 && frame >= last_busy_frame + 3 && next_command < options.commands.size())
             {
                 const auto& command = options.commands[next_command++];
@@ -334,7 +336,7 @@ int run_app(const LaunchOptions& options) {
                     state.notify(rwsman::LogLevel::error, "Screenshot failed: " + error);
             }
             if (options.screenshot) {
-                const bool busy = rwsman::mission_load_active(state) ||
+                const bool busy = rwsman::mission_load_active(state) || rwsman::authoring_pending(state) ||
                                   next_command < options.commands.size();
                 settled = busy ? 0 : settled + 1;
                 if (settled >= options.screenshot_frames) {
@@ -357,7 +359,8 @@ int run_app(const LaunchOptions& options) {
                 input.animating = state.ui.animating || state.preview.animating() ||
                                   state.mission.animation_playing || !state.toasts.empty() ||
                                   ImGui::IsAnyMouseDown() || dropped_file.has_value();
-                input.background_work = rwsman::mission_load_active(state) || state.dialog != nullptr;
+                input.background_work = rwsman::mission_load_active(state) || state.dialog != nullptr ||
+                                        rwsman::authoring_pending(state);
                 input.text_input = io.WantTextInput;
                 input.focused = glfwGetWindowAttrib(window, GLFW_FOCUSED) != 0;
                 input.iconified = glfwGetWindowAttrib(window, GLFW_ICONIFIED) != 0;

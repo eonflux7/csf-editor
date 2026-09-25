@@ -9,6 +9,7 @@
 #include "rwsman/search_index.hpp"
 #include "rwsman/settings.hpp"
 #include "csf/animation_catalog.hpp"
+#include "csf/authoring_project.hpp"
 #include "csf/cmo.hpp"
 #include "csf/document.hpp"
 #include "csf/mission_edit.hpp"
@@ -27,6 +28,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <future>
+#include <map>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -118,6 +121,29 @@ struct MissionState {
         active_animation.clear();
         animation_playing = false;
     }
+};
+
+// An authoring project (project.csfproj) around the open mission: its map is
+// rebuilt in the background when a Blender export changes, and the height
+// report lists what no longer stands where its height rule says.
+struct AuthoringSession {
+    std::unique_ptr<csf::AuthoringProject> project;
+    // Export modification times the last build saw, to notice new exports.
+    std::map<std::filesystem::path, std::filesystem::file_time_type> export_times;
+    double next_check{};
+    struct Outcome {
+        std::optional<csf::AuthoringProject> project;
+        csf::ProjectBuildReport report;
+        std::vector<csf::HeightFinding> findings;
+        std::string error;
+    };
+    std::future<Outcome> job;
+    // Started by poll_authoring once the mission views are current, so the
+    // report sees the actors where the mission has them.
+    bool job_queued{}, job_force{};
+    std::vector<csf::HeightFinding> findings;
+    bool show_heights{};
+    bool reload_when_saved{};  // the map was rebuilt while the mission had unsaved edits
 };
 
 // Transient UI state that is not part of a document.
@@ -229,6 +255,7 @@ struct AppState {
     std::unique_ptr<rws::Document> document;
     std::unique_ptr<rws::Document> collision_document;
     MissionState mission;
+    AuthoringSession authoring;
     std::size_t selected_program_document{}, selected_program_script{};
 
     std::string collision_status = "No document loaded";

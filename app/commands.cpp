@@ -2,6 +2,7 @@
 
 #include "app_actions.hpp"
 #include "app_util.hpp"
+#include "authoring.hpp"
 #include "file_dialogs.hpp"
 #include "mission_editing.hpp"
 #include "navigation.hpp"
@@ -428,6 +429,29 @@ void register_commands(AppState& state) {
           [&s] { return s.mission.graph != nullptr && !mission_load_active(s); });
     b.add("mission.cancel_load", "Cancel mission load", "Mission", "Escape",
           [&s] { cancel_mission_load(s); }, [&s] { return mission_load_active(s); });
+    {
+        // Authoring projects: the map is rebuilt from the Blender exports and
+        // placements; the height report checks what stands where.
+        const auto idle = [&s] { return authoring_open(s) && !authoring_pending(s) && !mission_load_active(s); };
+        auto& rebuild = b.add("mission.project_rebuild", "Rebuild project map", "Mission", "",
+                              [&s] { rebuild_authoring_map(s, true); }, idle);
+        rebuild.submenu = "Authoring project";
+        rebuild.separator_before = true;
+        rebuild.keywords = "blender terrain world build";
+        auto& heights = b.add("mission.project_heights", "Height report", "Mission", "",
+                              [&s] {
+                                  s.authoring.show_heights = true;
+                                  rebuild_authoring_map(s, false);
+                              },
+                              idle);
+        heights.submenu = "Authoring project";
+        heights.keywords = "ground snap float buried terrain";
+        auto& resnap = b.add("mission.project_resnap", "Resnap heights", "Mission", "",
+                             [&s] { resnap_authoring_heights(s); },
+                             [&s, idle] { return idle() && !s.authoring.findings.empty(); });
+        resnap.submenu = "Authoring project";
+        resnap.keywords = "ground snap";
+    }
     {
         const auto editable = [&s] { return mission_editable(s); };
         const auto record = [&s] {
