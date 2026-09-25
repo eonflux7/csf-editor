@@ -231,6 +231,10 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 ./build/Release/csf-mod world-build out/terrain.csfworld \
     ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.rws [--keep-props]
 
+# An authoring project (docs/plans/editor-project-format.md): build its map,
+# collision map and sector map into <project>/build/ when they are stale.
+./build/Release/csf-mod project-build ~/dev/csf-mods/hello-world-project [--force]
+
 # The mission's sector map (Maps/Secs/<Mission>.sec) from the same source's
 # collision faces, and the ground height and normal under points.
 ./build/Release/csf-mod sector-build out/terrain.csfworld out/Convoy.sec

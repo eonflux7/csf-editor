@@ -35,6 +35,12 @@
   `tools/blender/export_csf_world.py`) and `src/map_assembly.cpp` copies donor
   props. `csf-mod world-audit ../CSF_unpacks --rebuild` must keep every shipped
   World and scene-instance record byte-identical.
+- Authoring projects: `csf::AuthoringProject` (`src/csf_authoring_project.cpp`)
+  reads `project.csfproj`/`local.csfproj` and builds a project's map, collision
+  and sector map (`rws::build_map_files`, `rws::build_sector_map`) into its
+  `build/`; the format is `docs/plans/editor-project-format.md`. Hello world's
+  recipe (`tools/hello_world/build.sh`) creates one; its World and sector
+  files must stay identical to v13's unless a change intends otherwise.
 - GUI-free helpers (settings, command registry, fuzzy matcher, navigation history,
   operation log, search index, diagnostics table, mission discovery) live in the
   `rwsman_ui_model` library (`include/rwsman/`, `src/ui_model_*.cpp`). It must not

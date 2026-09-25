@@ -396,8 +396,10 @@ void save_mission_project(AppState& state, const std::filesystem::path& workspac
     }
 }
 
-void open_mission_project(AppState& state, const std::filesystem::path& workspace) {
+void open_mission_project(AppState& state, const std::filesystem::path& folder) {
     try {
+        // An authoring project (project.csfproj) packages its mission in mission/.
+        const auto workspace = std::filesystem::is_regular_file(folder / "project.csfproj") ? folder / "mission" : folder;
         const auto info = csf::read_mission_project_info(workspace);
         if (!info) throw std::runtime_error("The folder has no .csf-mission file (not a mission project)");
         const auto project = csf::ModProject::load(workspace);

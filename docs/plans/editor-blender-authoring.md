@@ -139,11 +139,11 @@ replacement is defined as follows:
 - Reimport replaces an asset's triangles and recompiles the World; placements
   and mission records keep their IDs.
 
-**Props leave the Blender output.** Today `terrain.py` appends the house
-`piece` and the tree and plant `prop` records to the `.csfworld` it exports.
-Under this contract, the project owns those records: the editor places them
-and merges them into the World build. Blender sees them only as references.
-Migrating hello world's 1 piece, 14 trees and 15 plants is part of stage 2.
+**Props leave the Blender output.** Until stage 2, `terrain.py` appended the
+house `piece` and the tree and plant `prop` records to the `.csfworld` it
+exported. Under this contract, the project owns those records: the editor
+places them and merges them into the World build. Blender sees them only as
+references. Hello world's 1 piece, 14 trees and 15 plants are migrated (stage 2).
 
 Use the existing conversion exactly once: Blender metres/Z-up to game
 centimetres/Y-up, `game = 100 * (x, z, -y)`, plus the exporter's UV convention.
@@ -180,10 +180,19 @@ project: textured crate and doberman, and the generated 16-sector collision.
 ### 2. Project manifest, World import and core geometry queries
 
 - Write the manifest specification (handoff item 1) and the asset/placement
-  identity rules above.
+  identity rules above. **Done:** [editor-project-format.md](editor-project-format.md);
+  `csf::AuthoringProject` reads and writes it and builds `build/` incrementally
+  (`csf-mod project-build`), merging terrain, building assets at their
+  placements, pieces and props; `rws::build_map_files` holds the World build
+  that `world-build` used to do inline.
 - Add World import/rebuild around `WorldModel`, `world_source` and
   `map_assembly`, applied between frames through the mission-editing boundary.
 - Move `piece`/`prop` records into project placements and migrate hello world.
+  **Done:** `tools/hello_world/layout.py` holds the map layout, `terrain.py`
+  exports the terrain only (and saves `terrain.blend`), `project.py` writes the
+  project, and `build.sh` creates it. The build's World, collision and sector
+  map, and every packaged mission file, are identical to v13's. Actor `anchor`
+  records are not written yet (nothing uses them before the height report).
 - Add a ground query to `rws_core`: height and normal at (x, z), and a
   downward ray against the collision World. Snapping, floating/buried reports
   and route checks all need it. **Done:** `rws::GroundQuery` over a World
@@ -193,12 +202,18 @@ project: textured crate and doberman, and the generated 16-sector collision.
   `rws::build_sector_map` (`csf-mod sector-build`) reproduces v13's
   `Convoy.sec` byte for byte; `build_sec.py` is removed.
 - Build both archives (mission and GlobalEK) from the project, with rollback
-  records, replacing `build.sh`.
+  records, replacing `build.sh`. (`build.sh` now writes each build into the
+  project's `dist/<build-id>/`.)
+- The height report: resolve each placement's height rule with the ground
+  query and list those more than 1 cm from their stored height; resnap as one
+  reviewable operation.
+- Rebuild from the editor: detect a changed export, run the project build in
+  the background and reload the map between frames.
 
 **Accept:** change the hill in Blender, reimport, reopen the project, build and
-play. Placements that were terrain-relative follow the hill. Any object left
-floating or buried is reported. An invalid export leaves the working project
-intact.
+play. Placements keep their positions; those the hill now buries or lifts are
+reported and follow it after an explicit resnap. An invalid export leaves the
+working project intact.
 
 ### 3. Blender add-on
 
@@ -322,5 +337,6 @@ gameplay behavior.
 
 v13 (five travelling shots with fixed look-at helpers, independent paths and
 constant-height motion) works in-game and is the reference build. v12 remains
-the earlier confirmed fallback. Stage 1 is done; next: stage 2, starting with
-the project manifest specification.
+the earlier confirmed fallback. Stage 1 is done. Stage 2: the project format,
+hello world's migration, the sector map and the ground query are done; next are
+the height report and rebuilding from the editor.

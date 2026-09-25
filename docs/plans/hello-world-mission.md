@@ -61,9 +61,11 @@ defines ownership, reimport behavior, implementation order and acceptance checks
 
 Use the [combined build command](../guides/hello-world-mission.md) to build both
 archives and record hashes, revision, tool version and the mission recipe.
-Mission editing failures now stop the build. Map and sector sources remain in
-the project's `extra/` directory after packaging, so reopening/re-exporting
-does not depend on deleted temporary files.
+Mission editing failures now stop the build. Since the authoring project
+migration (2026-09-25) the build output is an
+[authoring project](editor-project-format.md): the map and sector files are
+built into its `build/` by `csf-mod project-build` from the terrain export and
+the project's placements, identical to v13's.
 
 v12 passed `./test.sh --no-build` (both existing suites). A complete staging
 copy was rendered to check the radio/crate placement: the current project

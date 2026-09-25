@@ -1,10 +1,16 @@
 # Spec: authoring project format
 
-Draft for review, 2026-09-25. Stage 2 of the
-[editor/Blender plan](editor-blender-authoring.md) builds on this: it records
-what a project is made of, which files are sources and which are generated,
-and how placements keep their identity through a terrain reimport. Nothing
-here is implemented yet.
+2026-09-25. Stage 2 of the [editor/Blender plan](editor-blender-authoring.md)
+builds on this: it records what a project is made of, which files are sources
+and which are generated, and how placements keep their identity through a
+terrain reimport.
+
+**Implemented:** `csf::AuthoringProject` (`include/csf/authoring_project.hpp`)
+reads and writes both files and builds the World, collision and sector map
+(`csf-mod project-build`); hello world is migrated (`tools/hello_world/build.sh`).
+**Not yet:** height resolution and the height report, `.csfworld` version 2
+`object` lines, the text range check, and building the archives into `dist/`
+from C++ (the hello-world scripts do that today).
 
 ## What exists
 
@@ -14,8 +20,9 @@ unpacked source root), `.csf-mod-state` (one record per replaced or added
 package file, with hashes) and `authored/`, where `MissionEditor::save` writes
 edited files. `.csf-mission` adds the scene path and the original archive.
 Hello world needs two of these workspaces, one per archive (`mission/` for
-`maps/Convoy.pak`, `texts/` for `GlobalEK.pak`). Its generated map and sector
-files sit in `mission/extra/` with nothing recording how they were made.
+`maps/Convoy.pak`, `texts/` for `GlobalEK.pak`). Before this format, its
+generated map and sector files sat in `mission/extra/` with nothing recording
+how they were made.
 
 This spec adds an *authoring* layer on top and keeps the packaging layer as it
 is. Export, validation, deployment and rollback keep working unchanged.
@@ -40,7 +47,7 @@ is. Export, validation, deployment and rollback keep working unchanged.
 ```
 
 `mission/` and `texts/` reference generated files in `build/` through their
-`.csf-mod-state` records, replacing today's `extra/`. Deleting `build/`
+`.csf-mod-state` records, replacing the former `extra/`. Deleting `build/`
 makes the project stale, not broken: the next build recreates it.
 
 ## Format
@@ -180,9 +187,9 @@ input hashes.
    interpolates the exported triangles. The first height report therefore lists
    small differences, typically a few centimetres. Resnapping them is optional.
 
-## Questions for review
+## Decisions
 
-- Is a project-owned `sources/` right for `.blend` files, or should a project
-  reference `.blend` files anywhere on disk (recorded relative, if possible)?
-- Should `dist/` keep every build (with its rollback records, as
-  `~/dev/csf-mods/hello-world-v*` does today), or only the latest?
+- `.blend` files live in the project's `sources/`, so a project folder is
+  self-contained (user, 2026-09-25).
+- `dist/` keeps every build with its rollback records; a cleanup command for
+  old builds comes later (user, 2026-09-25).

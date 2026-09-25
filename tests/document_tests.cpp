@@ -1,4 +1,5 @@
 #include "csf/animation_catalog.hpp"
+#include "csf/authoring_project.hpp"
 #include "csf/cmo.hpp"
 #include "csf/document.hpp"
 #include "csf/export.hpp"
@@ -3749,6 +3750,68 @@ int main() {
         const auto& uv1 = visual.sectors[0].texcoords[1];
         CHECK(std::ranges::count(uv1, std::array<float, 2>{0.25F, 0.25F}) == 1);
         CHECK(std::ranges::count(uv1, std::array<float, 2>{0.5F, 0.5F}) == 3);
+
+        // An authoring project builds the same source into build/, incrementally.
+        const auto root = std::filesystem::temp_directory_path() / "rwsman-authoring-project-test";
+        std::filesystem::remove_all(root);
+        const auto maps = root / "corpus" / "M1" / "Maps" / "X";
+        std::filesystem::create_directories(maps);
+        // The Worlds just compiled are complete and carry the materials used.
+        write_bytes(maps / "X.rws", rws::write_world_model(visual));
+        write_bytes(maps / "X_col.rws", rws::write_world_model(collision));
+        const auto project_dir = root / "project";
+        std::filesystem::create_directories(project_dir / "sources");
+        const auto export_text = rws::write_world_source(*source.value);
+        CHECK(rws::parse_world_source(export_text).value->faces.size() == source.value->faces.size());
+        {
+            std::ofstream(project_dir / "sources" / "ground.csfworld", std::ios::binary) << export_text;
+            std::ofstream(project_dir / "sources" / "hut.csfworld", std::ios::binary) << export_text;
+        }
+        const std::string text =
+            "csfproj 1\nname \"Test project\"\nslot M1 Maps/X/M1.scn maps/M1.pak\n"
+            "texts GlobalEK.pak Texts/M1.fli 900 999\ndonor-map Maps/X/X.rws Maps/X/X_col.rws\n"
+            "# comment\nasset ground terrain sources/ground.blend sources/ground.csfworld\n"
+            "asset hut building sources/hut.blend sources/hut.csfworld\n"
+            "building hut-1 hut 1000 5 0 90 ground 5\n"
+            "building hut-2 hut 2000 0 0 0 on building hut-1 0\n"
+            "anchor actor 33 on actor 15 90.5\n";
+        auto project = csf::AuthoringProject::parse(text, "csfproj-local 1\ncorpus \"" +
+                                                              (root / "corpus").generic_string() + "\"\n");
+        project.directory = project_dir;
+        CHECK(project.name == "Test project" && project.texts && project.texts->last == 999);
+        CHECK(project.placements.size() == 2 && project.placements[1].height.support_id == "hut-1");
+        CHECK(project.anchors.size() == 1 && project.anchors[0].height.offset == 90.5F);
+        CHECK(project.check().empty());
+        // Text round-trips; errors name the file and line.
+        CHECK(csf::AuthoringProject::parse(project.project_text()).project_text() == project.project_text());
+        try {
+            (void)csf::AuthoringProject::parse("csfproj 1\nbuilding b hut 0 0 0 0 floating\n");
+            CHECK(false);
+        } catch (const std::runtime_error& error) {
+            CHECK(std::string(error.what()).starts_with("project.csfproj line 2"));
+        }
+        auto cyclic = project;
+        cyclic.placements[0].height = {csf::HeightRule::Mode::on, 0, "building", "hut-2"};
+        CHECK(!cyclic.check().empty());
+
+        auto report = project.build_world();
+        CHECK(report.rebuilt && project.outputs.size() == 4);
+        CHECK(std::filesystem::is_regular_file(project_dir / "build" / "Maps" / "Secs" / "M1.sec"));
+        std::ifstream merged_file(project_dir / "build" / "world.csfworld", std::ios::binary);
+        const auto merged = rws::parse_world_source(
+            std::string((std::istreambuf_iterator<char>(merged_file)), std::istreambuf_iterator<char>()));
+        // The terrain as modelled, then the hut turned 90 degrees and moved to each placement.
+        CHECK(merged && merged.value->vertices.size() == 3 * source.value->vertices.size());
+        const auto& corner = merged.value->vertices[source.value->vertices.size() + 1].position;  // hut (0 0 100)
+        CHECK(std::abs(corner.x - 1100.0F) < 1e-3F && corner.y == 5.0F && std::abs(corner.z) < 1e-3F);
+        project.save();
+        auto reloaded = csf::AuthoringProject::load(project_dir);
+        CHECK(!reloaded.build_world().rebuilt);  // up to date
+        reloaded.placements[1].position.x = 2100;
+        CHECK(reloaded.build_world().rebuilt);
+        std::filesystem::remove(project_dir / "build" / "Maps" / "Secs" / "M1.sec");
+        CHECK(reloaded.build_world().rebuilt);
+        std::filesystem::remove_all(root);
     }
     {
         // Area polygons the level load would fault on (KB-scn-9): repeated

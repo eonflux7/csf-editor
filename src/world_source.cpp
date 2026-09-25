@@ -1,8 +1,10 @@
 #include "rws/world_source.hpp"
 
 #include "rws/document.hpp"
+#include "rws/world_recovery.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -309,6 +311,187 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
     compiled.collision = std::move(*built_collision.value);
     result.value = std::move(compiled);
     return result;
+}
+
+DecodeResult<BuiltMap> build_map_files(const WorldSource& source, const std::span<const std::byte> donor_map,
+                                       const std::span<const std::byte> donor_collision,
+                                       const WorldCompileOptions& options, const bool keep_donor_props) {
+    DecodeResult<BuiltMap> result;
+    const auto load_world = [&](const std::span<const std::byte> bytes, const char* what,
+                                std::uint64_t& begin) -> std::optional<WorldModel> {
+        const auto offset = find_map_world(bytes);
+        if (!offset) {
+            result.error = std::string("No World in the donor ") + what;
+            return std::nullopt;
+        }
+        auto parsed = parse_world_model(bytes, *offset);
+        if (!parsed) {
+            result.error = std::string("Donor ") + what + ": " + parsed.error;
+            return std::nullopt;
+        }
+        begin = *offset;
+        return std::move(*parsed.value);
+    };
+    std::uint64_t map_begin{}, collision_begin{};
+    const auto donor_visual = load_world(donor_map, "map", map_begin);
+    if (!donor_visual) return result;
+    const auto donor_col = load_world(donor_collision, "collision map", collision_begin);
+    if (!donor_col) return result;
+    BuiltMap built;
+    // Props: donor Clumps and instance records, collision cut from the donor.
+    std::optional<AssembledProps> props;
+    if (!source.props.empty()) {
+        if (keep_donor_props) {
+            result.error = "Keeping the donor's props cannot be combined with placed props";
+            return result;
+        }
+        const auto donor_document = Document::from_bytes({donor_map.begin(), donor_map.end()});
+        auto assembled = assemble_props(donor_document, *donor_col, source.props);
+        if (!assembled) {
+            result.error = assembled.error;
+            return result;
+        }
+        props = std::move(*assembled.value);
+        built.notes = props->notes;
+    }
+    const auto compiled = compile_world_source(source, *donor_visual, *donor_col, options,
+                                               props ? std::span<const WorldBuildTriangle>(props->collision)
+                                                     : std::span<const WorldBuildTriangle>{});
+    if (!compiled) {
+        result.error = compiled.error;
+        return result;
+    }
+    for (const auto* world : {&compiled.value->visual, &compiled.value->collision})
+        if (const auto problems = check_world_model(*world); !problems.empty()) {
+            result.error = "Built World is invalid: " + problems.front();
+            return result;
+        }
+    if (keep_donor_props)
+        built.map.assign(donor_map.begin(), donor_map.begin() + static_cast<std::ptrdiff_t>(map_begin));
+    if (props) built.map = props->prefix;
+    const auto visual_bytes = write_world_model(compiled.value->visual);
+    built.map.insert(built.map.end(), visual_bytes.begin(), visual_bytes.end());
+    built.collision = write_world_model(compiled.value->collision);
+    for (const auto* bytes : {&built.map, &built.collision}) {
+        const auto document = Document::from_bytes(*bytes);
+        const auto recovered = recover_worlds(document.chunks(), document.bytes());
+        if (recovered.size() != 1U || recovered[0].status != WorldRecoveryStatus::complete ||
+            recovered[0].topology_status != WorldTopologyStatus::complete) {
+            result.error = "Built World does not recover as complete";
+            return result;
+        }
+    }
+    built.notes.insert(built.notes.end(), compiled.value->notes.begin(), compiled.value->notes.end());
+    built.visual_triangles = compiled.value->visual.triangle_count;
+    built.visual_sectors = compiled.value->visual.world_sector_count;
+    built.collision_triangles = compiled.value->collision.triangle_count;
+    built.collision_sectors = compiled.value->collision.world_sector_count;
+    result.value = std::move(built);
+    return result;
+}
+
+namespace {
+
+template <typename T>
+void put(std::string& out, const T value) {
+    std::array<char, 32> buffer{};
+    const auto [end, error] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    out.push_back(' ');
+    out.append(buffer.data(), end);
+}
+
+} // namespace
+
+std::string write_world_source(const WorldSource& source) {
+    std::string out = "csfworld 1\n";
+    for (const auto& material : source.materials) {
+        out += "material " + material.texture + ' ' + material.surface;
+        put(out, static_cast<unsigned>(material.shade));
+        out += '\n';
+    }
+    for (std::size_t i = 0; i < source.vertices.size(); ++i) {
+        const auto& vertex = source.vertices[i];
+        out += 'v';
+        if (i < source.exact_positions.size())
+            for (const auto c : source.exact_positions[i]) put(out, c);
+        else
+            for (const auto c : {vertex.position.x, vertex.position.y, vertex.position.z}) put(out, c);
+        for (const auto c : {vertex.normal.x, vertex.normal.y, vertex.normal.z}) put(out, c);
+        put(out, vertex.texcoords[0][0]);
+        put(out, vertex.texcoords[0][1]);
+        if (i < source.has_second_uv.size() && source.has_second_uv[i]) {
+            put(out, vertex.texcoords[1][0]);
+            put(out, vertex.texcoords[1][1]);
+        }
+        out += '\n';
+    }
+    for (const auto& face : source.faces) {
+        out += 'f';
+        for (const auto v : face.vertices) put(out, v);
+        put(out, face.material);
+        out += face.visual && face.collision ? " both\n" : face.visual ? " visual\n" : " collision\n";
+    }
+    for (const auto& piece : source.pieces) {
+        out += "piece";
+        for (const auto c : {piece.inf.x, piece.inf.y, piece.inf.z, piece.sup.x, piece.sup.y, piece.sup.z,
+                             piece.position.x, piece.position.y, piece.position.z, piece.yaw_degrees})
+            put(out, c);
+        out += '\n';
+    }
+    for (const auto& prop : source.props) {
+        out += "prop ";
+        for (std::size_t i = 0; i < prop.donor_instance_ids.size(); ++i)
+            out += (i ? "," : "") + std::to_string(prop.donor_instance_ids[i]);
+        for (const auto c : {prop.position.x, prop.position.y, prop.position.z, prop.yaw_degrees}) put(out, c);
+        out += '\n';
+    }
+    return out;
+}
+
+void append_world_source(WorldSource& target, const WorldSource& part,
+                         const std::optional<WorldSourcePlacement>& placed) {
+    // Keep the per-vertex arrays aligned with the vertices.
+    while (target.exact_positions.size() < target.vertices.size()) {
+        const auto& p = target.vertices[target.exact_positions.size()].position;
+        target.exact_positions.push_back({p.x, p.y, p.z});
+    }
+    target.has_second_uv.resize(target.vertices.size());
+    std::vector<std::uint32_t> materials;
+    for (const auto& material : part.materials) {
+        const auto found = std::ranges::find_if(target.materials, [&](const WorldSourceMaterial& m) {
+            return m.texture == material.texture && m.surface == material.surface && m.shade == material.shade;
+        });
+        materials.push_back(static_cast<std::uint32_t>(found - target.materials.begin()));
+        if (found == target.materials.end()) target.materials.push_back(material);
+    }
+    const double angle = placed ? placed->yaw_degrees * 3.14159265358979323846 / 180.0 : 0.0;
+    const double c = std::cos(angle), s = std::sin(angle);
+    const auto first = static_cast<std::uint32_t>(target.vertices.size());
+    for (std::size_t i = 0; i < part.vertices.size(); ++i) {
+        auto vertex = part.vertices[i];
+        std::array<double, 3> exact = i < part.exact_positions.size()
+                                          ? part.exact_positions[i]
+                                          : std::array<double, 3>{vertex.position.x, vertex.position.y,
+                                                                  vertex.position.z};
+        if (placed) {
+            exact = {c * exact[0] + s * exact[2] + placed->offset.x, exact[1] + placed->offset.y,
+                     -s * exact[0] + c * exact[2] + placed->offset.z};
+            const auto& n = vertex.normal;
+            vertex.normal = {static_cast<float>(c * n.x + s * n.z), n.y, static_cast<float>(-s * n.x + c * n.z)};
+            vertex.position = {static_cast<float>(exact[0]), static_cast<float>(exact[1]),
+                               static_cast<float>(exact[2])};
+        }
+        target.vertices.push_back(vertex);
+        target.exact_positions.push_back(exact);
+        target.has_second_uv.push_back(i < part.has_second_uv.size() && part.has_second_uv[i]);
+    }
+    for (auto face : part.faces) {
+        for (auto& v : face.vertices) v += first;
+        face.material = materials.at(face.material);
+        target.faces.push_back(face);
+    }
+    target.props.insert(target.props.end(), part.props.begin(), part.props.end());
+    target.pieces.insert(target.pieces.end(), part.pieces.begin(), part.pieces.end());
 }
 
 } // namespace rws

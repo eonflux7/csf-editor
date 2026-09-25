@@ -1,4 +1,5 @@
 #include "csf/authoring.hpp"
+#include "csf/authoring_project.hpp"
 #include "csf/mission_edit.hpp"
 #include "csf/mod_project.hpp"
 #include "csf/source_text.hpp"
@@ -36,6 +37,7 @@ void usage() {
            "  csf-mod world-rebuild <map.rws> <new-map.rws> [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod world-build <source.csfworld> <donor-map.rws> <new-map.rws>\n"
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
+           "  csf-mod project-build <project-dir> [--force]\n"
            "  csf-mod sector-build <source.csfworld> <new.sec> [--overwrite]\n"
            "  csf-mod world-ground <source.csfworld> <x> <z> [<x> <z>]...\n"
            "  csf-mod init <workspace> <source-root> <name>\n"
@@ -222,6 +224,18 @@ int main(int argc, char** argv) try {
         }
         return 0;
     }
+    if (command == "project-build") {
+        // Builds an authoring project's World, collision and sector map into
+        // its build/ directory when they are stale, and records the outputs.
+        if (argc < 3 || argc > 4) { usage(); return 1; }
+        const bool force = argc == 4 && std::string_view(argv[3]) == "--force";
+        if (argc == 4 && !force) throw std::runtime_error("Unknown project-build option: " + std::string(argv[3]));
+        auto project = csf::AuthoringProject::load(argv[2]);
+        const auto report = project.build_world(force);
+        project.save();
+        for (const auto& line : report.lines) std::cout << line << '\n';
+        return 0;
+    }
     if (command == "sector-build" || command == "world-ground") {
         if (argc < 4) { usage(); return 1; }
         const std::filesystem::path source_path = argv[2];
@@ -288,74 +302,27 @@ int main(int argc, char** argv) try {
         const auto output_collision = collision_name(output);
         if (!overwrite && (std::filesystem::exists(output) || std::filesystem::exists(output_collision)))
             throw std::runtime_error("Output exists (pass --overwrite): " + output.generic_string());
-        const auto load_world = [](const std::filesystem::path& path, std::vector<std::byte>& bytes,
-                                   std::uint64_t& begin, std::uint64_t& end) {
-            bytes = read_bytes(path);
-            const auto offset = rws::find_map_world(bytes);
-            if (!offset) throw std::runtime_error("No World in " + path.generic_string());
-            auto parsed = rws::parse_world_model(bytes, *offset, &end);
-            if (!parsed) throw std::runtime_error(path.generic_string() + ": " + parsed.error);
-            begin = *offset;
-            return std::move(*parsed.value);
-        };
-        std::vector<std::byte> donor_bytes, donor_collision_bytes;
-        std::uint64_t donor_begin{}, donor_end{}, collision_begin{}, collision_end{};
-        const auto donor_visual = load_world(donor_path, donor_bytes, donor_begin, donor_end);
-        const auto donor_col = load_world(donor_collision, donor_collision_bytes, collision_begin, collision_end);
         std::ifstream input(source_path, std::ios::binary);
         if (!input) throw std::runtime_error("Cannot read " + source_path.generic_string());
         const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
         const auto source = rws::parse_world_source(text);
         if (!source) throw std::runtime_error(source_path.generic_string() + ": " + source.error);
-        // Props: donor Clumps and instance records, collision cut from the donor.
-        std::optional<rws::AssembledProps> props;
-        if (!source.value->props.empty()) {
-            const auto donor_document = rws::Document::from_bytes(donor_bytes);
-            auto assembled = rws::assemble_props(donor_document, donor_col, source.value->props);
-            if (!assembled) throw std::runtime_error(assembled.error);
-            props = std::move(*assembled.value);
-        }
-        const auto compiled = rws::compile_world_source(*source.value, donor_visual, donor_col, options,
-                                                        props ? std::span<const rws::WorldBuildTriangle>(props->collision)
-                                                              : std::span<const rws::WorldBuildTriangle>{});
-        if (!compiled) throw std::runtime_error(compiled.error);
-        if (props && keep_props) throw std::runtime_error("--keep-props cannot be combined with prop lines");
-        if (props)
-            for (const auto& note : props->notes) std::cout << "note\t" << note << '\n';
-        for (const auto* world : {&compiled.value->visual, &compiled.value->collision})
-            if (const auto problems = rws::check_world_model(*world); !problems.empty())
-                throw std::runtime_error("Built World is invalid: " + problems.front());
-        // The visual map keeps the donor's Clumps and scene-instance records
-        // only with --keep-props; the collision file is the World alone.
-        std::vector<std::byte> map;
-        if (keep_props) map.assign(donor_bytes.begin(), donor_bytes.begin() + static_cast<std::ptrdiff_t>(donor_begin));
-        if (props) map = props->prefix;
-        const auto visual_bytes = rws::write_world_model(compiled.value->visual);
-        map.insert(map.end(), visual_bytes.begin(), visual_bytes.end());
-        const auto collision_bytes = rws::write_world_model(compiled.value->collision);
-        // Both files must recover as complete through the viewer's reader.
-        for (const auto* bytes : std::initializer_list<const std::vector<std::byte>*>{&map, &collision_bytes}) {
-            const auto document = rws::Document::from_bytes(*bytes);
-            const auto recovered = rws::recover_worlds(document.chunks(), document.bytes());
-            if (recovered.size() != 1U || recovered[0].status != rws::WorldRecoveryStatus::complete ||
-                recovered[0].topology_status != rws::WorldTopologyStatus::complete)
-                throw std::runtime_error("Built World does not recover as complete");
-        }
+        const auto built = rws::build_map_files(*source.value, read_bytes(donor_path), read_bytes(donor_collision),
+                                                options, keep_props);
+        if (!built) throw std::runtime_error(built.error);
         if (!output.parent_path().empty()) std::filesystem::create_directories(output.parent_path());
         const auto write = [](const std::filesystem::path& path, const std::vector<std::byte>& bytes) {
             std::ofstream file(path, std::ios::binary | std::ios::trunc);
             file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
             if (!file) throw std::runtime_error("Cannot write " + path.generic_string());
         };
-        write(output, map);
-        write(output_collision, collision_bytes);
-        for (const auto& note : compiled.value->notes) std::cout << "note\t" << note << '\n';
-        const auto& visual = compiled.value->visual;
-        const auto& collision = compiled.value->collision;
-        std::cout << "visual\t" << output.generic_string() << '\t' << visual.triangle_count << " triangles\t"
-                  << visual.world_sector_count << " sectors\n"
-                  << "collision\t" << output_collision.generic_string() << '\t' << collision.triangle_count
-                  << " triangles\t" << collision.world_sector_count << " sectors\n";
+        write(output, built.value->map);
+        write(output_collision, built.value->collision);
+        for (const auto& note : built.value->notes) std::cout << "note\t" << note << '\n';
+        std::cout << "visual\t" << output.generic_string() << '\t' << built.value->visual_triangles << " triangles\t"
+                  << built.value->visual_sectors << " sectors\n"
+                  << "collision\t" << output_collision.generic_string() << '\t' << built.value->collision_triangles
+                  << " triangles\t" << built.value->collision_sectors << " sectors\n";
         return 0;
     }
     if (command == "world-audit") {

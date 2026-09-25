@@ -4,6 +4,8 @@
 #include "rws/world_model.hpp"
 
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -83,6 +85,37 @@ struct CompiledWorlds {
 compile_world_source(const WorldSource& source, const WorldModel& donor_visual,
                      const WorldModel& donor_collision, const WorldCompileOptions& options = {},
                      std::span<const WorldBuildTriangle> extra_collision = {});
+
+// Complete map files for a World source: `map` is <map>.rws (the placed props'
+// Clumps and instance records, or with `keep_donor_props` the donor's, then
+// the visual World) and `collision` is <map>_col.rws. Materials, props and
+// pieces come from the donor files. Both results are checked to recover as
+// complete through the viewer's reader.
+struct BuiltMap {
+    std::vector<std::byte> map, collision;
+    std::vector<std::string> notes;
+    std::uint32_t visual_triangles{}, visual_sectors{}, collision_triangles{}, collision_sectors{};
+};
+[[nodiscard]] DecodeResult<BuiltMap> build_map_files(const WorldSource& source,
+                                                     std::span<const std::byte> donor_map,
+                                                     std::span<const std::byte> donor_collision,
+                                                     const WorldCompileOptions& options = {},
+                                                     bool keep_donor_props = false);
+
+// `.csfworld` text for a source; parsing it gives the same source (positions
+// keep their exact values).
+[[nodiscard]] std::string write_world_source(const WorldSource& source);
+
+// Appends `part` to `target`: its vertices, faces (materials merged by
+// texture, surface and shade), props and pieces. With `placed`, the part's
+// vertices and normals are turned `yaw_degrees` about +Y (as props and pieces
+// are) and moved by `offset`.
+struct WorldSourcePlacement {
+    Vec3 offset;
+    float yaw_degrees{};
+};
+void append_world_source(WorldSource& target, const WorldSource& part,
+                         const std::optional<WorldSourcePlacement>& placed = std::nullopt);
 
 // Texture name of a Material (0x07) chunk, or its Pyro surface name.
 [[nodiscard]] std::string material_texture_name(std::span<const std::byte> material);

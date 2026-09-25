@@ -5,30 +5,42 @@ resources at `../CSF_unpacks`, and untouched original archives:
 
 ```bash
 ./build.sh
-bash tools/hello_world/build.sh /tmp/hello-world-release \
+bash tools/hello_world/build.sh ~/dev/csf-mods/hello-world-project \
   ~/dev/csf-mods/Convoy.original.pak ~/dev/csf-mods/GlobalEK.original.pak
 ```
 
-The output directory must be new. It contains both archives, reusable mission
-and text projects, build logs, a copy of the mission recipe, and `build.json`
-with revision, working-tree status, Blender version and archive hashes.
+The project directory must be new. It is an
+[authoring project](../plans/editor-project-format.md):
+
+- `project.csfproj` and `local.csfproj`: the slot, the terrain asset and the
+  house, tree and plant placements; the corpus path.
+- `sources/world/`: the terrain as `terrain.blend` (open it in Blender) and
+  its export `terrain.csfworld`.
+- `build/`: the map, collision map and sector map, rebuilt by
+  `csf-mod project-build <project>` when the terrain export or a placement
+  changes.
+- `mission/` and `texts/`: the csf-mod workspaces of the two archives.
+- `dist/<build-id>/`: both archives, build logs, a copy of the recipe and
+  `build.json` with revision, working-tree status, Blender version and archive
+  hashes.
 The corpus is read-only. Objective strings require the GlobalEK archive as
 well as the mission archive.
 
 Open the built project with:
 
 ```bash
-./build/Release/rws-man --project /tmp/hello-world-release/mission
+./build/Release/rws-man --project ~/dev/csf-mods/hello-world-project
 ```
 
 Deploy into the separate test install (each command prints a rollback state
 path; retain **both**):
 
 ```bash
-./build/Release/csf-mod deploy-pak /tmp/hello-world-release/mission \
-  /tmp/hello-world-release/hello-world.pak ~/dev/csf_game maps/Convoy.pak --apply
-./build/Release/csf-mod deploy-pak /tmp/hello-world-release/texts \
-  /tmp/hello-world-release/hello-texts.pak ~/dev/csf_game GlobalEK.pak --apply
+dist=~/dev/csf-mods/hello-world-project/dist/<build-id>
+./build/Release/csf-mod deploy-pak ~/dev/csf-mods/hello-world-project/mission \
+  $dist/hello-world.pak ~/dev/csf_game maps/Convoy.pak --apply
+./build/Release/csf-mod deploy-pak ~/dev/csf-mods/hello-world-project/texts \
+  $dist/hello-texts.pak ~/dev/csf_game GlobalEK.pak --apply
 ```
 
 If the second deployment fails, roll back the first before playing. To undo

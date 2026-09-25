@@ -32,6 +32,7 @@ add_library(csf_core
     src/csf_animation_catalog.cpp
     src/csf_animation_slots.cpp
     src/csf_authoring.cpp
+    src/csf_authoring_project.cpp
     src/csf_cmo.cpp
     src/csf_document.cpp
     src/csf_export.cpp
@@ -49,6 +50,8 @@ add_library(csf_core
 )
 add_library(csf::core ALIAS csf_core)
 target_include_directories(csf_core PUBLIC include)
+# Authoring projects compile Worlds and sector maps (rws_core).
+target_link_libraries(csf_core PUBLIC rws_core)
 target_compile_features(csf_core PUBLIC cxx_std_20)
 if(MSVC)
     target_compile_options(csf_core PRIVATE /W4 /permissive-)
