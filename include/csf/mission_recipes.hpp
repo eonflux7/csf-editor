@@ -165,6 +165,58 @@ struct IntroCutscene {
     std::string cutscene_name{"CUT_INICIO"};
 };
 
+// A trigger (docs/plans/editor-ux-redesign.md, E10): When something happens,
+// If an objective is or is not complete, Do some actions; one trigger script
+// of known shape (with a START_GAME setup script when the event needs one:
+// zone events for the player, a usable ghost). Only patterns seen working are
+// "proven": hello world's (in game) or the shipped programs' and the KB's;
+// the others carry trigger_*_proven() == false and the GUI shows them only
+// on request, marked unverified.
+struct TriggerAction {
+    enum class Kind : std::uint8_t {
+        complete_objective,  // SET_OBJETIVO_SUCCESS (NUMERO n) (BOOL TRUE)
+        message,             // TIMED_STRING_V2 (FLI text) 5 s
+        raise_event,         // SEND_EVENT (EVENT name)
+        alarm,               // Convoy's camp alarm: an acoustic stimulus and ACTIVAR_ALARMA (NUMERO seconds)
+        ai_alert,            // SET_IA_ALERTA (BICHO actor) (IA_ALERTA mode)
+        ai_combat,           // SET_IA_COMBATE (BICHO actor) (IA_COMBATE mode)
+        enable_ghost,        // HABILITAR_GHOST, SET_CONTEXTUAL, ENABLE_GHOST_ILUM (BOOL TRUE)
+        disable_ghost,       // ... (BOOL FALSE)
+        mission_success,     // SET_MISSION_SUCCESS (BOOL TRUE)
+    };
+    Kind kind{Kind::message};
+    std::int32_t number{};  // objective number, actor ID or seconds
+    std::string text;       // FLI string ID, event name or AI mode
+};
+
+struct Trigger {
+    enum class When : std::uint8_t {
+        mission_start,  // START_GAME
+        enter_zone,     // the player enters `target` (a zone)
+        actor_killed,   // actor `target` dies (MORIBUNDO or MUERTO)
+        object_used,    // the player uses actor `target`'s ghost
+        event,          // `event` is raised (SEND_EVENT)
+        timer,          // `seconds` after the mission starts
+    };
+    When when{When::mission_start};
+    std::int32_t target{};
+    std::string event;
+    float seconds{};
+    // Only while objective `first` is complete (`second` true) or not.
+    std::optional<std::pair<std::int32_t, bool>> if_objective;
+    std::vector<TriggerAction> actions;
+    ScriptSpec script;  // the trigger
+    ScriptSpec setup;   // its START_GAME setup, when the event needs one
+};
+
+[[nodiscard]] bool trigger_when_proven(Trigger::When when) noexcept;
+[[nodiscard]] bool trigger_action_proven(TriggerAction::Kind kind) noexcept;
+[[nodiscard]] bool trigger_needs_setup(const Trigger& trigger) noexcept;
+// The trigger's script texts (the setup first, when it has one) with the IDs given.
+[[nodiscard]] std::vector<std::string> trigger_script_texts(const Trigger& trigger, std::int32_t script_id,
+                                                            std::int32_t setup_id);
+EditResult add_trigger(MissionEditor& editor, const Trigger& recipe);
+
 // The dummy aim (.ROT, .ROT_X) looking from `camera` at `target`.
 [[nodiscard]] std::pair<float, float> look_at(Vec3 camera, Vec3 target);
 

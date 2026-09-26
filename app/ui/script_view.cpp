@@ -2,9 +2,15 @@
 #include "ui/ui.hpp"
 
 #include "app_util.hpp"
+#include "mission_authoring.hpp"
 #include "mission_editing.hpp"
 #include "navigation.hpp"
+#include "csf/mission_components.hpp"
+#include "csf/mission_recipes.hpp"
+#include "csf/script_signatures.hpp"
 #include "csf/source_text.hpp"
+#include "ui/icons.hpp"
+#include "ui/script_editor.hpp"
 #include "ui/fonts.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -88,7 +94,70 @@ struct ScriptSource {
     bool modified{};
     std::vector<std::string> messages;
     bool error{};
+    // The text's own check, redone when it changes: a syntax error's line and
+    // what the signature table has never seen.
+    std::string checked;
+    std::optional<std::size_t> error_line;
+    std::string error_message;
+    std::vector<std::string> advisories;
 };
+
+void check_source(ScriptSource& source) {
+    if (source.checked == source.text) return;
+    source.checked = source.text;
+    source.error_line.reset();
+    source.error_message.clear();
+    source.advisories.clear();
+    try {
+        const auto tree = csf::parse_source_value(source.text);
+        for (const auto& finding : csf::check_script_against_signatures(tree))
+            source.advisories.push_back(finding.message);
+    } catch (const csf::SourceTextError& error) {
+        source.error_line = error.line();
+        source.error_message = error.what();
+    } catch (const std::exception& error) {
+        source.error_message = error.what();
+    }
+}
+
+// Ctrl+click on an operand: the record, script or group it names.
+void follow_operand(AppState& state, const OperandAt& operand) {
+    const auto number = [&](const std::size_t k) -> std::optional<std::int32_t> {
+        if (k >= operand.values.size()) return std::nullopt;
+        try {
+            return std::stoi(operand.values[k]);
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+    };
+    using Kind = MissionRecordKey::Kind;
+    std::optional<MissionRecordKey> key;
+    if (operand.tag == "BICHO" && number(0)) key = MissionRecordKey{Kind::actor, *number(0), 0};
+    else if (operand.tag == "ZONA" && number(0)) key = MissionRecordKey{Kind::area, *number(0), 0};
+    else if (operand.tag == "DUMMY" && number(0)) key = MissionRecordKey{Kind::dummy, *number(0), 0};
+    else if (operand.tag == "GRUPO_PATHPOINT" && number(0)) key = MissionRecordKey{Kind::nav_group, *number(0), 0};
+    else if (operand.tag == "PATHPOINT" && number(0) && number(1)) key = MissionRecordKey{Kind::nav_point, *number(0), *number(1)};
+    if (key) {
+        if (!mission_record_entry(*state.mission.scene, *key)) return state.warn(operand.tag + " " + operand.values[0] + " is not in the mission");
+        state.workspace = Workspace::mission;
+        select_mission_record(state, *key, true);
+        return;
+    }
+    if ((operand.tag == "SCRIPT" || operand.tag == "TRIGGER") && number(0)) {
+        for (std::size_t document = 0; document < state.mission.programs.size(); ++document) {
+            const auto& scripts = state.mission.programs[document].second.scripts();
+            for (std::size_t i = 0; i < scripts.size(); ++i)
+                if (scripts[i].id == *number(0)) {
+                    state.selected_program_document = document;
+                    state.selected_program_script = i;
+                    state.selection = {SelectionRef::Kind::program_script, document, i};
+                    return;
+                }
+        }
+        return state.warn("Script " + operand.values[0] + " is not in the mission");
+    }
+    state.info("Ctrl+click follows actors, zones, markers, routes and scripts; " + operand.tag + " names none of them");
+}
 
 int resize_callback(ImGuiInputTextCallbackData* data) {
     if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
@@ -160,15 +229,38 @@ void draw_script_source_editor(AppState& state, const std::size_t document, cons
     ImGui::SameLine();
     if (ImGui::Checkbox("Trigger (global, started by events)", &trigger)) set_flag(".TRIGGER", trigger);
     ImGui::EndDisabled();
+    // A script a recipe made is its component's: read-only here until detached (S1).
+    const csf::MissionComponent* owner = nullptr;
+    const bool in_cutscene = lower_ascii(path_utf8(path.extension())) == ".csc";
+    for (const auto& component : mission_component_list(state))
+        if (std::ranges::find(component.owns, csf::MissionRecordId{in_cutscene ? csf::MissionRecordId::Type::cutscene_script
+                                                                                 : csf::MissionRecordId::Type::script,
+                                                                      script.id}) != component.owns.end())
+            owner = &component;
+    if (owner) {
+        token_text(Token::inferred, "%s Made by %s: edit it on its card, or detach it to edit this text.",
+                   icons::LC_COMPONENT, csf::component_title(*owner).c_str());
+        const auto id = owner->id;
+        if (ImGui::SmallButton("Detach and edit")) {
+            apply_mission_edit(state, csf::detach_component(editor, id));
+            reselect_script(state, document, script.id);
+        }
+    }
+    check_source(source);
     const float height = std::max(ImGui::GetContentRegionAvail().y * 0.55F, 240.0F * ui_scale());
-    if (ImGui::InputTextMultiline("##script_source", source.text.data(), source.text.capacity() + 1,
-                                  {-FLT_MIN, height},
-                                  ImGuiInputTextFlags_CallbackResize | ImGuiInputTextFlags_AllowTabInput,
-                                  resize_callback, &source.text))
-        source.modified = true;
+    const auto edited = script_code_editor("##script_source", source.text, {-FLT_MIN, height}, owner != nullptr,
+                                           source.error_line);
+    if (edited.changed) source.modified = true;
     const bool apply_key = ImGui::IsItemFocused() && ImGui::GetIO().KeyCtrl &&
                            ImGui::IsKeyPressed(ImGuiKey_Enter, false);
-    ImGui::BeginDisabled(!source.modified);
+    if (edited.ctrl_clicked) follow_operand(state, *edited.ctrl_clicked);
+    // What the current line's opcode takes, and the text's own problems.
+    if (const auto hint = signature_hint(line_opcode(edited.cursor_line)); !hint.empty()) dim_text("%s", hint.c_str());
+    else dim_text("Tab completes opcodes and operand tags; Ctrl+click an operand to go to it.");
+    if (!source.error_message.empty()) token_text(Token::error, "%s", source.error_message.c_str());
+    for (std::size_t i = 0; i < source.advisories.size() && i < 4; ++i)
+        token_text(Token::warn, "%s", source.advisories[i].c_str());
+    ImGui::BeginDisabled(!source.modified || owner);
     if (ImGui::Button("Apply (Ctrl+Enter)") || (apply_key && source.modified)) {
         const auto result = editor.set_script_text(*file, script.id, source.text);
         report(source, result);
@@ -192,20 +284,49 @@ void draw_script_source_editor(AppState& state, const std::size_t document, cons
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("New script")) {
-        std::int32_t id{};
-        const auto result =
-            editor.add_script(*file, csf::MissionEditor::script_template(editor.next_script_id(*file), "NEW_SCRIPT"), &id);
-        report(source, result);
-        if (apply_mission_edit(state, result)) reselect_script(state, document, id);
+    // A new script already listening to an event (S4).
+    if (ImGui::Button("New script...")) ImGui::OpenPopup("##new_script");
+    if (ImGui::BeginPopup("##new_script")) {
+        static std::array<char, 64> name{"NEW_SCRIPT"};
+        static int event = 0;
+        static bool global = true;
+        std::vector<std::string> events{"START_GAME", "INIT", "BICHO_ENT_ZONA", "MORIBUNDO", "MUERTO", "EVT_GHOST_USADO",
+                                        "IA_CHANGE_STATE"};
+        // Events the mission's scripts raise.
+        for (const auto& [path_value, program] : state.mission.programs)
+            for (const auto& other : program.scripts())
+                for (const auto& instruction : other.actions)
+                    if (instruction.opcode == "SEND_EVENT")
+                        for (const auto& operand : instruction.operands)
+                            if (const auto* raised = std::get_if<std::string>(&operand.value);
+                                operand.tag == "EVENT" && raised && std::ranges::find(events, *raised) == events.end())
+                                events.push_back(*raised);
+        ImGui::InputText("Name", name.data(), name.size());
+        std::vector<const char*> labels;
+        for (const auto& value : events) labels.push_back(value.c_str());
+        event = std::min(event, static_cast<int>(labels.size()) - 1);
+        ImGui::Combo("Listens to", &event, labels.data(), static_cast<int>(labels.size()));
+        ImGui::Checkbox("Global (a trigger); off: an actor script", &global);
+        if (ImGui::Button("Create")) {
+            std::int32_t id{};
+            const auto text = csf::script_text(editor.next_script_id(*file), name.data(), global ? 1 : 0,
+                                               {events[static_cast<std::size_t>(event)]}, {});
+            const auto result = editor.add_script(*file, text, &id);
+            report(source, result);
+            if (apply_mission_edit(state, result)) reselect_script(state, document, id);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
     ImGui::SameLine();
+    ImGui::BeginDisabled(owner != nullptr);
     if (ImGui::Button("Delete script")) {
         const auto result = editor.delete_script(*file, script.id, ImGui::GetIO().KeyShift);
         report(source, result);
         if (apply_mission_edit(state, result)) state.mission.pending_script = std::pair{document, std::int32_t{-1}};
     }
-    if (ImGui::IsItemHovered())
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Refuses while actors run it or operands name it; hold Shift to force");
     for (const auto& message : source.messages)
         token_text(source.error ? Token::error : Token::warn, "%s", message.c_str());

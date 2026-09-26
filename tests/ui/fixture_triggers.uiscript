@@ -1,0 +1,31 @@
+# Triggers (Phase 5, E10): When the player enters a zone -> complete an
+# objective, made from the Objectives tab's form as a component and edited on
+# its card; unverified actions appear only on request.
+open $RWSMAN_UI_FIXTURE/Maps/M1/M1.scn
+remember mission.hash
+remember count.scripts
+command mission.objectives
+click Objectives::trigger_name
+type AT_YARD
+key Enter
+click Objectives::pick_trigger_target
+expect viewport.picking true
+click Outliner::YARD
+expect viewport.picking false
+click "Create trigger"
+expect count.components 1
+expect mission.history.top "Add Trigger AT_YARD"
+expect-changed count.scripts
+
+# Only proven actions unless asked.
+click Objectives::trigger_add_action
+expect item:"Sound the alarm" missing
+click Objectives::trigger_add_action
+click "Objectives::Offer unverified events and actions"
+click Objectives::trigger_add_action
+click "Sound the alarm"
+expect form.trigger_actions 1
+expect form.trigger_unverified 1
+
+undo-all
+expect-same mission.hash

@@ -392,6 +392,32 @@ void create_objectives(AppState& state) {
     if (add_recipe(state, csf::ops_text(recipe))) tools.objectives.clear();
 }
 
+std::optional<std::string> game_text_id(AppState& state, const std::string& text) {
+    if (text.empty() || !state.authoring.project) return text;
+    std::vector<csf::ProjectText> added;
+    std::array<char, 512> buffer{};
+    text.copy(buffer.data(), std::min(text.size(), buffer.size() - 1));
+    auto id = text_id(state, buffer, added);
+    if (!id || !store_texts(state, added)) return std::nullopt;
+    return id;
+}
+
+void create_trigger(AppState& state) {
+    if (!mission_editable(state)) return;
+    auto trigger = state.tools.trigger_draft;
+    for (auto& action : trigger.actions)
+        if (action.kind == csf::TriggerAction::Kind::message) {
+            const auto id = game_text_id(state, action.text);
+            if (!id) return state.warn("The project's text ID range is full");
+            action.text = *id;
+        }
+    if (trigger.script.name.empty()) trigger.script.name = "TRIGGER";
+    if (add_recipe(state, csf::ops_text(trigger))) {
+        state.tools.trigger_draft.actions.clear();
+        state.tools.trigger_draft.script.name.clear();
+    }
+}
+
 void create_equipment(AppState& state) {
     if (!mission_editable(state)) return;
     csf::Equipment recipe;

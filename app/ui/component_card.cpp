@@ -11,6 +11,7 @@
 #include "mission_authoring.hpp"
 #include "mission_editing.hpp"
 #include "viewport_tools.hpp"
+#include "ui/fonts.hpp"
 #include "ui/icons.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -331,6 +332,214 @@ void tips_fields(Lines& lines) {
     if (edit_text_value("##tips", lines.lines.front().get("tips"), edited)) lines.set(0, "tips", edited);
 }
 
+// ---- Triggers (E10) ----------------------------------------------------------------
+
+using Kind = csf::TriggerAction::Kind;
+using When = csf::Trigger::When;
+
+const char* when_label(const When when) {
+    switch (when) {
+    case When::mission_start: return "The mission starts";
+    case When::enter_zone: return "The player enters a zone";
+    case When::actor_killed: return "An actor dies";
+    case When::object_used: return "The player uses an object";
+    case When::event: return "An event is raised";
+    case When::timer: return "Some seconds after the start";
+    }
+    return "?";
+}
+
+const char* action_label(const Kind kind) {
+    switch (kind) {
+    case Kind::complete_objective: return "Complete an objective";
+    case Kind::message: return "Show a message";
+    case Kind::raise_event: return "Raise an event";
+    case Kind::alarm: return "Sound the alarm";
+    case Kind::ai_alert: return "Set an actor's alert behaviour";
+    case Kind::ai_combat: return "Set an actor's combat behaviour";
+    case Kind::enable_ghost: return "Make an object usable";
+    case Kind::disable_ghost: return "Make an object unusable";
+    case Kind::mission_success: return "Win the mission";
+    }
+    return "?";
+}
+
+std::string record_name(AppState& state, const bool zone, const std::int32_t id) {
+    if (zone) {
+        for (const auto& area : state.mission.scene->areas())
+            if (area.id == id) return area.name.value_or("zone") + "  (zone " + std::to_string(id) + ")";
+        return "(pick a zone)";
+    }
+    for (const auto& actor : state.mission.scene->actors())
+        if (actor.id == id) return actor.name.value_or("actor") + "  (actor " + std::to_string(id) + ")";
+    return "(pick an actor)";
+}
+
+void unverified_mark(const bool proven) {
+    if (proven) return;
+    ImGui::SameLine();
+    token_text(Token::warn, "unverified");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        ImGui::SetTooltip("Seen in the shipped missions, not yet played in a mission made here.");
+}
+
+} // namespace
+
+void trigger_fields(AppState& state, const csf::Trigger& trigger, const TriggerChange& change, const bool typed_texts) {
+    const bool unverified = state.tools.show_unverified;
+    property_row("When");
+    if (ImGui::BeginCombo("##trigger_when", when_label(trigger.when))) {
+        for (const auto when : {When::mission_start, When::enter_zone, When::actor_killed, When::object_used, When::timer,
+                                When::event})
+            if (unverified || csf::trigger_when_proven(when) || when == trigger.when) {
+                if (ImGui::Selectable(when_label(when), when == trigger.when))
+                    change([when](csf::Trigger& value) { value.when = when; });
+                unverified_mark(csf::trigger_when_proven(when));
+            }
+        ImGui::EndCombo();
+    } else {
+        name_last_item("##trigger_when");
+    }
+    unverified_mark(csf::trigger_when_proven(trigger.when));
+    if (trigger.when == When::enter_zone || trigger.when == When::actor_killed || trigger.when == When::object_used) {
+        const bool zone = trigger.when == When::enter_zone;
+        property_row(zone ? "Zone" : trigger.when == When::actor_killed ? "Actor" : "Object",
+                     "Pick it in the viewport or the Outliner.");
+        ImGui::TextUnformatted(record_name(state, zone, trigger.target).c_str());
+        ImGui::SameLine();
+        pick_button(state, "##pick_trigger_target", {zone ? MissionRecordKey::Kind::area : MissionRecordKey::Kind::actor},
+                    zone ? "Pick the zone" : "Pick the actor",
+                    [change](const MissionRecordKey& key) { change([id = key.id](csf::Trigger& value) { value.target = id; }); });
+    }
+    if (trigger.when == When::event) {
+        property_row("Event", "The name another script raises with SEND_EVENT.");
+        std::string edited;
+        if (edit_text_value("##trigger_event", trigger.event, edited, "EVENT_NAME"))
+            change([edited](csf::Trigger& value) { value.event = edited; });
+    }
+    if (trigger.when == When::timer) {
+        property_row("Seconds");
+        float seconds{};
+        if (edit_float_value("##trigger_seconds", trigger.seconds, seconds, 0.5F, "%.1f s") && seconds >= 0)
+            change([seconds](csf::Trigger& value) { value.seconds = seconds; });
+    }
+    property_row("If", "Only while an objective is (or is not yet) complete.");
+    static constexpr const char* conditions[]{"Always", "Objective ... is complete", "Objective ... is not complete"};
+    int condition = !trigger.if_objective ? 0 : trigger.if_objective->second ? 1 : 2;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.65F);
+    if (ImGui::Combo("##trigger_if", &condition, conditions, IM_ARRAYSIZE(conditions)))
+        change([condition](csf::Trigger& value) {
+            if (condition == 0) value.if_objective.reset();
+            else value.if_objective = std::pair{value.if_objective ? value.if_objective->first : 1, condition == 1};
+        });
+    name_last_item("##trigger_if");
+    if (trigger.if_objective) {
+        ImGui::SameLine();
+        int number{};
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (edit_int_value("##trigger_if_number", trigger.if_objective->first, number) && number > 0)
+            change([number](csf::Trigger& value) { value.if_objective->first = number; });
+    }
+    for (std::size_t i = 0; i < trigger.actions.size(); ++i) {
+        const auto& action = trigger.actions[i];
+        ImGui::PushID(static_cast<int>(i));
+        property_row(i == 0 ? "Do" : "");
+        ImGui::TextUnformatted(action_label(action.kind));
+        unverified_mark(csf::trigger_action_proven(action.kind));
+        ImGui::SameLine();
+        const auto update = [&](const std::function<void(csf::TriggerAction&)>& edit) {
+            change([i, edit](csf::Trigger& value) {
+                if (i < value.actions.size()) edit(value.actions[i]);
+            });
+        };
+        ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - 30.0F * ui_scale(), 60.0F));
+        int number{};
+        std::string edited;
+        switch (action.kind) {
+        case Kind::complete_objective:
+        case Kind::alarm:
+            if (edit_int_value("##number", action.number, number) && number >= 0)
+                update([number](csf::TriggerAction& value) { value.number = number; });
+            break;
+        case Kind::message:
+            if (edit_text_value("##text", action.text, edited, typed_texts && state.authoring.project ? "the message" : "FLI ID"))
+                update([edited](csf::TriggerAction& value) { value.text = edited; });
+            break;
+        case Kind::raise_event:
+            if (edit_text_value("##text", action.text, edited, "EVENT_NAME"))
+                update([edited](csf::TriggerAction& value) { value.text = edited; });
+            break;
+        case Kind::ai_alert:
+        case Kind::ai_combat:
+        case Kind::enable_ghost:
+        case Kind::disable_ghost:
+            ImGui::TextUnformatted(record_name(state, false, action.number).c_str());
+            ImGui::SameLine();
+            pick_button(state, "##pick_action_actor", {MissionRecordKey::Kind::actor}, "Pick the actor",
+                        [change, i](const MissionRecordKey& key) {
+                            change([i, id = key.id](csf::Trigger& value) {
+                                if (i < value.actions.size()) value.actions[i].number = id;
+                            });
+                        });
+            if (action.kind == Kind::ai_alert || action.kind == Kind::ai_combat) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(160.0F * ui_scale());
+                if (edit_text_value("##mode", action.text, edited, "MOVIL_A_PARAPETO"))
+                    update([edited](csf::TriggerAction& value) { value.text = edited; });
+            }
+            break;
+        case Kind::mission_success: break;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(icons::LC_X)) change([i](csf::Trigger& value) {
+                if (i < value.actions.size()) value.actions.erase(value.actions.begin() + static_cast<std::ptrdiff_t>(i));
+            });
+        ImGui::PopID();
+    }
+    property_row(trigger.actions.empty() ? "Do" : "");
+    if (ImGui::BeginCombo("##trigger_add_action", "Add an action...", ImGuiComboFlags_HeightLargest)) {
+        for (const auto kind : {Kind::complete_objective, Kind::message, Kind::alarm, Kind::raise_event, Kind::ai_alert,
+                                Kind::ai_combat, Kind::enable_ghost, Kind::disable_ghost, Kind::mission_success})
+            if (unverified || csf::trigger_action_proven(kind)) {
+                if (ImGui::Selectable(action_label(kind)))
+                    change([kind](csf::Trigger& value) {
+                        csf::TriggerAction action{kind, 0, {}};
+                        if (kind == Kind::complete_objective) action.number = 1;
+                        if (kind == Kind::alarm) action.number = 60;
+                        if (kind == Kind::ai_alert || kind == Kind::ai_combat) action.text = "MOVIL_A_PARAPETO";
+                        value.actions.push_back(action);
+                    });
+                unverified_mark(csf::trigger_action_proven(kind));
+            }
+        ImGui::EndCombo();
+    } else {
+        name_last_item("##trigger_add_action");
+    }
+}
+
+namespace {
+
+void trigger_card_fields(AppState& state, Lines& lines) {
+    csf::Trigger trigger;
+    try {
+        trigger = csf::parse_trigger(lines.lines.front());
+    } catch (const std::exception& error) {
+        dim_text("%s", error.what());
+        return;
+    }
+    const auto id = lines.id;
+    auto others = lines.lines;
+    trigger_fields(state, trigger, [&state, id, others](const std::function<void(csf::Trigger&)>& edit) {
+        auto copy = others;
+        auto value = csf::parse_trigger(copy.front());
+        edit(value);
+        copy.front() = csf::parse_op_line(csf::ops_text(value));
+        std::vector<std::string> text;
+        for (const auto& line : copy) text.push_back(csf::format_op_line(line));
+        edit_component(state, id, text);
+    }, false);
+}
+
 // The lines themselves, for anything the fields above do not cover.
 void lines_editor(AppState& state, const csf::MissionComponent& component) {
     if (!ImGui::TreeNodeEx("Operation lines", ImGuiTreeNodeFlags_SpanAvailWidth)) return;
@@ -422,11 +631,13 @@ void draw_component_card(AppState& state, const std::int32_t id) {
         else if (op == "shot" || op == "intro") intro_fields(lines);
         else if (op == "kit" || op == "equipment") equipment_fields(state, lines);
         else if (op == "tips") tips_fields(lines);
+        else if (op == "trigger") trigger_card_fields(state, lines);
         end_properties();
     }
     lines_editor(state, component);
     ImGui::EndDisabled();
-    if (secondary_button("Detach")) apply_mission_edit(state, csf::detach_component(editor, component.id));
+    if (secondary_button(component.op() == "trigger" ? "Convert to script" : "Detach"))
+        apply_mission_edit(state, csf::detach_component(editor, component.id));
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
         ImGui::SetTooltip("Keep the records and forget the recipe: they become ordinary records.");
     ImGui::SameLine();

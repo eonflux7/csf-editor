@@ -94,6 +94,8 @@ its target to appear.
   (`select`, `move`, `rotate`, `place`, `route`, `zone`, `cover`),
   `viewport.sketch` (points of the route or zone being drawn),
   `viewport.place_asset`, `viewport.picking`, `viewport.grid_preview_points`
+- `form.trigger_actions`, `form.trigger_unverified` (the New trigger form),
+  `flow.unraised_events` (events that start scripts but nothing raises)
 
 ## Failures
 

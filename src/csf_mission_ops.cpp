@@ -317,6 +317,11 @@ EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOpt
         recipe.cutscene_name = line.text_or("cutscene-name", "CUT_INICIO");
         return add_intro_cutscene(editor, recipe);
     }
+    if (op == "trigger") {
+        OpLine parsed{op, {}};
+        for (const auto& [key, value] : line.values) parsed.values.emplace_back(key, line.text(key));
+        return add_trigger(editor, parse_trigger(parsed));
+    }
     if (op == "tips") {
         Tips recipe{split(line.text("tips"), ','), {0.115F, 0.25F}, {optional_id(line, "script"), line.text_or("script-name", "")}};
         if (line.has("pos")) {
@@ -355,10 +360,10 @@ OpLine parse_op_line(const std::string_view line) {
     OpLine result;
     std::size_t i = 0;
     const auto skip = [&] {
-        while (i < line.size() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) ++i;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r' || line[i] == '\n')) ++i;
     };
     skip();
-    while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r') result.op.push_back(line[i++]);
+    while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r' && line[i] != '\n') result.op.push_back(line[i++]);
     for (skip(); i < line.size(); skip()) {
         std::string key;
         while (i < line.size() && line[i] != '=' && line[i] != ' ') key.push_back(line[i++]);
@@ -373,7 +378,7 @@ OpLine parse_op_line(const std::string_view line) {
             if (i >= line.size()) throw std::invalid_argument("unterminated string");
             ++i;
         } else {
-            while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r') value.push_back(line[i++]);
+            while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r' && line[i] != '\n') value.push_back(line[i++]);
         }
         result.values.emplace_back(std::move(key), std::move(value));
     }
@@ -655,6 +660,119 @@ std::string ops_text(const IntroCutscene& recipe) {
     end.set("cutscene-name", recipe.cutscene_name);
     values.push_back(std::move(end));
     return lines(values);
+}
+
+} // namespace csf
+
+namespace csf {
+namespace {
+
+constexpr std::pair<Trigger::When, const char*> when_names[]{
+    {Trigger::When::mission_start, "start"}, {Trigger::When::enter_zone, "zone"}, {Trigger::When::actor_killed, "killed"},
+    {Trigger::When::object_used, "used"},    {Trigger::When::event, "event"},     {Trigger::When::timer, "timer"}};
+
+std::int32_t integer_value(const std::string& text) {
+    std::int32_t value{};
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size()) throw std::invalid_argument("invalid number '" + text + "'");
+    return value;
+}
+
+} // namespace
+
+const char* trigger_when_name(const Trigger::When when) noexcept {
+    for (const auto& [value, name] : when_names)
+        if (value == when) return name;
+    return "?";
+}
+
+std::string trigger_action_text(const TriggerAction& action) {
+    using Kind = TriggerAction::Kind;
+    const auto n = std::to_string(action.number);
+    switch (action.kind) {
+    case Kind::complete_objective: return "complete:" + n;
+    case Kind::message: return "message:" + action.text;
+    case Kind::raise_event: return "raise:" + action.text;
+    case Kind::alarm: return "alarm:" + n;
+    case Kind::ai_alert: return "alert:" + n + ":" + action.text;
+    case Kind::ai_combat: return "combat:" + n + ":" + action.text;
+    case Kind::enable_ghost: return "ghost-on:" + n;
+    case Kind::disable_ghost: return "ghost-off:" + n;
+    case Kind::mission_success: return "success";
+    }
+    return {};
+}
+
+Trigger parse_trigger(const OpLine& line) {
+    using Kind = TriggerAction::Kind;
+    Trigger trigger;
+    const auto id = [&](const std::string_view key) -> std::optional<std::int32_t> {
+        if (const auto* value = line.find(key)) return integer_value(*value);
+        return std::nullopt;
+    };
+    trigger.script = {id("script"), line.get("name")};
+    trigger.setup = {id("setup"), line.get("setup-name")};
+    const auto when = line.get("when", "start");
+    const auto found = std::ranges::find(when_names, when, [](const auto& pair) { return std::string(pair.second); });
+    if (found == std::end(when_names)) throw std::invalid_argument("when= is start, zone, killed, used, event or timer");
+    trigger.when = found->first;
+    trigger.target = id("target").value_or(0);
+    trigger.event = line.get("event");
+    if (const auto* seconds = line.find("seconds")) {
+        float value{};
+        const auto [end, error] = std::from_chars(seconds->data(), seconds->data() + seconds->size(), value);
+        if (error != std::errc{} || end != seconds->data() + seconds->size()) throw std::invalid_argument("invalid seconds=");
+        trigger.seconds = value;
+    }
+    if (const auto* condition = line.find("if")) {
+        const auto colon = condition->find(':');
+        const auto state = colon == std::string::npos ? std::string() : condition->substr(colon + 1);
+        if (state != "done" && state != "open") throw std::invalid_argument("if= is <objective>:done or <objective>:open");
+        trigger.if_objective = std::pair{integer_value(condition->substr(0, colon)), state == "done"};
+    }
+    for (const auto& item : split(line.get("do"), ';')) {
+        const auto parts = split(item, ':');
+        const auto part = [&](const std::size_t k) -> const std::string& {
+            if (k >= parts.size()) throw std::invalid_argument("incomplete action '" + item + "'");
+            return parts[k];
+        };
+        TriggerAction action;
+        const auto& verb = part(0);
+        if (verb == "complete") action = {Kind::complete_objective, integer_value(part(1)), {}};
+        else if (verb == "message") action = {Kind::message, 0, part(1)};
+        else if (verb == "raise") action = {Kind::raise_event, 0, part(1)};
+        else if (verb == "alarm") action = {Kind::alarm, integer_value(part(1)), {}};
+        else if (verb == "alert") action = {Kind::ai_alert, integer_value(part(1)), part(2)};
+        else if (verb == "combat") action = {Kind::ai_combat, integer_value(part(1)), part(2)};
+        else if (verb == "ghost-on") action = {Kind::enable_ghost, integer_value(part(1)), {}};
+        else if (verb == "ghost-off") action = {Kind::disable_ghost, integer_value(part(1)), {}};
+        else if (verb == "success") action = {Kind::mission_success, 0, {}};
+        else throw std::invalid_argument("unknown action '" + verb + "'");
+        trigger.actions.push_back(std::move(action));
+    }
+    return trigger;
+}
+
+std::string ops_text(const Trigger& recipe) {
+    OpLine line{"trigger", {}};
+    set_id(line, "script", recipe.script.id);
+    line.set("name", recipe.script.name);
+    if (trigger_needs_setup(recipe)) {
+        set_id(line, "setup", recipe.setup.id);
+        set_text(line, "setup-name", recipe.setup.name);
+    }
+    line.set("when", trigger_when_name(recipe.when));
+    if (recipe.when == Trigger::When::enter_zone || recipe.when == Trigger::When::actor_killed ||
+        recipe.when == Trigger::When::object_used)
+        line.set("target", std::to_string(recipe.target));
+    if (recipe.when == Trigger::When::event) line.set("event", recipe.event);
+    if (recipe.when == Trigger::When::timer) line.set("seconds", op_number(recipe.seconds));
+    if (recipe.if_objective)
+        line.set("if", std::to_string(recipe.if_objective->first) + (recipe.if_objective->second ? ":done" : ":open"));
+    std::string actions;
+    for (const auto& action : recipe.actions) actions += (actions.empty() ? "" : ";") + trigger_action_text(action);
+    line.set("do", actions);
+    return lines({line});
 }
 
 } // namespace csf

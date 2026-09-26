@@ -83,6 +83,13 @@ constexpr std::array<unsigned, static_cast<std::size_t>(EntityKind::count)> high
     0x66E0FF, 0x66FFA8, 0x70C0F0, 0xFF80E8, 0xFFE066, 0xD39CFF, 0xFFF3A0, 0xFF8AB6, 0xFFBE5C, 0xC9B0FF, 0xA8D0FF,
 };
 
+// Syntax colours (plain, opcode, tag, number, string, label, punctuation).
+constexpr std::array<unsigned, static_cast<std::size_t>(Syntax::count)> dark_syntax{
+    0xD4D7DD, 0xE8A33D, 0x5FB3D9, 0xA58BD8, 0x6CC56C, 0x878E9A, 0x6B7280};
+constexpr std::array<unsigned, static_cast<std::size_t>(Syntax::count)> high_contrast_syntax{
+    0xFFFFFF, 0xFFB84D, 0x66D9FF, 0xC9A8FF, 0x66FF66, 0xB8B8B8, 0x9A9A9A};
+const std::array<unsigned, static_cast<std::size_t>(Syntax::count)>* syntax_palette = &dark_syntax;
+
 const Palette* palette = &dark_palette;
 const std::array<unsigned, static_cast<std::size_t>(EntityKind::count)>* kind_palette = &dark_kinds;
 std::string current_theme = "dark";
@@ -225,9 +232,11 @@ void set_theme(const std::string_view name) {
     if (name == "high-contrast") {
         palette = &high_contrast_palette;
         kind_palette = &high_contrast_kinds;
+        syntax_palette = &high_contrast_syntax;
         current_theme = "high-contrast";
     } else {
         palette = &dark_palette;
+        syntax_palette = &dark_syntax;
         kind_palette = &dark_kinds;
         current_theme = "dark";
     }
@@ -244,6 +253,11 @@ ImVec4 kind_color(const EntityKind kind, const float alpha) {
 
 ImU32 kind_color_u32(const EntityKind kind, const float alpha) {
     return ImGui::ColorConvertFloat4ToU32(kind_color(kind, alpha));
+}
+
+ImU32 syntax_color(const Syntax syntax) {
+    const auto index = static_cast<std::size_t>(syntax);
+    return ImGui::ColorConvertFloat4ToU32(rgb(index < syntax_palette->size() ? (*syntax_palette)[index] : 0xD4D7DD));
 }
 
 const char* kind_icon(const EntityKind kind) {

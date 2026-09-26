@@ -1029,6 +1029,20 @@ void behaviours_body(AppState& state) {
 void flow_body(AppState& state) {
     const auto* flow = mission_flow(state);
     if (!flow) return;
+    // The graph first (S3); the lists below it as Details.
+    if (ImGui::BeginTabBar("##flow_views")) {
+        if (ImGui::BeginTabItem("Graph")) {
+            draw_flow_graph(state);
+            ImGui::EndTabItem();
+        }
+        const bool details = ImGui::BeginTabItem("Details");
+        if (!details) {
+            ImGui::EndTabBar();
+            return;
+        }
+        ImGui::EndTabItem();
+        ImGui::EndTabBar();
+    }
     ImGui::TextUnformatted("How the scripts connect");
     help_marker("Read from the programs as they are. Findings are evidence to check, not proof of what the game "
                 "does.");
@@ -1196,6 +1210,30 @@ void objectives_body(AppState& state) {
     ImGui::BeginDisabled(!tools.tips[0]);
     if (ImGui::Button("Create tips script")) create_tips(state);
     ImGui::EndDisabled();
+
+    // Triggers (E10): When -> If -> Do, each a component; Convert to script detaches one.
+    section("Triggers");
+    help_marker("Mission logic without script text: when something happens (the player enters a zone, an actor "
+                "dies...), if an objective is or is not complete, do some actions. Each trigger is one script "
+                "of a known shape; Convert to script turns it into ordinary script text.");
+    draw_component_cards(state, {"trigger"});
+    auto& draft = tools.trigger_draft;
+    ImGui::PushID("new_trigger");
+    if (begin_properties("##new_trigger")) {
+        property_row("Name");
+        std::string name;
+        if (edit_text_value("##trigger_name", draft.script.name, name, "TRIGGER")) draft.script.name = name;
+        trigger_fields(state, draft, [&state](const std::function<void(csf::Trigger&)>& edit) {
+            edit(state.tools.trigger_draft);
+        }, true);
+        end_properties();
+    }
+    ImGui::Checkbox("Offer unverified events and actions", &tools.show_unverified);
+    help_marker("Events and actions seen in the shipped missions but not yet played in a mission made here.");
+    ImGui::BeginDisabled(draft.actions.empty());
+    if (primary_button("Create trigger")) create_trigger(state);
+    ImGui::EndDisabled();
+    ImGui::PopID();
 }
 
 void texts_body(AppState& state) {

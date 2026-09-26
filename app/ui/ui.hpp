@@ -7,6 +7,7 @@
 #include "rws/document.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 // Text of a program operand value (shared with the script listing).
@@ -46,6 +47,10 @@ void draw_component_card(AppState& state, const MissionRecordKey& key);
 void draw_component_card(AppState& state, std::int32_t component_id);
 // The cards of the components whose recipe is one of `ops` (objectives, equipment, tips).
 void draw_component_cards(AppState& state, std::initializer_list<std::string_view> ops);
+// A trigger's When / If / Do fields; `change` applies an edit (now, or later
+// for an eyedropper pick). With `typed_texts` a message is the text itself.
+using TriggerChange = std::function<void(const std::function<void(csf::Trigger&)>&)>;
+void trigger_fields(AppState& state, const csf::Trigger& trigger, const TriggerChange& change, bool typed_texts);
 void draw_problems(AppState& state);
 void draw_history_panel(AppState& state);
 void draw_mission_settings(AppState& state);
@@ -67,6 +72,10 @@ void draw_mission_edit_section(AppState& state, std::uint32_t entry);
 void draw_map_instance_edit_section(AppState& state, const rws::SceneInstance& instance);
 // Export and unsaved-edits dialogs.
 void draw_mission_dialogs(AppState& state);
+// The mission flow as a graph (S3): events, scripts, objectives.
+void draw_flow_graph(AppState& state);
+// An event that starts scripts but that no script raises.
+[[nodiscard]] bool flow_event_unraised(const csf::FlowEvent& event);
 // The New project wizard and the deploy confirmation (app/ui/project_panels.cpp).
 void draw_project_dialogs(AppState& state);
 // The Build panel's archives, test install and playtest cards.

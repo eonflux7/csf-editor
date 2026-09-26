@@ -247,6 +247,24 @@ edits** (it becomes ordinary records) or **Regenerate**; it never overwrites
 them on its own. The walk grid preset can be previewed in the viewport before
 it is generated.
 
+**Triggers** (the Objectives tab) are mission logic without script text:
+*when* the player enters a zone, an actor dies, an object is used, the mission
+starts or some seconds pass, *if* an objective is (or is not) complete, *do*
+actions such as completing an objective, showing a message or raising an
+event. Each is a component; **Convert to script** turns it into ordinary
+script text. Events and actions not yet played in a mission made here appear
+only with **Offer unverified events and actions**.
+
+Script mode lists the scripts by what they do (mission start, triggers, actor
+behaviours, those made by recipes, the cutscene); a recipe's script is
+read-only until detached. The editor colours the text, marks a syntax error's
+line as you type, completes opcodes and operand tags with **Tab**, shows the
+current opcode's operands, and **Ctrl+click** on an operand goes to the actor,
+zone, marker, route or script it names. **New script...** starts one that
+listens to a chosen event. The Flow panel's **Graph** shows which events start
+which scripts, who raises them and what completes each objective, with events
+nothing raises and objectives nothing completes in red.
+
 The Script workspace edits scripts as
 text. **Ctrl+Z** / **Ctrl+Y** undo and redo (mission and project edits in one
 history), **Ctrl+S** saves the mission project and the authoring project together,

@@ -63,6 +63,10 @@ void apply_theme(float scale);
 // and the Problems rows all use them, so a kind looks the same everywhere.
 [[nodiscard]] ImVec4 kind_color(EntityKind kind, float alpha = 1.0F);
 [[nodiscard]] ImU32 kind_color_u32(EntityKind kind, float alpha = 1.0F);
+
+// Script source colours (the Script mode editor's highlighting).
+enum class Syntax : std::uint8_t { plain, opcode, tag, number, string, label, punctuation, count };
+[[nodiscard]] ImU32 syntax_color(Syntax syntax);
 [[nodiscard]] const char* kind_icon(EntityKind kind);
 
 // Colour pairs of the current theme below WCAG AA, as messages: text and

@@ -340,6 +340,116 @@ EditResult add_equipment(MissionEditor& editor, const Equipment& recipe) {
                                     {"START_GAME"}, actions)});
 }
 
+bool trigger_when_proven(const Trigger::When when) noexcept {
+    // A mission-level script on a custom event: shipped programs listen to
+    // custom events from actor scripts only.
+    return when != Trigger::When::event;
+}
+
+bool trigger_action_proven(const TriggerAction::Kind kind) noexcept {
+    // The alarm is Convoy's own pattern, not yet played in a mission of ours.
+    return kind != TriggerAction::Kind::alarm;
+}
+
+bool trigger_needs_setup(const Trigger& trigger) noexcept {
+    return trigger.when == Trigger::When::enter_zone || trigger.when == Trigger::When::object_used;
+}
+
+std::vector<std::string> trigger_script_texts(const Trigger& trigger, const std::int32_t script_id,
+                                              const std::int32_t setup_id) {
+    using When = Trigger::When;
+    using Kind = TriggerAction::Kind;
+    const auto name = trigger.script.name.empty() ? "TRIGGER_" + std::to_string(script_id) : trigger.script.name;
+    const auto target_actor = "(BICHO " + std::to_string(trigger.target) + ")";
+    const auto zone = "(ZONA " + std::to_string(trigger.target) + ")";
+    const auto ghost = [&](const std::string& actor, const bool on) {
+        const std::string value = on ? " (BOOL TRUE)" : " (BOOL FALSE)";
+        return std::vector<std::string>{"HABILITAR_GHOST " + actor + value, "SET_CONTEXTUAL " + actor + value,
+                                        "ENABLE_GHOST_ILUM " + actor + value};
+    };
+    std::vector<std::string> texts;
+    if (trigger_needs_setup(trigger)) {
+        std::vector<std::string> setup;
+        if (trigger.when == When::enter_zone) setup.push_back("ACT_BICHO_EVENT_ZONA (PLAYER) " + zone + " (BOOL TRUE)");
+        else setup = ghost(target_actor, true);
+        texts.push_back(script_text(setup_id, trigger.setup.name.empty() ? name + "_INI" : trigger.setup.name, 1,
+                                    {"START_GAME"}, setup));
+    }
+    std::vector<std::string> events, actions;
+    std::string condition;
+    switch (trigger.when) {
+    case When::mission_start:
+    case When::timer: events = {"START_GAME"}; break;
+    case When::enter_zone:
+        events = {"BICHO_ENT_ZONA"};
+        condition = "CMP_OP_ZONA (EVT_ZONA) (OP_BOOLEAN 0) " + zone;
+        break;
+    case When::actor_killed:
+        events = {"MORIBUNDO", "MUERTO"};
+        condition = "CMP_OP_BICHO (EVT_BICHO1) (OP_BOOLEAN 0) " + target_actor;
+        break;
+    case When::object_used:
+        events = {"EVT_GHOST_USADO"};
+        condition = "CMP_OP_BICHO (EVT_BICHO2) (OP_BOOLEAN 0) " + target_actor;
+        break;
+    case When::event: events = {trigger.event}; break;
+    }
+    if (trigger.if_objective) {
+        const auto done = "OBJETIVO_COMPLETADO " + number_operand(trigger.if_objective->first);
+        const auto test = trigger.if_objective->second ? done : "NOT (" + done + ")";
+        condition = condition.empty() ? test : "AND (" + condition + ") (" + test + ")";
+    }
+    if (trigger.when == When::timer) actions.push_back("PAUSE (NUMERO " + script_number(trigger.seconds) + ")");
+    // Once: the zone stops reporting the player; the others turn the trigger off at the end.
+    if (trigger.when == When::enter_zone) actions.push_back("ACT_BICHO_EVENT_ZONA (PLAYER) " + zone + " (BOOL FALSE)");
+    for (const auto& action : trigger.actions) {
+        const auto actor = "(BICHO " + std::to_string(action.number) + ")";
+        switch (action.kind) {
+        case Kind::complete_objective:
+            actions.push_back("SET_OBJETIVO_SUCCESS " + number_operand(action.number) + " (BOOL TRUE)");
+            break;
+        case Kind::message: actions.push_back("TIMED_STRING_V2 " + fli_operand(action.text) + " (NUMERO 5.0) (NUMERO 4.0)"); break;
+        case Kind::raise_event: actions.push_back("SEND_EVENT (EVENT " + action.text + ")"); break;
+        case Kind::alarm: {
+            // As Convoy's camp: a threat heard far around where it happened, then the alarm.
+            const std::string where = trigger.when == When::actor_killed  ? "(EVT_BICHO1)"
+                                      : trigger.when == When::object_used ? target_actor
+                                      : trigger.when == When::enter_zone  ? "(PLAYER)"
+                                                                          : "";
+            if (!where.empty())
+                actions.push_back("CREA_ESTIMULO_ACUSTICO (REACTIVIDAD AMENAZA_DIRECTA) (GET_PATHPOINT " + where +
+                                  ") (NUMERO 20000.0) (NUMERO 5.0)");
+            actions.push_back("ACTIVAR_ALARMA (NUMERO " + script_number(static_cast<float>(action.number)) + ")");
+            break;
+        }
+        case Kind::ai_alert: actions.push_back("SET_IA_ALERTA " + actor + " (IA_ALERTA " + action.text + ")"); break;
+        case Kind::ai_combat: actions.push_back("SET_IA_COMBATE " + actor + " (IA_COMBATE " + action.text + ")"); break;
+        case Kind::enable_ghost:
+        case Kind::disable_ghost:
+            for (auto& line : ghost(actor, action.kind == Kind::enable_ghost)) actions.push_back(std::move(line));
+            break;
+        case Kind::mission_success: actions.push_back("SET_MISSION_SUCCESS (BOOL TRUE)"); break;
+        }
+    }
+    if (trigger.when == When::actor_killed || trigger.when == When::object_used || trigger.when == When::event)
+        actions.push_back("TRIGGER_OFF (TRIGGER " + std::to_string(script_id) + ")");
+    texts.push_back(script_text(script_id, name, 1, events, actions, condition.empty() ? std::vector<std::string>{}
+                                                                                     : std::vector{condition}));
+    return texts;
+}
+
+EditResult add_trigger(MissionEditor& editor, const Trigger& recipe) {
+    if (recipe.actions.empty()) return {false, "The trigger does nothing: add an action", {}};
+    if (recipe.when == Trigger::When::event && recipe.event.empty()) return {false, "Name the event it waits for", {}};
+    auto next = editor.next_script_id(mission_program(editor));
+    const auto setup_id = trigger_needs_setup(recipe) ? recipe.setup.id.value_or(next) : 0;
+    if (trigger_needs_setup(recipe)) next = std::max(next, setup_id + 1);
+    const auto script_id = recipe.script.id.value_or(next);
+    auto texts = trigger_script_texts(recipe, script_id, setup_id);
+    return add_scripts(editor, "Add trigger " + (recipe.script.name.empty() ? std::to_string(script_id) : recipe.script.name),
+                       texts);
+}
+
 EditResult add_tips(MissionEditor& editor, const Tips& recipe) {
     if (recipe.tips.empty()) return {false, "No tips to add", {}};
     std::vector<std::string> actions{"TIMED_STRING_INITPOS (NUMERO " + script_number(recipe.position.first) + ") (NUMERO " +

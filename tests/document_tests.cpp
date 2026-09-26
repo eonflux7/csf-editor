@@ -45,6 +45,7 @@
 #include "rwsman/entity_kind.hpp"
 #include "rwsman/problems.hpp"
 #include "rwsman/ui_script.hpp"
+#include "rwsman/script_syntax.hpp"
 #include "rwsman/viewport_overlays.hpp"
 
 #include <algorithm>
@@ -1679,6 +1680,60 @@ void test_mission_editor() {
             CHECK(csf::op_points({{{1, 2, 3}, 0.5F, 0}, {{-1.25F, 0, 0}, 0, 0}}) == "1,2,3,0.5;-1.25,0,0");
         }
 
+        // Triggers (E10): "kill the guard -> camp alert" and "enter the zone ->
+        // complete an objective" compile to what the same scripts written by
+        // hand compile to, as components.
+        {
+            auto made = csf::MissionEditor::open(map / "M1.scn", package);
+            auto by_hand = csf::MissionEditor::open(map / "M1.scn", package);
+            const auto program_of = [](csf::MissionEditor& editor) {
+                return *editor.file_of_kind(csf::MissionFileKind::mission_script);
+            };
+            CHECK(csf::add_component(made, "trigger name=GUARD_DOWN when=killed target=5 do=alarm:60;message:0903\n").applied);
+            CHECK(csf::add_component(made, "trigger name=AT_YARD when=zone target=1 if=1:open do=complete:1;message:0902\n")
+                      .applied);
+            const auto components = csf::mission_components(made);
+            CHECK(components.size() == 2 && csf::component_title(components[0]) == "Trigger GUARD_DOWN");
+            CHECK(components[1].lines[0].find(" setup=11") != std::string::npos);  // IDs pinned: 9, then 10 and 11
+            for (const auto* text : {
+                     R"([ .ID 9 .NOMBRE GUARD_DOWN .CARPETA "" .FLAGS [ .TRIGGER 1 .ENABLED 1 .VALIDO 1 ]
+  .EVENTOS ( (MORIBUNDO) (MUERTO) )
+  .CONDICIONES { CMP_OP_BICHO (EVT_BICHO1) (OP_BOOLEAN 0) (BICHO 5) }
+  .ACCIONES {
+    CREA_ESTIMULO_ACUSTICO (REACTIVIDAD AMENAZA_DIRECTA) (GET_PATHPOINT (EVT_BICHO1)) (NUMERO 20000.0) (NUMERO 5.0)
+    ACTIVAR_ALARMA (NUMERO 60.0)
+    TIMED_STRING_V2 (FLI "0903") (NUMERO 5.0) (NUMERO 4.0)
+    TRIGGER_OFF (TRIGGER 9)
+  } ])",
+                     R"([ .ID 11 .NOMBRE AT_YARD_INI .CARPETA "" .FLAGS [ .TRIGGER 1 .ENABLED 1 .VALIDO 1 ]
+  .EVENTOS ( (START_GAME) )
+  .ACCIONES { ACT_BICHO_EVENT_ZONA (PLAYER) (ZONA 1) (BOOL TRUE) } ])",
+                     R"([ .ID 10 .NOMBRE AT_YARD .CARPETA "" .FLAGS [ .TRIGGER 1 .ENABLED 1 .VALIDO 1 ]
+  .EVENTOS ( (BICHO_ENT_ZONA) )
+  .CONDICIONES { AND (CMP_OP_ZONA (EVT_ZONA) (OP_BOOLEAN 0) (ZONA 1)) (NOT (OBJETIVO_COMPLETADO (NUMERO 1.0))) }
+  .ACCIONES {
+    ACT_BICHO_EVENT_ZONA (PLAYER) (ZONA 1) (BOOL FALSE)
+    SET_OBJETIVO_SUCCESS (NUMERO 1.0) (BOOL TRUE)
+    TIMED_STRING_V2 (FLI "0902") (NUMERO 5.0) (NUMERO 4.0)
+  } ])"})
+                CHECK(by_hand.add_script(program_of(by_hand), text).applied);
+            CHECK(made.files()[program_of(made)].bytes() == by_hand.files()[program_of(by_hand)].bytes());
+            // Editing the trigger regenerates it in place; the recipe round-trips through its line.
+            auto line = csf::parse_op_line(components[0].lines[0]);
+            const auto trigger = csf::parse_trigger(line);
+            CHECK(trigger.when == csf::Trigger::When::actor_killed && trigger.actions.size() == 2 &&
+                  trigger.actions[0].kind == csf::TriggerAction::Kind::alarm && trigger.actions[0].number == 60);
+            CHECK(csf::parse_op_line(csf::ops_text(trigger)).get("do") == "alarm:60;message:0903");
+            line.set("do", "alarm:30");
+            CHECK(csf::update_component(made, components[0].id, csf::format_op_line(line) + "\n").applied);
+            CHECK(made.script_text(program_of(made), 9)->find("ACTIVAR_ALARMA (NUMERO 30.0)") != std::string::npos);
+            CHECK(csf::components_that_drift(made).empty());
+            CHECK(!csf::trigger_action_proven(csf::TriggerAction::Kind::alarm) &&
+                  csf::trigger_action_proven(csf::TriggerAction::Kind::complete_objective) &&
+                  !csf::trigger_when_proven(csf::Trigger::When::event));
+            CHECK(!csf::add_component(made, "trigger name=NOTHING when=start do=\n").applied);
+        }
+
         // A new mission keeps the environment and empties the rest.
         CHECK(fresh.new_mission().applied);
         const auto& emptied = fresh.scene();
@@ -1935,6 +1990,42 @@ void test_ui_script() {
           has("mission.empty: no label") && has("mission.empty: no category") && has("shortcut F"));
 }
 
+void test_script_syntax() {
+    using rwsman::SyntaxKind;
+    const std::string line = R"(    SET_OBJETIVO_SUCCESS (NUMERO 1.0) (BOOL TRUE) "done")";
+    const auto spans = rwsman::highlight_script_line(line);
+    const auto kind_of = [&](const std::string_view word) {
+        const auto at = line.find(word);
+        for (const auto& span : spans)
+            if (span.begin == at) return span.kind;
+        return SyntaxKind::plain;
+    };
+    CHECK(kind_of("SET_OBJETIVO_SUCCESS") == SyntaxKind::opcode && kind_of("NUMERO") == SyntaxKind::tag &&
+          kind_of("1.0") == SyntaxKind::number && kind_of("TRUE") == SyntaxKind::plain &&
+          kind_of("\"done\"") == SyntaxKind::string);
+    CHECK(rwsman::highlight_script_line("  .ID 7").front().kind == SyntaxKind::label);
+    CHECK(rwsman::highlight_script_line(".ACCIONES { WHILE (BOOL TRUE)")[2].kind == SyntaxKind::opcode);
+    CHECK(rwsman::line_opcode("    IR_A_PATHPOINT (THIS) (PATHPOINT 30 3)") == "IR_A_PATHPOINT");
+
+    const auto context = rwsman::completion_context("  SET_OBJ", 9);
+    CHECK(context && context->prefix == "SET_OBJ" && !context->operand && context->begin == 2);
+    const auto tag = rwsman::completion_context("  PAUSE (NUM", 12);
+    CHECK(tag && tag->operand && tag->prefix == "NUM");
+    CHECK(!rwsman::completion_context("  .NOMB", 7) && !rwsman::completion_context("  12", 4));
+    const std::array<std::string_view, 4> words{"SET_VIDA", "SET_OBJETIVO", "SEND_EVENT", "RESET_OBJ"};
+    // Starting with the prefix first, then containing it.
+    CHECK((rwsman::complete_word("set_obj", words, 5) == std::vector<std::string_view>{"SET_OBJETIVO", "RESET_OBJ"}));
+    CHECK((rwsman::complete_word("vid", words, 5) == std::vector<std::string_view>{"SET_VIDA"}));
+    CHECK(rwsman::complete_word("se", words, 2).size() == 2);
+
+    const std::string call = "  IR_A_PATHPOINT (BICHO 12) (PATHPOINT 30 3)";
+    const auto actor = rwsman::operand_at(call, call.find("12"));
+    CHECK(actor && actor->tag == "BICHO" && actor->values == std::vector<std::string>{"12"});
+    const auto point = rwsman::operand_at(call, call.find("PATHPOINT 30") + 2);
+    CHECK((point && point->tag == "PATHPOINT" && point->values == std::vector<std::string>{"30", "3"}));
+    CHECK(!rwsman::operand_at(call, 3));
+}
+
 void test_image_comparison() {
     const std::vector<std::uint8_t> a{10, 20, 30, 255, 0, 0, 0, 255, 200, 200, 200, 255, 5, 5, 5, 0};
     auto b = a;
@@ -2025,6 +2116,7 @@ int main() {
     test_command_registry();
     test_ui_script();
     test_image_comparison();
+    test_script_syntax();
     test_authoring_ui_models();
     test_navigation_history();
     test_settings_model();

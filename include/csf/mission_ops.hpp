@@ -44,6 +44,10 @@
 //   shot camera=x,y,z [end=x,y,z] target=x,y,z [seconds=] [aim=<rot>,<pitch>] [heading=] [speed=]   (then:)
 //   intro [class=197] [send-init=0] [dummy=] [actor=] [group=] [script=] [script-name=]
 //         [cutscene=<main>,<init>,<end>,<camera>] [cutscene-name=]
+//   trigger [script=] name= [setup=] [setup-name=] when=start|zone|killed|used|event|timer [target=]
+//           [event=] [seconds=] [if=<objective>:done|open]
+//           do=<action>;...   (complete:<n> message:<fli> raise:<event> alarm:<seconds>
+//                              alert:<actor>:<mode> combat:<actor>:<mode> ghost-on:<actor> ghost-off:<actor> success)
 namespace csf {
 
 struct MissionOpsOptions {
@@ -93,5 +97,10 @@ struct OpLine {
 [[nodiscard]] std::string ops_text(const Equipment& recipe);
 [[nodiscard]] std::string ops_text(const Tips& recipe);
 [[nodiscard]] std::string ops_text(const IntroCutscene& recipe);
+[[nodiscard]] std::string ops_text(const Trigger& recipe);
+// A trigger line's recipe (throws std::invalid_argument), for editors that show its parts.
+[[nodiscard]] Trigger parse_trigger(const OpLine& line);
+[[nodiscard]] const char* trigger_when_name(Trigger::When when) noexcept;       // "zone"
+[[nodiscard]] std::string trigger_action_text(const TriggerAction& action);     // "complete:1"
 
 } // namespace csf

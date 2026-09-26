@@ -43,7 +43,10 @@
   workspace's `components.csfops`, regenerated in place on edit); their card
   is `app/ui/component_card.cpp`, and moves or deletes of their records go
   through `move_component_record`/`delete_component_record`
-  (`app/mission_authoring.hpp`).
+  (`app/mission_authoring.hpp`). Triggers are the `trigger` recipe
+  (`csf::Trigger`); Script mode's editor is `app/ui/script_editor.cpp` (its
+  text logic in `rwsman/script_syntax`) and the flow graph
+  `app/ui/flow_graph.cpp`.
   `csf-mod audit` must keep every corpus file byte-identical through the tree
   writer and the source text; regenerate `src/csf_script_signatures.cpp` with
   `tools/generate_script_signatures.py` instead of editing it.
@@ -73,7 +76,7 @@
   files must stay identical to v13's unless a change intends otherwise.
 - GUI-free helpers (settings, command registry, fuzzy matcher, navigation history,
   operation log, search index, diagnostics table, mission discovery, entity kinds,
-  the problem list, UI scripts, contrast) live in the
+  the problem list, UI scripts, contrast, script syntax) live in the
   `rwsman_ui_model` library (`include/rwsman/`, `src/ui_model_*.cpp`). It must not
   depend on ImGui, GLFW, or OpenGL, and its tests go in `tests/document_tests.cpp`.
 - The GUI writes only to the per-user config directory (`settings.ini`, `layout.ini`,

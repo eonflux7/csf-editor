@@ -36,7 +36,8 @@ constexpr IdKey id_keys[] = {
     {"cover-group", "id", Type::navigation_group}, {"walk-grid", "id", Type::navigation_group},
     {"objective", "script", Type::script},    {"objectives", "setup", Type::script},
     {"equipment", "script", Type::script},    {"tips", "script", Type::script},
-    {"intro", "script", Type::script},        {"actor", "id", Type::actor},
+    {"intro", "script", Type::script},        {"trigger", "script", Type::script},
+    {"trigger", "setup", Type::script},       {"actor", "id", Type::actor},
     {"prop", "id", Type::actor},              {"nav-group", "id", Type::navigation_group},
     {"dummy", "id", Type::dummy},             {"area", "id", Type::area},
 };
@@ -45,7 +46,8 @@ constexpr IdKey id_keys[] = {
 // lines for the one that ends them.
 bool is_recipe(const std::string_view op) {
     return op == "guard-patrol" || op == "guard-idle" || op == "animal-patrol" || op == "cover-group" ||
-           op == "walk-grid" || op == "tips" || op == "objectives" || op == "equipment" || op == "intro";
+           op == "walk-grid" || op == "tips" || op == "objectives" || op == "equipment" || op == "intro" ||
+           op == "trigger";
 }
 std::string_view collector_end(const std::string_view op) {
     if (op == "objective") return "objectives";
@@ -112,8 +114,12 @@ std::vector<std::string> pin_ids(const MissionEditor& editor, std::vector<OpLine
     };
     std::vector<std::string> result;
     for (auto& line : lines) {
-        for (const auto& key : id_keys)
+        for (const auto& key : id_keys) {
+            // A trigger has a setup script only for zones and used objects.
+            if (line.op == "trigger" && key.key == "setup" && line.get("when") != "zone" && line.get("when") != "used")
+                continue;
             if (key.op == line.op && !line.find(key.key)) line.set(key.key, take(key.type, 1));
+        }
         if (line.op == "intro") {
             const auto n = static_cast<std::int32_t>(std::max<std::ptrdiff_t>(shots, 1));
             if (!line.find("dummy")) line.set("dummy", take(Type::dummy, n));
@@ -316,6 +322,7 @@ std::string component_kind_title(const std::string_view op) {
     if (op == "kit" || op == "equipment") return "Equipment";
     if (op == "tips") return "Tips";
     if (op == "shot" || op == "intro") return "Intro cutscene";
+    if (op == "trigger") return "Trigger";
     return std::string(op);
 }
 

@@ -831,6 +831,55 @@ objective" built as triggers match the equivalent hand-written scripts; the
 editor highlights and completes the opcodes in hello world's scripts; the
 flow graph shows v10's unraised INIT as a problem when INIT is removed.
 
+**Done (2026-09-26).** Built:
+
+- **E10, triggers.** `csf::Trigger` (`csf/mission_recipes`): When (mission
+  start, the player enters a zone, an actor dies, the player uses an object,
+  a custom event, a timer), If (an objective is or is not complete), Do
+  (complete an objective, show a message, raise an event, sound the alarm,
+  set an actor's alert or combat behaviour, make an object usable or not,
+  win the mission). One trigger script of known shape, plus a START_GAME
+  setup script for zones (the player's zone events) and used objects (the
+  ghost). Fires once: a zone stops reporting the player, the others end with
+  TRIGGER_OFF, as Convoy's alarm script does. The `trigger` operation line
+  makes it a component. **Acceptance:** "kill the guard, sound the alarm"
+  and "enter the zone, complete objective 1" compile byte-identically to
+  the same scripts written by hand (unit test). Proven by default (Q9): the
+  custom-event When and the alarm (Convoy's CREA_ESTIMULO_ACUSTICO plus
+  ACTIVAR_ALARMA, not yet played in a mission of ours) appear only with
+  "Offer unverified events and actions" and are marked unverified.
+- **GUI.** A Triggers section in the Objectives tab: the New trigger form and
+  a card per trigger (When/If/Do with eyedroppers for zones and actors,
+  typed message texts with a project), **Convert to script** (detach).
+- **S1.** The Script mode outline groups scripts as Mission start, Triggers,
+  Behaviours (actor scripts), Made by recipes (with the component's name) and
+  Cutscene. A recipe's script is read-only in the editor, with Detach and
+  edit.
+- **S2.** The editor (`app/ui/script_editor.cpp`, text logic in
+  `rwsman/script_syntax`): syntax colours drawn over the input (theme
+  `Syntax` colours), the syntax error's line marked as it is typed, the
+  signature table's advisories, Tab completion of opcodes and operand tags
+  (most used first, the list under the word), the current opcode's signature,
+  and Ctrl+click on an operand to go to the actor, zone, marker, route or
+  script it names.
+- **S3.** The Flow panel's Graph: events, scripts and objectives in columns,
+  edges for starts, raises, sets up and completes; an event that starts
+  scripts but that nothing raises, and an objective nothing completes, are
+  red. Hover to trace, click a script to open it.
+- **S4.** New script... asks for the event it listens to (the engine events
+  hello world uses, and the mission's own raised events) and whether it is
+  global.
+- **Tests.** Unit tests for the trigger shapes and the syntax helpers.
+  `fixture_triggers.uiscript` (form, eyedropper, card, unverified toggle),
+  `fixture_scripts.uiscript` (Tab completion applied, and INIT becoming
+  unraised in the flow once its sender is deleted). Goldens updated for the
+  outline and editor.
+
+Not done: the If on zone state (only objectives), Up/Down to choose among
+completions (Tab takes the first), the graph's layout for large shipped
+missions (a long column; no zoom), and hello world's v10 file checked
+through the GUI (the fixture reproduces the unraised INIT instead).
+
 ### Phase 6: cutscene timeline, the full journey, docs
 
 E11, V7, V8, T9, T10 (long run), T12. `docs/guides/gui.md` and

@@ -35,6 +35,12 @@ void open_flow_script(AppState& state, std::string_view program, std::int32_t id
 void create_objectives(AppState& state);
 void create_equipment(AppState& state);
 void create_tips(AppState& state);
+// The FLI ID of a game text: with an authoring project `text` is the string
+// (found, or given the next free ID in the project's range, one project undo
+// step); without one it is the ID itself. Nothing when the range is full.
+[[nodiscard]] std::optional<std::string> game_text_id(AppState& state, const std::string& text);
+// Makes the New trigger form's trigger a component (its message texts become IDs).
+void create_trigger(AppState& state);
 // Adds, edits or removes a string of the authoring project (then rebuilds its text file).
 void set_project_text(AppState& state, const std::string& id, const std::optional<std::string>& text);
 

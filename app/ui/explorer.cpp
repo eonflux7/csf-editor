@@ -1,4 +1,6 @@
 #include "app_state.hpp"
+#include "csf/mission_components.hpp"
+#include "mission_authoring.hpp"
 #include "ui/ui.hpp"
 
 #include "app_util.hpp"
@@ -653,43 +655,64 @@ void draw_mission_explorer(AppState& state, const Frame& frame) {
     if (!animation) draw_resources(state, frame);
 }
 
+// The scripts grouped by what they do (docs/plans/editor-ux-redesign.md, S1):
+// mission start, triggers, actor behaviours, what recipes (components) made,
+// and the cutscene program.
 void draw_script_explorer(AppState& state, const Frame& frame) {
     const auto& programs = state.mission.programs;
     const auto& scripts = state.search_index.indices_of(SymbolKind::script);
     static SelectionRef last_reveal;
     const bool reveal = state.selection != last_reveal;
     last_reveal = state.selection;
-    for (std::size_t document = 0; document < programs.size(); ++document) {
-        std::vector<std::size_t> rows;
-        for (const auto index : scripts) {
-            const auto& entry = state.search_index.entries()[index];
-            if (entry.target.a != document || !state.search_index.contains(index, frame.needle)) continue;
-            if (frame.diagnostics_only && !state.has_diagnostic(entry.target)) continue;
-            rows.push_back(index);
-        }
-        if (rows.empty() && frame.active()) continue;
-        ImGui::PushID(static_cast<int>(document));
-        if (group(path_utf8(programs[document].first.filename()).c_str(), rows.size(), true)) {
-            std::string previous_folder = "\x01";
-            for (const auto index : rows) {
+    // Script ID -> the component that made it.
+    std::map<std::pair<bool, std::int32_t>, std::string> made_by;
+    for (const auto& component : mission_component_list(state))
+        for (const auto& record : component.owns)
+            if (record.type == csf::MissionRecordId::Type::script || record.type == csf::MissionRecordId::Type::cutscene_script)
+                made_by[{record.type == csf::MissionRecordId::Type::cutscene_script, record.id}] =
+                    csf::component_title(component);
+    enum Group : int { mission_start, triggers, behaviours, recipes, cutscene, group_count };
+    static constexpr const char* group_names[group_count]{"Mission start", "Triggers", "Behaviours (actor scripts)",
+                                                         "Made by recipes", "Cutscene"};
+    std::array<std::vector<std::size_t>, group_count> rows;
+    for (const auto index : scripts) {
+        const auto& entry = state.search_index.entries()[index];
+        if (!state.search_index.contains(index, frame.needle)) continue;
+        if (frame.diagnostics_only && !state.has_diagnostic(entry.target)) continue;
+        if (entry.target.a >= programs.size()) continue;
+        const auto& [path, program] = programs[entry.target.a];
+        if (entry.target.b >= program.scripts().size()) continue;
+        const auto& script = program.scripts()[entry.target.b];
+        const bool in_cutscene = lower_ascii(path_utf8(path.extension())) == ".csc";
+        Group group = behaviours;
+        if (made_by.contains({in_cutscene, script.id})) group = recipes;
+        else if (in_cutscene) group = cutscene;
+        else if (script.flags.trigger.value_or(false))
+            group = std::ranges::any_of(script.events, [](const auto& event) { return event.name == "START_GAME"; })
+                        ? mission_start
+                        : triggers;
+        rows[group].push_back(index);
+    }
+    for (int g = 0; g < group_count; ++g) {
+        if (rows[g].empty() && (frame.active() || g == recipes)) continue;
+        ImGui::PushID(g);
+        if (group(group_names[g], rows[g].size(), g != cutscene)) {
+            for (const auto index : rows[g]) {
                 const auto& entry = state.search_index.entries()[index];
-                if (entry.group != previous_folder) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
-                    ImGui::PushFont(font(Font::sans_bold));
-                    ImGui::TextUnformatted(entry.group.empty() ? "(root)" : entry.group.c_str());
-                    ImGui::PopFont();
-                    ImGui::PopStyleColor();
-                    previous_folder = entry.group;
-                }
+                const auto& [path, program] = programs[entry.target.a];
+                const auto& script = program.scripts()[entry.target.b];
+                const bool in_cutscene = lower_ascii(path_utf8(path.extension())) == ".csc";
+                const auto owner = made_by.find({in_cutscene, script.id});
                 const bool selected = (state.selection.kind == SelectionRef::Kind::program_script ||
                                        state.selection.kind == SelectionRef::Kind::program_instruction) &&
                                       state.selection.a == entry.target.a && state.selection.b == entry.target.b;
-                // Compare on the script, not the instruction focus.
                 ImGui::PushID(static_cast<int>(index));
                 const ImVec2 start = ImGui::GetCursorScreenPos();
-                if (ImGui::Selectable("##script", selected)) navigate_to(state, entry.target, {.frame = false});
+                if (ImGui::Selectable(("##" + entry.label).c_str(), selected)) navigate_to(state, entry.target, {.frame = false});
                 if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && !selected)
                     navigate_to(state, entry.target, {.frame = false});
+                if (owner != made_by.end() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                    ImGui::SetTooltip("Made by %s: edit it there, or detach it to edit the text", owner->second.c_str());
                 if (ImGui::BeginPopupContextItem("##script_menu")) {
                     draw_selection_context_menu(state);
                     ImGui::EndPopup();
@@ -698,15 +721,21 @@ void draw_script_explorer(AppState& state, const Frame& frame) {
                 if (reveal && selected) ImGui::SetScrollHereY(0.5F);
                 ImGui::SetCursorScreenPos({start.x + 12.0F * ui_scale(), start.y});
                 ImGui::PushStyleColor(ImGuiCol_Text, color(selected ? Token::accent : Token::text_dim));
-                ImGui::TextUnformatted(icons::LC_FILE_CODE);
+                ImGui::TextUnformatted(owner != made_by.end() ? icons::LC_COMPONENT : icons::LC_FILE_CODE);
                 ImGui::PopStyleColor();
                 ImGui::SameLine();
                 ImGui::TextUnformatted(entry.label.c_str());
                 ImGui::SameLine();
                 ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
                 ImGui::PushFont(font(Font::mono));
-                ImGui::Text("[%llu]", static_cast<unsigned long long>(entry.id.value_or(0)));
+                ImGui::Text("[%d]", script.id);
                 ImGui::PopFont();
+                if (owner != made_by.end()) {
+                    ImGui::SameLine();
+                    ImGui::PushFont(font(Font::caption));
+                    ImGui::TextUnformatted(owner->second.c_str());
+                    ImGui::PopFont();
+                }
                 ImGui::PopStyleColor();
                 if (state.has_diagnostic(entry.target)) {
                     ImGui::SameLine();

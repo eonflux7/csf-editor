@@ -12,6 +12,7 @@
 #include "csf/animation_catalog.hpp"
 #include "csf/authoring_project.hpp"
 #include "csf/mission_flow.hpp"
+#include "csf/mission_recipes.hpp"
 #include "csf/cmo.hpp"
 #include "csf/document.hpp"
 #include "csf/mission_edit.hpp"
@@ -212,6 +213,10 @@ struct AuthoringSession {
 
 // The mission editing panel's Assets and Presets tabs (editor plan stage 4).
 struct AuthoringTools {
+    // The New trigger form (E10) and whether unverified events and actions are offered.
+    csf::Trigger trigger_draft{csf::Trigger::When::enter_zone, 0, {}, 0.0F, std::nullopt,
+                               {{csf::TriggerAction::Kind::complete_objective, 1, {}}}, {}, {}};
+    bool show_unverified{};
     // Classes of every discovered mission, for placing and importing.
     struct CatalogEntry {
         std::filesystem::path package;  // the mission package root it comes from

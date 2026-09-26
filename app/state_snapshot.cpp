@@ -6,6 +6,7 @@
 #include "mission_editing.hpp"
 #include "navigation.hpp"
 #include "ui/layout.hpp"
+#include "ui/ui.hpp"
 
 #include "csf/mission_components.hpp"
 #include "csf/project_pipeline.hpp"
@@ -224,6 +225,15 @@ StateSnapshot snapshot_state(const AppState& state) {
     std::string targets;
     for (const auto& form : state.tools.objectives) targets += (targets.empty() ? "" : ",") + std::to_string(form.target);
     s["form.objective_targets"] = targets;
+    // The New trigger form: its actions, and how many of them are unverified.
+    const auto& draft = state.tools.trigger_draft;
+    s["form.trigger_actions"] = number(draft.actions.size());
+    std::size_t unraised = 0;
+    if (const auto* flow = state.tools.flow.get())
+        for (const auto& event : flow->events()) unraised += ui::flow_event_unraised(event);
+    s["flow.unraised_events"] = number(unraised);
+    s["form.trigger_unverified"] = number(static_cast<std::size_t>(std::ranges::count_if(
+        draft.actions, [](const csf::TriggerAction& action) { return !csf::trigger_action_proven(action.kind); })));
     s["viewport.place_asset"] = !state.tools.place_building_asset.empty() ? state.tools.place_building_asset
                                 : state.tools.place_entry                ? state.tools.place_entry->name
                                                                          : "";
