@@ -1,0 +1,48 @@
+# The Phase 4 journey without a terminal (RWSMAN_CORPUS=<unpacked game>,
+# RWSMAN_TEST_INSTALL=<a game folder with untouched maps/Convoy.pak and
+# GlobalEK.pak>, copied here and never changed): create "Checkpoint" in the
+# Convoy slot, build both archives, deploy them into the copy, roll back, and
+# record a playtest.
+require RWSMAN_CORPUS
+require RWSMAN_TEST_INSTALL
+remove $UI_OUTPUT/Checkpoint
+remove $UI_OUTPUT/install
+copy $RWSMAN_TEST_INSTALL install
+setting resource_root $RWSMAN_CORPUS
+setting projects_root $UI_OUTPUT
+setting game_root $UI_OUTPUT/install
+click "New project..."
+click "New project::new_project_name"
+key Ctrl+A
+type Checkpoint
+click "New project::Create"
+wait idle
+expect project.slot Convoy
+expect project.name Checkpoint
+expect count.actors 0
+
+# A string of the project's own, so both archives are built.
+command mission.objectives
+expect project.builds 0
+command build.archives
+wait idle
+expect project.builds 1
+expect project.dirty false
+
+# Deploy (confirmed), then roll back.
+command build.deploy
+expect project.deployed 0
+click "Deploy to the test install::Deploy"
+expect project.deployed 1
+click "Build::Roll back"
+expect project.deployed 0
+
+# The playtest log.
+click Build::playtest_note
+type "flat terrain loads"
+click Build::record
+wait frames 2
+expect project.playtests 1
+expect project.dirty true
+command file.save
+expect project.dirty false

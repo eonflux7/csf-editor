@@ -6,13 +6,19 @@ namespace rwsman::ui::icons {
 
 inline constexpr const char* LC_ARROW_LEFT = "\xee\x81\x88"; // U+E048
 inline constexpr const char* LC_ARROW_RIGHT = "\xee\x81\x89"; // U+E049
+inline constexpr const char* LC_BELL = "\xee\x81\x99"; // U+E059
 inline constexpr const char* LC_BINARY = "\xee\x87\xb2"; // U+E1F2
+inline constexpr const char* LC_BLOCKS = "\xee\x93\xba"; // U+E4FA
 inline constexpr const char* LC_BOOKMARK = "\xee\x81\xa0"; // U+E060
 inline constexpr const char* LC_BOX = "\xee\x81\xa1"; // U+E061
+inline constexpr const char* LC_BOXES = "\xee\x8b\x90"; // U+E2D0
 inline constexpr const char* LC_BRACES = "\xee\x8d\xaa"; // U+E36A
 inline constexpr const char* LC_BUG = "\xee\x88\x8c"; // U+E20C
+inline constexpr const char* LC_BUILDING_2 = "\xee\x8a\x90"; // U+E290
 inline constexpr const char* LC_CAMERA = "\xee\x81\xa4"; // U+E064
+inline constexpr const char* LC_CAR = "\xee\x87\x95"; // U+E1D5
 inline constexpr const char* LC_CHECK = "\xee\x81\xac"; // U+E06C
+inline constexpr const char* LC_CHECK_CHECK = "\xee\x8e\x8e"; // U+E38E
 inline constexpr const char* LC_CHEVRON_DOWN = "\xee\x81\xad"; // U+E06D
 inline constexpr const char* LC_CHEVRON_LEFT = "\xee\x81\xae"; // U+E06E
 inline constexpr const char* LC_CHEVRON_RIGHT = "\xee\x81\xaf"; // U+E06F
@@ -20,6 +26,9 @@ inline constexpr const char* LC_CHEVRON_UP = "\xee\x81\xb0"; // U+E070
 inline constexpr const char* LC_CIRCLE_ALERT = "\xee\x81\xb7"; // U+E077
 inline constexpr const char* LC_CIRCLE_CHECK = "\xee\x88\xa6"; // U+E226
 inline constexpr const char* LC_CIRCLE_DOT = "\xee\x8d\x85"; // U+E345
+inline constexpr const char* LC_CIRCLE_HELP = "\xee\x82\x82"; // U+E082
+inline constexpr const char* LC_CIRCLE_PLAY = "\xee\x82\x80"; // U+E080
+inline constexpr const char* LC_CLAPPERBOARD = "\xee\x8a\x9b"; // U+E29B
 inline constexpr const char* LC_COMMAND = "\xee\x82\x9a"; // U+E09A
 inline constexpr const char* LC_COMPONENT = "\xee\x8a\xad"; // U+E2AD
 inline constexpr const char* LC_COPY = "\xee\x82\x9e"; // U+E09E
@@ -27,6 +36,8 @@ inline constexpr const char* LC_CROSSHAIR = "\xee\x82\xac"; // U+E0AC
 inline constexpr const char* LC_CUBOID = "\xee\x94\xa4"; // U+E524
 inline constexpr const char* LC_DATABASE = "\xee\x82\xad"; // U+E0AD
 inline constexpr const char* LC_DIAMOND = "\xee\x8b\x92"; // U+E2D2
+inline constexpr const char* LC_DOG = "\xee\x8e\x8d"; // U+E38D
+inline constexpr const char* LC_DOOR_OPEN = "\xee\x8f\x96"; // U+E3D6
 inline constexpr const char* LC_DOT = "\xee\x91\x8f"; // U+E44F
 inline constexpr const char* LC_DOWNLOAD = "\xee\x82\xb2"; // U+E0B2
 inline constexpr const char* LC_ELLIPSIS = "\xee\x82\xb6"; // U+E0B6
@@ -38,67 +49,107 @@ inline constexpr const char* LC_FILE_CODE = "\xee\x83\x83"; // U+E0C3
 inline constexpr const char* LC_FILM = "\xee\x83\x90"; // U+E0D0
 inline constexpr const char* LC_FILTER = "\xee\x83\x9c"; // U+E0DC
 inline constexpr const char* LC_FLAG = "\xee\x83\x91"; // U+E0D1
+inline constexpr const char* LC_FLAME = "\xee\x83\x92"; // U+E0D2
 inline constexpr const char* LC_FOLDER = "\xee\x83\x97"; // U+E0D7
 inline constexpr const char* LC_FOLDER_OPEN = "\xee\x89\x87"; // U+E247
+inline constexpr const char* LC_FOOTPRINTS = "\xee\x8e\xb9"; // U+E3B9
+inline constexpr const char* LC_GAUGE = "\xee\x86\xbf"; // U+E1BF
 inline constexpr const char* LC_GLOBE = "\xee\x83\xa8"; // U+E0E8
+inline constexpr const char* LC_GOAL = "\xee\x92\xa5"; // U+E4A5
 inline constexpr const char* LC_GRID_3X3 = "\xee\x83\xa9"; // U+E0E9
+inline constexpr const char* LC_HAMMER = "\xee\x83\xac"; // U+E0EC
+inline constexpr const char* LC_HAND = "\xee\x87\x97"; // U+E1D7
+inline constexpr const char* LC_HARD_DRIVE_DOWNLOAD = "\xee\x93\xa5"; // U+E4E5
 inline constexpr const char* LC_HASH = "\xee\x83\xaf"; // U+E0EF
+inline constexpr const char* LC_HISTORY = "\xee\x87\xb5"; // U+E1F5
 inline constexpr const char* LC_HOUSE = "\xee\x83\xb5"; // U+E0F5
 inline constexpr const char* LC_IMAGE = "\xee\x83\xb6"; // U+E0F6
 inline constexpr const char* LC_INFO = "\xee\x83\xb9"; // U+E0F9
 inline constexpr const char* LC_KEYBOARD = "\xee\x8a\x84"; // U+E284
+inline constexpr const char* LC_LANGUAGES = "\xee\x83\xbe"; // U+E0FE
+inline constexpr const char* LC_LASSO_SELECT = "\xee\x87\x8f"; // U+E1CF
 inline constexpr const char* LC_LAYERS = "\xee\x94\xa9"; // U+E529
 inline constexpr const char* LC_LAYOUT_DASHBOARD = "\xee\x87\x81"; // U+E1C1
 inline constexpr const char* LC_LIGHTBULB = "\xee\x87\x82"; // U+E1C2
 inline constexpr const char* LC_LINK = "\xee\x84\x82"; // U+E102
 inline constexpr const char* LC_LIST = "\xee\x84\x86"; // U+E106
+inline constexpr const char* LC_LIST_CHECKS = "\xee\x87\x90"; // U+E1D0
+inline constexpr const char* LC_LIST_TREE = "\xee\x90\x88"; // U+E408
 inline constexpr const char* LC_LOCK = "\xee\x84\x8b"; // U+E10B
 inline constexpr const char* LC_LOCK_OPEN = "\xee\x84\x8c"; // U+E10C
+inline constexpr const char* LC_MAGNET = "\xee\x8a\xb5"; // U+E2B5
 inline constexpr const char* LC_MAP_PIN = "\xee\x84\x91"; // U+E111
 inline constexpr const char* LC_MAXIMIZE = "\xee\x84\x92"; // U+E112
+inline constexpr const char* LC_MESSAGE_SQUARE = "\xee\x84\x97"; // U+E117
 inline constexpr const char* LC_MINIMIZE = "\xee\x84\x9a"; // U+E11A
 inline constexpr const char* LC_MINUS = "\xee\x84\x9c"; // U+E11C
 inline constexpr const char* LC_MOON = "\xee\x84\x9e"; // U+E11E
 inline constexpr const char* LC_MOUNTAIN = "\xee\x88\xb1"; // U+E231
+inline constexpr const char* LC_MOUNTAIN_SNOW = "\xee\x88\xb2"; // U+E232
 inline constexpr const char* LC_MOUSE_POINTER = "\xee\x84\x9f"; // U+E11F
+inline constexpr const char* LC_MOUSE_POINTER_CLICK = "\xee\x84\xa0"; // U+E120
 inline constexpr const char* LC_MOVE_3D = "\xee\x8b\xa5"; // U+E2E5
 inline constexpr const char* LC_PACKAGE = "\xee\x84\xa9"; // U+E129
 inline constexpr const char* LC_PANEL_BOTTOM = "\xee\x90\xac"; // U+E42C
 inline constexpr const char* LC_PANEL_LEFT = "\xee\x84\xaa"; // U+E12A
 inline constexpr const char* LC_PANEL_RIGHT = "\xee\x90\xb1"; // U+E431
 inline constexpr const char* LC_PAUSE = "\xee\x84\xae"; // U+E12E
+inline constexpr const char* LC_PERSON_STANDING = "\xee\x88\x9e"; // U+E21E
 inline constexpr const char* LC_PIN = "\xee\x89\x99"; // U+E259
 inline constexpr const char* LC_PIN_OFF = "\xee\x8a\xb6"; // U+E2B6
+inline constexpr const char* LC_PIPETTE = "\xee\x84\xbb"; // U+E13B
 inline constexpr const char* LC_PLAY = "\xee\x84\xbc"; // U+E13C
 inline constexpr const char* LC_PLUS = "\xee\x84\xbd"; // U+E13D
+inline constexpr const char* LC_RADIO = "\xee\x85\x82"; // U+E142
 inline constexpr const char* LC_REDO_2 = "\xee\x8a\xa0"; // U+E2A0
 inline constexpr const char* LC_REFRESH_CW = "\xee\x85\x85"; // U+E145
+inline constexpr const char* LC_ROCKET = "\xee\x8a\x86"; // U+E286
 inline constexpr const char* LC_ROUTE = "\xee\x94\xbe"; // U+E53E
 inline constexpr const char* LC_RULER = "\xee\x85\x8b"; // U+E14B
 inline constexpr const char* LC_SAVE = "\xee\x85\x8d"; // U+E14D
 inline constexpr const char* LC_SCAN = "\xee\x89\x97"; // U+E257
 inline constexpr const char* LC_SCISSORS = "\xee\x85\x8e"; // U+E14E
+inline constexpr const char* LC_SCROLL_TEXT = "\xee\x91\x9f"; // U+E45F
 inline constexpr const char* LC_SEARCH = "\xee\x85\x91"; // U+E151
 inline constexpr const char* LC_SETTINGS = "\xee\x85\x94"; // U+E154
+inline constexpr const char* LC_SHAPES = "\xee\x92\xb3"; // U+E4B3
+inline constexpr const char* LC_SHIELD = "\xee\x85\x98"; // U+E158
+inline constexpr const char* LC_SHIELD_ALERT = "\xee\x87\xbe"; // U+E1FE
 inline constexpr const char* LC_SKIP_BACK = "\xee\x85\x9f"; // U+E15F
 inline constexpr const char* LC_SKIP_FORWARD = "\xee\x85\xa0"; // U+E160
+inline constexpr const char* LC_SLIDERS_HORIZONTAL = "\xee\x8a\x9a"; // U+E29A
 inline constexpr const char* LC_SPARKLES = "\xee\x90\x92"; // U+E412
+inline constexpr const char* LC_SPLINE = "\xee\x8e\x8b"; // U+E38B
 inline constexpr const char* LC_SQUARE = "\xee\x85\xa7"; // U+E167
+inline constexpr const char* LC_SQUARE_DASHED = "\xee\x87\x8b"; // U+E1CB
 inline constexpr const char* LC_SUN = "\xee\x85\xb8"; // U+E178
+inline constexpr const char* LC_SWORDS = "\xee\x8a\xb4"; // U+E2B4
 inline constexpr const char* LC_TARGET = "\xee\x86\x80"; // U+E180
+inline constexpr const char* LC_TENT = "\xee\x88\xa7"; // U+E227
 inline constexpr const char* LC_TERMINAL = "\xee\x86\x81"; // U+E181
 inline constexpr const char* LC_TRASH = "\xee\x86\x8d"; // U+E18D
+inline constexpr const char* LC_TREES = "\xee\x8b\xb5"; // U+E2F5
+inline constexpr const char* LC_TREE_PINE = "\xee\x8b\xb4"; // U+E2F4
 inline constexpr const char* LC_TRIANGLE = "\xee\x86\x92"; // U+E192
 inline constexpr const char* LC_TRIANGLE_ALERT = "\xee\x86\x93"; // U+E193
+inline constexpr const char* LC_TRUCK = "\xee\x86\x94"; // U+E194
+inline constexpr const char* LC_TYPE = "\xee\x86\x98"; // U+E198
 inline constexpr const char* LC_UNDO_2 = "\xee\x8a\xa1"; // U+E2A1
+inline constexpr const char* LC_UPLOAD = "\xee\x86\x9e"; // U+E19E
 inline constexpr const char* LC_USER = "\xee\x86\x9f"; // U+E19F
 inline constexpr const char* LC_USERS = "\xee\x86\xa4"; // U+E1A4
+inline constexpr const char* LC_VIDEO = "\xee\x86\xa5"; // U+E1A5
+inline constexpr const char* LC_WAND_SPARKLES = "\xee\x8d\x97"; // U+E357
+inline constexpr const char* LC_WAYPOINTS = "\xee\x95\x82"; // U+E542
+inline constexpr const char* LC_WORKFLOW = "\xee\x90\xa5"; // U+E425
 inline constexpr const char* LC_X = "\xee\x86\xb2"; // U+E1B2
+inline constexpr const char* LC_ZAP = "\xee\x86\xb4"; // U+E1B4
 
 // Glyph ranges (pairs, zero-terminated) for ImGui font merging.
 inline constexpr unsigned short glyph_ranges[] = {
     0xE048, 0xE048,
     0xE049, 0xE049,
+    0xE059, 0xE059,
     0xE060, 0xE060,
     0xE061, 0xE061,
     0xE064, 0xE064,
@@ -108,6 +159,8 @@ inline constexpr unsigned short glyph_ranges[] = {
     0xE06F, 0xE06F,
     0xE070, 0xE070,
     0xE077, 0xE077,
+    0xE080, 0xE080,
+    0xE082, 0xE082,
     0xE09A, 0xE09A,
     0xE09E, 0xE09E,
     0xE0AC, 0xE0AC,
@@ -121,35 +174,43 @@ inline constexpr unsigned short glyph_ranges[] = {
     0xE0C3, 0xE0C3,
     0xE0D0, 0xE0D0,
     0xE0D1, 0xE0D1,
+    0xE0D2, 0xE0D2,
     0xE0D7, 0xE0D7,
     0xE0DC, 0xE0DC,
     0xE0E8, 0xE0E8,
     0xE0E9, 0xE0E9,
+    0xE0EC, 0xE0EC,
     0xE0EF, 0xE0EF,
     0xE0F5, 0xE0F5,
     0xE0F6, 0xE0F6,
     0xE0F9, 0xE0F9,
+    0xE0FE, 0xE0FE,
     0xE102, 0xE102,
     0xE106, 0xE106,
     0xE10B, 0xE10B,
     0xE10C, 0xE10C,
     0xE111, 0xE111,
     0xE112, 0xE112,
+    0xE117, 0xE117,
     0xE11A, 0xE11A,
     0xE11C, 0xE11C,
     0xE11E, 0xE11E,
     0xE11F, 0xE11F,
+    0xE120, 0xE120,
     0xE129, 0xE129,
     0xE12A, 0xE12A,
     0xE12E, 0xE12E,
+    0xE13B, 0xE13B,
     0xE13C, 0xE13C,
     0xE13D, 0xE13D,
+    0xE142, 0xE142,
     0xE145, 0xE145,
     0xE14B, 0xE14B,
     0xE14D, 0xE14D,
     0xE14E, 0xE14E,
     0xE151, 0xE151,
     0xE154, 0xE154,
+    0xE158, 0xE158,
     0xE15F, 0xE15F,
     0xE160, 0xE160,
     0xE167, 0xE167,
@@ -159,34 +220,73 @@ inline constexpr unsigned short glyph_ranges[] = {
     0xE18D, 0xE18D,
     0xE192, 0xE192,
     0xE193, 0xE193,
+    0xE194, 0xE194,
+    0xE198, 0xE198,
+    0xE19E, 0xE19E,
     0xE19F, 0xE19F,
     0xE1A4, 0xE1A4,
+    0xE1A5, 0xE1A5,
     0xE1B2, 0xE1B2,
+    0xE1B4, 0xE1B4,
+    0xE1BF, 0xE1BF,
     0xE1C1, 0xE1C1,
     0xE1C2, 0xE1C2,
+    0xE1CB, 0xE1CB,
+    0xE1CF, 0xE1CF,
+    0xE1D0, 0xE1D0,
+    0xE1D5, 0xE1D5,
+    0xE1D7, 0xE1D7,
     0xE1F2, 0xE1F2,
+    0xE1F5, 0xE1F5,
+    0xE1FE, 0xE1FE,
     0xE20C, 0xE20C,
+    0xE21E, 0xE21E,
     0xE226, 0xE226,
+    0xE227, 0xE227,
     0xE231, 0xE231,
+    0xE232, 0xE232,
     0xE247, 0xE247,
     0xE257, 0xE257,
     0xE259, 0xE259,
     0xE284, 0xE284,
+    0xE286, 0xE286,
+    0xE290, 0xE290,
+    0xE29A, 0xE29A,
+    0xE29B, 0xE29B,
     0xE2A0, 0xE2A0,
     0xE2A1, 0xE2A1,
     0xE2AD, 0xE2AD,
+    0xE2B4, 0xE2B4,
+    0xE2B5, 0xE2B5,
     0xE2B6, 0xE2B6,
+    0xE2D0, 0xE2D0,
     0xE2D2, 0xE2D2,
     0xE2E5, 0xE2E5,
+    0xE2F4, 0xE2F4,
+    0xE2F5, 0xE2F5,
     0xE345, 0xE345,
+    0xE357, 0xE357,
     0xE36A, 0xE36A,
+    0xE38B, 0xE38B,
+    0xE38D, 0xE38D,
+    0xE38E, 0xE38E,
+    0xE3B9, 0xE3B9,
+    0xE3D6, 0xE3D6,
+    0xE408, 0xE408,
     0xE412, 0xE412,
+    0xE425, 0xE425,
     0xE42C, 0xE42C,
     0xE431, 0xE431,
     0xE44F, 0xE44F,
+    0xE45F, 0xE45F,
+    0xE4A5, 0xE4A5,
+    0xE4B3, 0xE4B3,
+    0xE4E5, 0xE4E5,
+    0xE4FA, 0xE4FA,
     0xE524, 0xE524,
     0xE529, 0xE529,
     0xE53E, 0xE53E,
+    0xE542, 0xE542,
     0};
 
 } // namespace rwsman::ui::icons

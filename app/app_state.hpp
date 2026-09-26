@@ -6,6 +6,7 @@
 #include "rwsman/discovery.hpp"
 #include "rwsman/history.hpp"
 #include "rwsman/log.hpp"
+#include "rwsman/problems.hpp"
 #include "rwsman/search_index.hpp"
 #include "rwsman/settings.hpp"
 #include "csf/animation_catalog.hpp"
@@ -35,6 +36,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -63,10 +65,47 @@ enum class Workspace {
 
 [[nodiscard]] const char* workspace_name(Workspace workspace);
 
+// The dockable panels. Each workspace docks its own set of them
+// (ui/layout.cpp); the modes Mission, Script and Inspect group the workspaces.
+enum class Panel : std::uint8_t {
+    explorer,
+    center,
+    inspector,
+    render_settings,
+    console,  // titled Output
+    diagnostics,
+    references,
+    changes,
+    missions,
+    // Mission mode (docs/plans/editor-ux-redesign.md, §3 B).
+    outliner,
+    properties,
+    assets,
+    problems,
+    history,
+    texts,
+    timeline,
+    mission_settings,
+    objectives,
+    behaviours,
+    build,
+    flow,
+    count
+};
+inline constexpr std::size_t panel_count = static_cast<std::size_t>(Panel::count);
+
+enum class Mode : std::uint8_t { mission, script, inspect };
+[[nodiscard]] constexpr Mode mode_of(const Workspace workspace) {
+    return workspace == Workspace::mission  ? Mode::mission
+           : workspace == Workspace::script ? Mode::script
+                                            : Mode::inspect;
+}
+
 // Stable identity of a scene record. Entry indices shift when records are added
 // or removed, so selections are carried across edits by gameplay ID.
 struct MissionRecordKey {
-    enum class Kind : std::uint8_t { none, actor, dummy, light, area, effect, nav_group, nav_point };
+    // `placement`: a project placement (project.csfproj), `id` its index.
+    enum class Kind : std::uint8_t { none, actor, dummy, light, area, effect, nav_group, nav_point, placement };
     Kind kind{Kind::none};
     std::int32_t id{}, sub_id{};
     friend bool operator==(const MissionRecordKey&, const MissionRecordKey&) = default;
@@ -102,6 +141,9 @@ struct MissionState {
     std::unique_ptr<csf::ModProject> project;
     std::uint64_t applied_revision{};
     std::filesystem::path original_archive; // shipped maps/<Mission>.pak for export
+    // A camera to restore once the preview has reloaded its scene (a map
+    // rebuilt under an open mission).
+    std::optional<CameraSnapshot> restore_camera;
     // Applied by the next refresh, once the views show the edit that created
     // the target: a scene record to select, and a script (program, ID).
     std::optional<MissionRecordKey> pending_selection;
@@ -135,12 +177,18 @@ struct AuthoringSession {
     // project.csfproj as rws-man last read or wrote it; another writer (the
     // Blender add-on registering an asset) makes it reload the project.
     std::filesystem::file_time_type project_time;
+    // project.csfproj's text as last saved: edits stay in memory until Save
+    // (Ctrl+S saves the mission and the project together).
+    std::string saved_text;
+    // When Blender's Send last changed an export ("HH:MM"), for the status bar.
+    std::string last_send;
     double next_check{};
     struct Outcome {
         std::optional<csf::AuthoringProject> project;
         csf::ProjectBuildReport report;
         std::vector<csf::HeightFinding> findings;
         std::string error;
+        std::string started_text;  // project.csfproj as the build started from it
     };
     std::future<Outcome> job;
     // Started by poll_authoring once the mission views are current, so the
@@ -149,7 +197,17 @@ struct AuthoringSession {
     std::vector<csf::HeightFinding> findings;
     bool checked{};  // a check has finished since the project was opened
     bool show_heights{};
-    bool reload_when_saved{};  // the map was rebuilt while the mission had unsaved edits
+
+    // Project edits (placements, texts, resnaps) as undo steps beside the
+    // mission editor's (docs/plans/editor-ux-redesign.md, E2). Each keeps the
+    // project text before and after, and the mission editor's history
+    // position it followed: undo takes whichever step is newest.
+    struct Step {
+        std::string label, before, after;
+        std::size_t anchor{};
+    };
+    std::vector<Step> steps;
+    std::size_t cursor{};
 };
 
 // The mission editing panel's Assets and Presets tabs (editor plan stage 4).
@@ -164,6 +222,10 @@ struct AuthoringTools {
     std::vector<CatalogEntry> catalog;
     std::filesystem::path catalog_root;  // the resource root it was built for
     std::array<char, 96> asset_filter{};
+    int asset_category{};  // the Assets panel's chip: 0 all, then characters, vehicles, props, pickups, buildings
+    // What an asset row being dragged into the viewport places.
+    std::optional<CatalogEntry> drag_entry;
+    std::string drag_building;
     // Ground heights of the open mission (its collision map), built on demand.
     std::shared_ptr<const rws::GroundQuery> ground;
     const rws::Document* ground_source{};  // the collision document it was built from
@@ -178,6 +240,23 @@ struct AuthoringTools {
     std::array<char, 128> idle_loop{};  // "1881:2-4,1385"
     int walk_animation{};
     float grid_spacing{1000.0F}, grid_avoid{300.0F};
+    // The walk grid the preset would make, drawn in the viewport while
+    // previewing, and what it was computed from.
+    bool preview_grid{};
+    std::vector<csf::Vec3> grid_points;
+    std::vector<std::pair<std::int32_t, std::int32_t>> grid_links;
+    std::tuple<float, float, std::uint64_t> grid_key{-1.0F, -1.0F, 0};
+
+    // Viewport tools (Phase 2): the asset the Place tool places (a class, or
+    // a project building asset), its heading and options, and the points of
+    // a route, zone or cover group being drawn.
+    std::optional<CatalogEntry> place_entry;
+    std::string place_building_asset;
+    float place_heading{};
+    bool place_random{}, place_keep{};
+    std::vector<csf::Vec3> sketch;
+    bool route_loop{true};
+    float zone_height{300.0F};
 
     // The Flow tab's view of the mission programs, rebuilt when they change.
     std::shared_ptr<const csf::MissionFlow> flow;
@@ -218,13 +297,21 @@ struct AuthoringTools {
 struct UiState {
     bool maximize_viewport{};     // Ctrl+Space: hide every panel but the center.
     bool reset_layout{};          // Rebuild the current workspace's default layout.
-    bool focus_render_settings{}; // Bring the Render settings tab to the front.
     bool screenshot_requested{};  // F12: save the back buffer after this frame renders.
-    bool show_render_settings{};
-    // Bottom dock tabs.
-    bool show_console{true}, show_diagnostics{true}, show_references{true}, show_changes{true}, show_missions{true};
+    // Panels the user has not closed (the Render settings panel starts closed).
+    std::array<bool, panel_count> panel_open = [] {
+        std::array<bool, panel_count> open{};
+        open.fill(true);
+        open[static_cast<std::size_t>(Panel::render_settings)] = false;
+        return open;
+    }();
+    // A panel to bring to the front, asked for over a few frames: a dock that
+    // was hidden restores its tabs over a frame or two.
+    std::optional<Panel> focus_panel;
+    int focus_panel_frames{};
     bool show_shortcuts{}, show_preferences{}, show_about{};
-    int focus_bottom_tab{-1}; // 0 console, 1 diagnostics, 2 references, 3 changes, 4 missions
+    // The Inspect mode's workspace last used (Ctrl+3 returns to it).
+    Workspace inspect_workspace{Workspace::scene};
 
     std::array<char, 128> mission_filter{};
 
@@ -265,6 +352,23 @@ struct UiState {
     // or discard unsaved mission edits.
     std::function<void()> pending_discard;
     std::string pending_discard_label;
+    // The New project wizard (Home, File > New project...).
+    bool show_new_project{};
+    std::array<char, 128> new_project_name{};
+    std::array<char, 1024> new_project_folder{}, new_project_corpus{};
+    std::string new_project_slot;
+    bool new_project_terrain{true};
+    float new_project_size{8000.0F};
+    // The Build panel: the archive the next file dialog is the original of,
+    // a deployment waiting for confirmation, the build shown, the playtest form.
+    std::filesystem::path original_archive_for;
+    std::string confirm_deploy;
+    std::string selected_build;
+    std::array<char, 256> playtest_note{};
+    bool playtest_worked{true};
+    // A delete refused because scripts or the mission still refer to the
+    // selection: the dialog lists the references and can delete anyway.
+    std::string force_delete_reason;
 
     // Mission export dialog.
     bool show_export_dialog{};
@@ -272,14 +376,46 @@ struct UiState {
     bool export_overwrite{}, export_install{};
     // Mission editing pickers in the Changes panel.
     std::array<char, 64> class_filter{};
-    // A mission editing tab to bring to the front ("Assets", "Presets"), once.
-    const char* mission_edit_tab{};
     std::array<char, 1024> import_donor{};
     int import_class_id{-1};
 
     // Set during a frame by anything that changes on screen without input (a
     // playing animation); the frame loop then keeps drawing instead of idling.
     bool animating{};
+    // Records selected besides the primary selection (Shift/Ctrl clicks,
+    // boxes), and the primary as it was last frame (for Shift/Ctrl clicks).
+    std::vector<MissionRecordKey> selection_extra;
+    MissionRecordKey last_primary;
+    // A form field waiting for the user to pick a record (the eyedropper).
+    struct PickRequest {
+        std::vector<MissionRecordKey::Kind> kinds;
+        std::string hint;
+        std::function<void(const MissionRecordKey&)> done;
+        MissionRecordKey restore;  // selected before the pick started
+        std::string field;         // the eyedropper button that asked, drawn active
+    };
+    std::optional<PickRequest> pick;
+    // Outliner: search text, and records hidden or locked in the viewport
+    // (kept by gameplay ID, so they survive edits that renumber entries).
+    std::array<char, 128> outliner_query{};
+    MissionRecordKey outliner_opened_for;  // the selection whose group the Outliner last opened
+    std::set<std::string> outliner_open_rows;  // rows without a record (the intro) opened by a click
+    std::vector<MissionRecordKey> hidden_records, locked_records;
+    bool record_states_dirty{};
+    // Problems dismissed by the user (Problem::id), for this session.
+    std::vector<std::string> dismissed_problems;
+
+    // UI test runs: frames must not depend on the machine or the moment, so
+    // frame rates, build dates and local paths are left out. Messages shown on
+    // screen replace each (prefix, name) path prefix with its name.
+    bool deterministic{};
+    std::vector<std::pair<std::string, std::string>> path_aliases;
+    [[nodiscard]] std::string shown(std::string text) const {
+        for (const auto& [prefix, name] : path_aliases)
+            for (auto at = text.find(prefix); !prefix.empty() && at != std::string::npos; at = text.find(prefix, at))
+                text.replace(at, prefix.size(), name);
+        return text;
+    }
 };
 
 // Measured by the frame loop, shown in the status bar and the viewport HUD.
@@ -296,6 +432,9 @@ struct Toast {
     std::string message;
     std::filesystem::path folder; // Shown as an "Open folder" action when set.
     double age{};                 // Seconds since it appeared.
+    // A destructive edit's toast offers Undo while the combined history
+    // (mission position, project cursor) is still where the edit left it.
+    std::optional<std::pair<std::size_t, std::size_t>> undo_at;
 };
 
 // One edited byte in the Hex workspace, kept so the Changes panel and the
@@ -345,6 +484,9 @@ struct AppState {
     NavigationHistory history;
     SearchIndex search_index;
     std::vector<DiagnosticRow> diagnostics;
+    // The author-facing problem list (Problems panel), rebuilt when its inputs change.
+    std::vector<Problem> problems;
+    std::uint64_t problems_key{~std::uint64_t{}};
     // Selections and RWS offsets that carry a diagnostic, for explorer markers.
     std::unordered_set<SelectionRef, SelectionRefHash> diagnostic_targets;
     std::vector<std::uint64_t> diagnostic_offsets; // Sorted.

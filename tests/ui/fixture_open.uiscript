@@ -1,0 +1,28 @@
+# Opens the generated fixture mission and selects records through Go to.
+open $RWSMAN_UI_FIXTURE/Maps/M1/M1.scn
+expect mission.open true
+expect mission.editable true
+expect count.actors 4
+expect count.nav_groups 2
+expect count.nav_points 6
+expect count.areas 1
+expect count.scripts 2
+goto actor:GUARD_GATE
+expect selection.record actor
+expect selection.id 5
+expect selection.title GUARD_GATE
+expect item:Properties::Duplicate visible
+compare fixture-guard-selected 2.0
+
+# Mission mode: the Outliner groups the cast by role, Properties edits, the
+# Problems panel and the Mission bar are there.
+expect panel.outliner true
+expect panel.properties true
+expect item:Outliner::Enemies visible
+expect item:Outliner::Players visible
+expect item:Outliner::GUARD_GATE visible
+expect item:Properties::Transform visible
+command view.panel.problems
+expect panel.problems true
+command mission.objectives
+expect panel.objectives true

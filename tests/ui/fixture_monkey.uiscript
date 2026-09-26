@@ -1,0 +1,17 @@
+# T10: seeded random walks of tools, clicks, drags, keys, undo and redo on the
+# fixture. Nothing asserts, the selection always resolves, and undoing
+# everything gives back the mission byte for byte.
+open $RWSMAN_UI_FIXTURE/Maps/M1/M1.scn
+remember mission.hash
+monkey 1 150
+undo-all
+wait idle
+expect-same mission.hash
+monkey 2 150
+undo-all
+wait idle
+expect-same mission.hash
+monkey 3 150
+undo-all
+wait idle
+expect-same mission.hash

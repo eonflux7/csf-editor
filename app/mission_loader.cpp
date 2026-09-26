@@ -335,7 +335,7 @@ void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_
             }
             check_cancelled();
             set_stage(7, "Building overlays");
-            auto overlays = make_mission_overlays(*candidate_scene);
+            auto overlays = make_mission_overlays(*candidate_scene, candidate_objects.get());
             append_cutscene_camera_overlays(*candidate_scene, candidate_cutscenes, overlays);
             append_actor_collision_overlays(*candidate_scene, candidate_associations, overlays);
         check_cancelled();

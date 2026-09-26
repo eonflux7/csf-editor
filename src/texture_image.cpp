@@ -11,6 +11,7 @@
 #include <string_view>
 #include <stdexcept>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 
@@ -291,6 +292,39 @@ bool decode_texture_image(const std::filesystem::path& path, int& width, int& he
     if (decode_png(bytes, width, height, rgba, error)) return true;
     error += " in " + path.string();
     return false;
+}
+
+ImageDifference compare_rgba_images(const int width_a, const int height_a, const std::span<const std::uint8_t> a,
+                                    const int width_b, const int height_b, const std::span<const std::uint8_t> b,
+                                    const int tolerance) {
+    ImageDifference result;
+    const auto pixels = [](const int width, const int height) {
+        return width > 0 && height > 0 ? static_cast<std::size_t>(width) * static_cast<std::size_t>(height) : 0U;
+    };
+    result.total_pixels = pixels(width_b, height_b);
+    result.same_size = width_a == width_b && height_a == height_b && a.size() == pixels(width_a, height_a) * 4U &&
+                       b.size() == result.total_pixels * 4U;
+    result.diff_rgba.assign(result.total_pixels * 4U, 0);
+    if (!result.same_size) {
+        result.changed_pixels = result.total_pixels;
+        result.max_channel_delta = 255;
+        for (std::size_t i = 0; i < result.diff_rgba.size(); i += 4) {
+            result.diff_rgba[i] = result.diff_rgba[i + 2] = 255;
+            result.diff_rgba[i + 3] = 255;
+        }
+        return result;
+    }
+    for (std::size_t i = 0; i < b.size(); i += 4) {
+        int delta = 0;
+        for (std::size_t c = 0; c < 3; ++c) delta = std::max(delta, std::abs(int{a[i + c]} - int{b[i + c]}));
+        result.max_channel_delta = std::max(result.max_channel_delta, delta);
+        const bool changed = delta > tolerance;
+        result.changed_pixels += changed;
+        for (std::size_t c = 0; c < 3; ++c)
+            result.diff_rgba[i + c] = changed ? (c == 1 ? 0 : 255) : static_cast<std::uint8_t>(b[i + c] / 4);
+        result.diff_rgba[i + 3] = 255;
+    }
+    return result;
 }
 
 bool write_png_rgba(const std::filesystem::path& path, const int width, const int height,

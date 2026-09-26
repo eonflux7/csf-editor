@@ -15,7 +15,10 @@ namespace rwsman {
 using MissionOverlays = GeometryPreview::MissionOverlaySet;
 
 [[nodiscard]] rws::Vec3 rws_point(csf::Vec3 value);
-[[nodiscard]] MissionOverlays make_mission_overlays(const csf::MissionScene& scene);
+// Actor markers take their kind's colour (player, enemy, prop...) when the
+// class database is given.
+[[nodiscard]] MissionOverlays make_mission_overlays(const csf::MissionScene& scene,
+                                                    const csf::ObjectDatabase* objects = nullptr);
 void append_cutscene_camera_overlays(
     const csf::MissionScene& scene,
     const std::vector<std::pair<std::filesystem::path, csf::CutsceneTimeline>>& cutscenes,

@@ -24,6 +24,23 @@ bool decode_png(std::span<const std::byte> bytes, int& width, int& height,
 bool write_png_rgba(const std::filesystem::path& path, int width, int height,
                     std::span<const std::uint8_t> rgba, std::string& error);
 
+// How two RGBA8 images differ: pixels whose largest channel difference
+// (alpha ignored) exceeds `tolerance`, and a diff image (the second image
+// dimmed, changed pixels in magenta) of the second image's size. Images of
+// different sizes differ in every pixel.
+struct ImageDifference {
+    bool same_size{};
+    std::size_t changed_pixels{}, total_pixels{};
+    int max_channel_delta{};
+    std::vector<std::uint8_t> diff_rgba;
+    [[nodiscard]] double changed_percent() const {
+        return total_pixels ? 100.0 * static_cast<double>(changed_pixels) / static_cast<double>(total_pixels) : 0.0;
+    }
+};
+[[nodiscard]] ImageDifference compare_rgba_images(int width_a, int height_a, std::span<const std::uint8_t> a,
+                                                  int width_b, int height_b, std::span<const std::uint8_t> b,
+                                                  int tolerance);
+
 // A DXT1 (BC1) DDS with a complete mip chain, as CSF's lightmaps are stored
 // (flags 0xA1007, caps 0x401008, the top level's size as the linear size).
 // Width and height are powers of two; alpha is ignored (opaque).

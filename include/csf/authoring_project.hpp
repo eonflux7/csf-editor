@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -75,9 +76,28 @@ struct ProjectOutput {
     std::string hash, inputs_hash;
 };
 
+// A playtest of a built archive pair (the Build panel's playtest log).
+struct ProjectPlaytest {
+    std::string build;  // the dist/<build-id> it tested
+    bool worked{};
+    std::string note;   // UTF-8
+};
+
+// An archive deployed into the test install, with the state file that rolls
+// it back (ModProject::deploy_package).
+struct ProjectDeployment {
+    std::string build;
+    std::filesystem::path archive;   // game-relative, e.g. maps/Convoy.pak
+    std::filesystem::path manifest;  // <test install>/.csf-mod-backups/<time>/deployment.state
+};
+
 struct ProjectLocal {
     std::filesystem::path corpus;  // unpacked game resources, one folder per mission
     std::filesystem::path blender, test_install;
+    // Untouched shipped archives the builds start from, by game-relative path
+    // (maps/Convoy.pak, GlobalEK.pak); see find_original_archive.
+    std::map<std::filesystem::path, std::filesystem::path> originals;
+    std::vector<ProjectDeployment> deployments;
 };
 
 // A placement or anchored actor whose height rule resolves to a height more
@@ -125,6 +145,7 @@ public:
     std::vector<ProjectText> strings;
     std::vector<ProjectLightmap> lightmaps;
     std::vector<ProjectOutput> outputs;
+    std::vector<ProjectPlaytest> playtests;
     ProjectLocal local;
 
     // Reads project.csfproj and, when present, local.csfproj. Errors name the
@@ -179,6 +200,9 @@ private:
 // `strings` appended (their IDs must be new to it), as texts.py wrote it.
 [[nodiscard]] std::vector<std::byte> append_fli_strings(std::span<const std::byte> donor,
                                                         const std::vector<ProjectText>& strings);
+
+// The numeric string IDs a .fli file has ("0001", "0900").
+[[nodiscard]] std::set<std::string> fli_string_ids(std::span<const std::byte> fli);
 
 class MissionScene;
 

@@ -239,7 +239,23 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 # A mission built from operations and presets (include/csf/mission_ops.hpp),
 # and how its scripts connect (events, objectives, findings).
 ./build/Release/csf-mod mission-ops out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn my.ops
+# The same with each recipe kept as an editable component (out/mission/components.csfops),
+# then listed, checked (each regenerates identically), and one edited in place.
+./build/Release/csf-mod mission-ops out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn my.ops --components
+./build/Release/csf-mod mission-components out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn list
+./build/Release/csf-mod mission-components out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn check
+./build/Release/csf-mod mission-components out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn set 6 1 pause=5
 ./build/Release/csf-mod mission-flow ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn --workspace out/mission
+
+# A new authoring project in a shipped slot (a flat starter terrain and an emptied
+# mission), its two archives into dist/<build-id>/, deploying them into a test
+# install and rolling them back, and the playtest log.
+./build/Release/csf-mod project-new ~/dev/csf-mods/checkpoint --slot Convoy --name Checkpoint \
+    --projects-root ~/dev/csf-mods --test-install ~/dev/csf_game
+./build/Release/csf-mod project-archives ~/dev/csf-mods/checkpoint   # --original-mission/--original-texts <pak>
+./build/Release/csf-mod project-deploy ~/dev/csf-mods/checkpoint <build-id>
+./build/Release/csf-mod project-rollback ~/dev/csf-mods/checkpoint <build-id>
+./build/Release/csf-mod project-playtest ~/dev/csf-mods/checkpoint <build-id> worked "guards patrol"
 
 # Buildings and baked lightmaps of an authoring project.
 ./build/Release/csf-mod project-place ~/dev/csf-mods/hello-world-project hut-1 hut 3000 16.3 -2500 0 --ground 0

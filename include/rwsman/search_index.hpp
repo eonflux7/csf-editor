@@ -79,8 +79,12 @@ public:
     //   #17       entries whose id or entry index is 17
     //   17        exact id matches first, then name matches
     //   text      fuzzy match on label (weighted) and detail
-    [[nodiscard]] std::vector<SearchResult> query(std::string_view text,
-                                                  std::size_t limit = 50) const;
+    //   kind:text only entries of that kind: actor:, zone:, route:, marker:, light:,
+    //             script:, variable:, class:, animation:, chunk:, resource:
+    // `gameplay_first` (Mission mode) ranks actors, zones, routes, scripts and
+    // classes well above file internals (chunks, instances, resources).
+    [[nodiscard]] std::vector<SearchResult> query(std::string_view text, std::size_t limit = 50,
+                                                  bool gameplay_first = false) const;
 
     // Case-insensitive substring filter on label, detail, and haystack. `needle`
     // must already be lower-case. Used by the Explorer trees.

@@ -2,6 +2,8 @@
 
 #include "app_state.hpp"
 
+#include "csf/mission_components.hpp"
+
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,9 +20,11 @@ namespace rwsman {
 
 // Every class of every discovered mission, built once per resource root.
 void build_asset_catalog(AppState& state);
-// Imports the class when the mission lacks it, then places it at the view
-// centre: characters on a new placement point, props and pickups without one.
-void place_asset(AppState& state, const AuthoringTools::CatalogEntry& entry);
+// Imports the class when the mission lacks it, then places it at `at` (the
+// ground under the view centre by default), facing `heading` degrees:
+// characters on a new placement point, props and pickups without one.
+void place_asset(AppState& state, const AuthoringTools::CatalogEntry& entry,
+                 std::optional<csf::Vec3> at = std::nullopt, float heading = 0.0F);
 
 // The mission's flow (events, objectives, findings), current with the editor.
 [[nodiscard]] const csf::MissionFlow* mission_flow(AppState& state);
@@ -45,9 +49,36 @@ void stop_shots(AppState& state);
 void update_shot_preview(AppState& state);  // once per frame
 void create_intro(AppState& state);
 
-// Places a building asset of the authoring project at the ground under the
-// view centre (a project placement; the map rebuilds).
-void place_building(AppState& state, const std::string& asset);
+// Places a building asset of the authoring project on the ground at `at`
+// (under the view centre by default), turned `heading` degrees (a project
+// placement; the map rebuilds).
+void place_building(AppState& state, const std::string& asset, std::optional<csf::Vec3> at = std::nullopt,
+                    float heading = 0.0F);
+
+// Components (csf/mission_components.hpp): the options their lines run
+// with (the collision map's ground), and a recipe's lines added as one; the
+// records it made, or nothing when it was refused (the reason is reported).
+[[nodiscard]] csf::MissionOpsOptions component_options(AppState& state);
+std::optional<std::vector<csf::MissionRecordId>> add_recipe(AppState& state, const std::string& lines);
+
+// The mission's components (parsed once per editor revision) and the one
+// that made a record: an actor, a navigation group or point, a dummy, an area.
+[[nodiscard]] const std::vector<csf::MissionComponent>& mission_component_list(AppState& state);
+[[nodiscard]] const csf::MissionComponent* owning_component(AppState& state, const MissionRecordKey& key);
+// Replaces a component's lines and regenerates its records; one undo step.
+bool edit_component(AppState& state, std::int32_t id, const std::vector<std::string>& lines);
+// A move (heading in radians) or deletion of a record a component made, done
+// as an edit of its lines (an actor's pos=, a route or cover point in
+// points=) or, for a deletion, of the whole component; nothing when no
+// component made it.
+std::optional<csf::EditResult> move_component_record(AppState& state, const MissionRecordKey& key, csf::Vec3 position,
+                                                     float heading_radians);
+std::optional<csf::EditResult> delete_component_record(AppState& state, const MissionRecordKey& key);
+
+// The walk grid the preset makes (over the collision map, clear of props),
+// and its points and links for the viewport preview (kept current).
+[[nodiscard]] std::optional<csf::WalkGrid> preset_walk_grid(AppState& state);
+void update_walk_grid_preview(AppState& state);
 
 void add_preset_point(AppState& state);
 void apply_preset(AppState& state);

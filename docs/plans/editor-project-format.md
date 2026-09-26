@@ -110,6 +110,7 @@ output build/Maps/Secs/Convoy.sec sectors sha256:<output> inputs sha256:<...>
 | `lightmap <name> <source.png>` | a baked lightmap; built into `build/<map folder>/Textures/<name>.dds` (DXT1) |
 | `building <id> <asset> <x y z> <yaw> <height>` | (see above) a building placement stands on the terrain |
 | `output <path> <kind> <hash> inputs <hash>` | a generated file, its hash and the hash of what it was built from |
+| `playtest <build-id> <worked\|failed> <note>` | a playtest of `dist/<build-id>/`'s archives (the Build panel's log) |
 
 `<id>` is a project-unique name (`[A-Za-z0-9_-]+`). The editor assigns one on
 creation (`tree-1`, `tree-2`, ...) and it can be renamed; references are
@@ -175,7 +176,11 @@ intermediate: it is rebuilt when an asset export changes.
 
 `local.csfproj` holds what differs per machine: the unpacked corpus root
 (today's `local-config.json` `source_root`), the Blender executable, and the
-test install used for deployment. It is excluded from sharing and from the
+test install used for deployment (`corpus`, `blender`, `test-install <path>`),
+plus `original <archive> <path>` (an untouched shipped archive the builds
+start from, when it is not the test install's first deployment backup) and
+`deployment <build-id> <archive> <state file>` (each deployment and the
+state file that rolls it back). It is excluded from sharing and from the
 input hashes.
 
 ## Hello world migration

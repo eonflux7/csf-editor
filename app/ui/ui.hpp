@@ -36,15 +36,41 @@ void draw_palette(AppState& state);
 void draw_console(AppState& state);
 void draw_diagnostics(AppState& state);
 void draw_references(AppState& state);
-// Mission editing hub: project, history, modified files, mission properties,
-// adding actors and importing from other missions (or session byte edits).
+// Inspect mode: session byte edits and the mission's changed files.
 void draw_changes(AppState& state);
+// Mission mode panels (docs/plans/editor-ux-redesign.md, §3 B).
+void draw_outliner(AppState& state);
+void draw_properties(AppState& state);
+// The recipe that made a mission record, as an editable card (Properties).
+void draw_component_card(AppState& state, const MissionRecordKey& key);
+void draw_component_card(AppState& state, std::int32_t component_id);
+// The cards of the components whose recipe is one of `ops` (objectives, equipment, tips).
+void draw_component_cards(AppState& state, std::initializer_list<std::string_view> ops);
+void draw_problems(AppState& state);
+void draw_history_panel(AppState& state);
+void draw_mission_settings(AppState& state);
+void draw_assets_panel(AppState& state);
+void draw_behaviours(AppState& state);
+void draw_flow_panel(AppState& state);
+void draw_objectives_panel(AppState& state);
+void draw_texts_panel(AppState& state);
+void draw_timeline(AppState& state);
+void draw_build(AppState& state);
+// The strip under the menu bar in Mission mode: one entry per authoring step.
+void draw_mission_bar(AppState& state);
+// The edit cards of the scene record at `entry` (Properties, and the
+// Inspector's Edit section).
+void draw_record_editor(AppState& state, std::uint32_t entry);
 // The Inspector's Edit section for the scene record at `entry`.
 void draw_mission_edit_section(AppState& state, std::uint32_t entry);
 // The Inspector's Edit section for a static map prop (scene instance).
 void draw_map_instance_edit_section(AppState& state, const rws::SceneInstance& instance);
 // Export and unsaved-edits dialogs.
 void draw_mission_dialogs(AppState& state);
+// The New project wizard and the deploy confirmation (app/ui/project_panels.cpp).
+void draw_project_dialogs(AppState& state);
+// The Build panel's archives, test install and playtest cards.
+void draw_project_pipeline(AppState& state);
 void draw_render_settings(AppState& state);
 void draw_shortcuts_window(AppState& state);
 void draw_about_window(AppState& state);
@@ -70,7 +96,9 @@ void draw_typed_details(AppState& state, const rws::Chunk& chunk, std::uint32_t 
 void draw_csf_subtree(const csf::Document& document, const csf::Node& node);
 // Sections for the mission record at CSFFBS entry `entry`, drawn inside the
 // Inspector as property grids with provenance badges and raw-byte disclosure.
-void draw_mission_record(AppState& state, std::uint32_t entry);
+// `with_editor` puts the Edit section first (the Inspector); Properties draws
+// its own editor and shows these sections as developer details.
+void draw_mission_record(AppState& state, std::uint32_t entry, bool with_editor = true);
 void draw_actor_animation(AppState& state, const csf::ActorAssociation& association,
                           std::uint32_t entry);
 } // namespace rwsman::ui

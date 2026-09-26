@@ -19,8 +19,9 @@ binary_to_compressed_c.cpp is compiled from an ImGui source checkout.
   tools/generate_ui_fonts.py --sources DIR --imgui build/_deps/imgui-src
 
 --text-only regenerates only the text fonts and keeps the committed Lucide
-subset and app/ui/icons.hpp; lucide.ttf and IconsLucide.h must come from the
-same Lucide release, so update them together.
+subset and app/ui/icons.hpp; --icons-only regenerates only those two (the
+text fonts are then not needed). lucide.ttf and IconsLucide.h must come from
+the same Lucide release, so update them together.
 """
 import argparse
 import re
@@ -42,6 +43,12 @@ diamond square triangle target move-3d mouse-pointer grid-3x3 sun moon panel-lef
 panel-right panel-bottom layout-dashboard bug flag link undo-2 redo-2 plus minus
 check ellipsis dot folder package globe mountain component bookmark keyboard
 command
+shield dog trees tree-pine building-2 scroll-text zap hammer rocket magnet pipette
+circle-help square-dashed video waypoints clapperboard boxes list-checks shapes swords
+tent car truck goal message-square spline lasso-select mouse-pointer-click
+hard-drive-download upload history person-standing door-open radio list-tree
+wand-sparkles circle-play gauge check-check sliders-horizontal type languages workflow
+hand footprints flame shield-alert bell mountain-snow blocks
 """.split()
 
 # Text ranges kept from the text fonts: Latin, punctuation, arrows, shapes.
@@ -68,6 +75,8 @@ def main():
     parser.add_argument("--out", type=Path, default=Path(__file__).resolve().parents[1] / "app" / "ui")
     parser.add_argument("--text-only", action="store_true",
                         help="regenerate only the text fonts; keep the Lucide subset and icons.hpp")
+    parser.add_argument("--icons-only", action="store_true",
+                        help="regenerate only the Lucide subset and icons.hpp; keep the text fonts")
     args = parser.parse_args()
     fonts_dir = args.out / "fonts"
     fonts_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +93,7 @@ def main():
             path.write_text(out)
             print(f"{path.name}: {ttf.stat().st_size} -> {len(out)} bytes of source")
 
-        for name, symbol, _ in FONTS:
+        for name, symbol, _ in ([] if args.icons_only else FONTS):
             subset = tmp / f"{symbol}.ttf"
             run(sys.executable, "-m", "fontTools.subset", args.sources / name,
                 f"--unicodes={TEXT_UNICODES}", "--layout-features=kern,liga", "--no-hinting",

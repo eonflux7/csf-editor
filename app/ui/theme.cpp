@@ -2,6 +2,8 @@
 
 #include "ui/icons.hpp"
 
+#include "rwsman/contrast.hpp"
+
 #include <algorithm>
 #include <array>
 #include <string>
@@ -23,14 +25,14 @@ constexpr Palette dark_palette{
     rgb(0x1C2027),        // bg2
     rgb(0x2A2F38),        // line
     rgb(0xD4D7DD),        // text
-    rgb(0x7D8490),        // text_dim
+    rgb(0x878E9A),        // text_dim (AA 4.5:1 on bg2)
     rgb(0xE8A33D),        // accent
     rgb(0xE8A33D, 0.22F), // accent_dim
     rgb(0x6CC56C),        // ok
     rgb(0x5FB3D9),        // inferred
     rgb(0xA58BD8),        // raw
     rgb(0xE0B341),        // warn
-    rgb(0xE5534B),        // error
+    rgb(0xF05F57),        // error
     rgb(0xE8A33D),        // dirty
 };
 
@@ -51,7 +53,38 @@ constexpr Palette high_contrast_palette{
     rgb(0xFFB84D),        // dirty
 };
 
+// EntityKind colours, dark and high-contrast (0xRRGGBB).
+constexpr std::array<unsigned, static_cast<std::size_t>(EntityKind::count)> dark_kinds{
+    0x6CC56C, // player
+    0xE8705B, // enemy
+    0xC9955A, // animal
+    0x94A7BD, // vehicle
+    0x5FD1C0, // pickup
+    0xE0B341, // usable
+    0xA7ADB7, // prop
+    0x878E9A, // helper
+    0xE5534B, // unresolved
+    0xC7925F, // building
+    0x74B85F, // vegetation
+    0x3CCDFF, // route
+    0x55E091, // cover
+    0x4E9BC9, // walk_grid
+    0xF06AD6, // camera_path
+    0xF2CC4B, // zone
+    0xB77DF5, // marker
+    0xF5E78A, // light
+    0xFF6E9F, // effect
+    0xF0A94A, // objective
+    0xA58BD8, // trigger
+    0x8FB8E8, // script
+};
+constexpr std::array<unsigned, static_cast<std::size_t>(EntityKind::count)> high_contrast_kinds{
+    0x7CFF7C, 0xFF7A66, 0xE0AA6A, 0xB8CCE0, 0x6FFFEA, 0xFFD84D, 0xD0D4DC, 0xB8B8B8, 0xFF6B63, 0xE5A870, 0x8CE070,
+    0x66E0FF, 0x66FFA8, 0x70C0F0, 0xFF80E8, 0xFFE066, 0xD39CFF, 0xFFF3A0, 0xFF8AB6, 0xFFBE5C, 0xC9B0FF, 0xA8D0FF,
+};
+
 const Palette* palette = &dark_palette;
+const std::array<unsigned, static_cast<std::size_t>(EntityKind::count)>* kind_palette = &dark_kinds;
 std::string current_theme = "dark";
 
 ImVec4 mix(const ImVec4& a, const ImVec4& b, const float t) {
@@ -191,15 +224,84 @@ const char* provenance_name(const Provenance provenance) {
 void set_theme(const std::string_view name) {
     if (name == "high-contrast") {
         palette = &high_contrast_palette;
+        kind_palette = &high_contrast_kinds;
         current_theme = "high-contrast";
     } else {
         palette = &dark_palette;
+        kind_palette = &dark_kinds;
         current_theme = "dark";
     }
 }
 
 std::string_view theme_name() {
     return current_theme;
+}
+
+ImVec4 kind_color(const EntityKind kind, const float alpha) {
+    const auto index = static_cast<std::size_t>(kind);
+    return rgb(index < kind_palette->size() ? (*kind_palette)[index] : 0x878E9A, alpha);
+}
+
+ImU32 kind_color_u32(const EntityKind kind, const float alpha) {
+    return ImGui::ColorConvertFloat4ToU32(kind_color(kind, alpha));
+}
+
+const char* kind_icon(const EntityKind kind) {
+    switch (kind) {
+    case EntityKind::player: return icons::LC_USER;
+    case EntityKind::enemy: return icons::LC_PERSON_STANDING;
+    case EntityKind::animal: return icons::LC_DOG;
+    case EntityKind::vehicle: return icons::LC_TRUCK;
+    case EntityKind::pickup: return icons::LC_PACKAGE;
+    case EntityKind::usable: return icons::LC_HAND;
+    case EntityKind::prop: return icons::LC_BOX;
+    case EntityKind::helper: return icons::LC_VIDEO;
+    case EntityKind::unresolved: return icons::LC_CIRCLE_ALERT;
+    case EntityKind::building: return icons::LC_BUILDING_2;
+    case EntityKind::vegetation: return icons::LC_TREES;
+    case EntityKind::route: return icons::LC_ROUTE;
+    case EntityKind::cover: return icons::LC_SHIELD;
+    case EntityKind::walk_grid: return icons::LC_GRID_3X3;
+    case EntityKind::camera_path: return icons::LC_SPLINE;
+    case EntityKind::zone: return icons::LC_SQUARE_DASHED;
+    case EntityKind::marker: return icons::LC_MAP_PIN;
+    case EntityKind::light: return icons::LC_LIGHTBULB;
+    case EntityKind::effect: return icons::LC_SPARKLES;
+    case EntityKind::objective: return icons::LC_FLAG;
+    case EntityKind::trigger: return icons::LC_ZAP;
+    case EntityKind::script: return icons::LC_SCROLL_TEXT;
+    case EntityKind::count: break;
+    }
+    return icons::LC_DOT;
+}
+
+std::vector<std::string> theme_contrast_problems() {
+    const auto packed = [](const Token token) {
+        const auto value = color(token);
+        const auto channel = [](const float c) { return static_cast<std::uint32_t>(std::clamp(c, 0.0F, 1.0F) * 255.0F + 0.5F); };
+        return channel(value.x) << 16U | channel(value.y) << 8U | channel(value.z);
+    };
+    constexpr std::array<std::pair<Token, const char*>, 3> backgrounds{
+        {{Token::bg0, "bg0"}, {Token::bg1, "bg1"}, {Token::bg2, "bg2"}}};
+    constexpr std::array<std::pair<Token, const char*>, 6> foregrounds{{{Token::text, "text"},
+                                                                       {Token::text_dim, "text_dim"},
+                                                                       {Token::accent, "accent"},
+                                                                       {Token::ok, "ok"},
+                                                                       {Token::warn, "warn"},
+                                                                       {Token::error, "error"}}};
+    std::vector<std::string> problems;
+    for (const auto& [foreground, foreground_name] : foregrounds)
+        for (const auto& [background, background_name] : backgrounds)
+            if (const double ratio = contrast_ratio(packed(foreground), packed(background)); ratio < 4.5)
+                problems.push_back(current_theme + ": " + foreground_name + " on " + background_name + " is " +
+                                   std::to_string(ratio).substr(0, 4) + ":1 (AA needs 4.5)");
+    for (std::size_t i = 0; i < kind_palette->size(); ++i)
+        for (const auto& [background, background_name] : backgrounds)
+            if (const double ratio = contrast_ratio((*kind_palette)[i], packed(background)); ratio < 3.0)
+                problems.push_back(current_theme + ": kind " + entity_kind_name(static_cast<EntityKind>(i)) +
+                                   " on " + background_name + " is " + std::to_string(ratio).substr(0, 4) +
+                                   ":1 (icons need 3)");
+    return problems;
 }
 
 ImVec4 heat(const float t) {

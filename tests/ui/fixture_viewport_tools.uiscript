@@ -1,0 +1,112 @@
+# Editing in the viewport (Phase 2): the Place, Zone and Route tools, dragging
+# an asset in, multi-selection with a group move, and group delete, each one
+# undo step.
+open $RWSMAN_UI_FIXTURE/Maps/M1/M1.scn
+remember mission.hash
+expect count.actors 4
+
+# Place: pick a class in the Assets panel, click the ground.
+command mission.assets
+click Assets::Crate
+expect viewport.tool place
+expect viewport.place_asset Crate
+click-world -1500 -135 0
+expect count.actors 5
+expect selection.record actor
+expect viewport.tool select
+expect-contains mission.history.top "class 20"
+undo
+expect count.actors 4
+
+# Shift keeps placing.
+click Assets::Crate
+click-world -1500 -135 0 Shift
+click-world 200 3 -800 Shift
+expect count.actors 6
+expect viewport.tool place
+key Escape
+expect viewport.tool select
+undo
+undo
+expect count.actors 4
+
+# Drag an asset from the Assets panel onto the ground.
+drag-to-world Assets::Soldier 300 25 -300
+expect count.actors 5
+expect selection.record actor
+undo
+expect count.actors 4
+expect-same mission.hash
+
+# Zone: click three corners, Enter creates it.
+command mission.tool_zone
+expect viewport.tool zone
+click-world -2000 -159 -1000
+click-world -1200 -119 -1000
+click-world -1200 -119 -300
+expect viewport.sketch 3
+key Enter
+expect count.areas 2
+expect selection.record area
+expect viewport.tool select
+undo
+expect count.areas 1
+
+# Route: three points, Enter.
+command mission.tool_route
+click-world 0 -36 -1800
+click-world 800 12 -1800
+click-world 800 41 -1200
+key Backspace
+expect viewport.sketch 2
+click-world 800 41 -1200
+key Enter
+expect count.nav_groups 3
+expect count.nav_points 9
+undo
+expect count.nav_groups 2
+expect-same mission.hash
+
+# Multi-selection: Shift+click adds, dragging the primary moves both, one undo step.
+click-world 600 67 300
+expect selection.id 5
+click-world 1500 124 1600 Shift
+expect selection.count 2
+command mission.tool_move
+remember selection.position
+drag-world 1500 124 1600 1800 140 1600
+expect-changed selection.position
+expect mission.history.size 1
+expect mission.history.top "Move 2 records"
+undo
+expect-same selection.position
+expect-same mission.hash
+
+# Ctrl+click takes one out again; a plain click resets to one.
+command mission.tool_select
+click-world 600 67 300
+click-world 1500 124 1600 Shift
+expect selection.count 2
+click-world 1500 124 1600 Ctrl
+expect selection.count 1
+expect selection.id 5
+
+# Group delete, one undo step.
+click-world 1500 124 1600 Shift
+command mission.delete
+expect count.actors 2
+undo
+expect count.actors 4
+expect-same mission.hash
+
+# An eyedropper fills a form field from the Outliner and keeps the selection.
+goto actor:GUARD_GATE
+command mission.objectives
+click "Objectives::Add objective"
+expect form.objective_targets 0
+click Objectives::pick_target
+expect viewport.picking true
+click Outliner::YARD
+expect viewport.picking false
+expect form.objective_targets 1
+expect selection.title GUARD_GATE

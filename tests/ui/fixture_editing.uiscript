@@ -1,0 +1,29 @@
+# Edits through the Inspector and the viewport gizmo, and undo restores the
+# mission byte for byte.
+open $RWSMAN_UI_FIXTURE/Maps/M1/M1.scn
+remember mission.hash
+goto actor:GUARD_GATE
+expect mission.dirty false
+
+# Duplicate from the Inspector's Edit section.
+click Properties::Duplicate
+expect count.actors 5
+expect mission.history.top "Duplicate actor 5"
+expect mission.dirty true
+expect-changed mission.hash
+undo
+expect count.actors 4
+expect mission.dirty false
+expect-same mission.hash
+
+# Move with the gizmo: drag its centre across the ground.
+goto actor:GUARD_GATE
+remember selection.position
+command mission.tool_move
+expect viewport.tool move
+drag-world 600 67 300 1100 111 300
+expect-changed selection.position
+expect mission.history.size 1
+undo
+expect-same selection.position
+expect-same mission.hash

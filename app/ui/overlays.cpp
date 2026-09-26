@@ -3,6 +3,7 @@
 
 #include "app_actions.hpp"
 #include "app_util.hpp"
+#include "authoring.hpp"
 #include "mission_loader.hpp"
 #include "ui/fonts.hpp"
 #include "ui/icons.hpp"
@@ -55,13 +56,22 @@ void draw_toasts(AppState& state) {
             ImGui::PopStyleColor();
             ImGui::SameLine();
             ImGui::PushTextWrapPos(width - ImGui::GetStyle().WindowPadding.x);
-            ImGui::TextUnformatted(toast.message.c_str());
+            ImGui::TextUnformatted(state.ui.shown(toast.message).c_str());
             ImGui::PopTextWrapPos();
             if (!toast.folder.empty()) {
                 if (ImGui::SmallButton((std::string(icons::LC_FOLDER_OPEN) + " Open folder").c_str())) {
                     open_folder(toast.folder);
                     toast.age = lifetime;
                 }
+                ImGui::SameLine();
+            }
+            if (toast.undo_at) {
+                ImGui::BeginDisabled(history_point(state) != *toast.undo_at || !can_undo_edit(state));
+                if (ImGui::SmallButton((std::string(icons::LC_UNDO_2) + " Undo").c_str())) {
+                    undo_edit(state);
+                    toast.age = lifetime;
+                }
+                ImGui::EndDisabled();
                 ImGui::SameLine();
             }
             if (ImGui::SmallButton("Dismiss")) toast.age = lifetime;

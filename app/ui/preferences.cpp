@@ -83,8 +83,11 @@ void draw_preferences(AppState& state) {
     ImGui::TextUnformatted("Mission projects");
     path_setting("projects_root", path_utf8(state.config_dir / "projects").c_str(), settings.projects_root,
                  DialogKind::projects_root);
+    ImGui::TextUnformatted("Blender");
+    path_setting("blender", "blender (from PATH)", settings.blender, DialogKind::blender);
     dim_text("The export dialog finds the shipped archive in the game folder. New projects are "
-             "created in the projects folder (empty: the per-user config folder).");
+             "created in the projects folder (empty: the per-user config folder). Edit in Blender runs "
+             "Blender with the CSF add-on and the project set.");
 
     section("Appearance");
     // The slider edits a copy so the fonts are rebuilt once, on release. It follows

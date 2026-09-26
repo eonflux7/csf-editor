@@ -41,6 +41,11 @@ enum class OutputMode { automatic, overwrite, unique };
 void save_copy(AppState& state, OutputMode mode = OutputMode::automatic);
 // Opens a folder in the platform file manager (detached).
 void open_folder(const std::filesystem::path& folder);
+// Starts a program without waiting for it (arguments[0] is looked up in PATH);
+// false when it could not be started.
+bool launch_detached(const std::vector<std::string>& arguments);
+// The folder of the running executable (csf-mod is built beside rws-man).
+[[nodiscard]] std::filesystem::path executable_directory();
 // Native file dialogs. They do nothing when the platform has no dialog.
 void open_document_dialog(AppState& state);
 void open_mission_dialog(AppState& state);

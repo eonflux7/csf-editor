@@ -1,6 +1,7 @@
 #pragma once
 
 #include "csf/mission_edit.hpp"
+#include "csf/mission_recipes.hpp"
 
 #include <cstddef>
 #include <filesystem>
@@ -60,5 +61,37 @@ struct MissionOpOutcome {
 // Runs every line until one is rejected (its outcome is the last one).
 [[nodiscard]] std::vector<MissionOpOutcome> run_mission_ops(MissionEditor& editor, std::string_view text,
                                                             const MissionOpsOptions& options = {});
+
+// One line as its operation and ordered key=value pairs, for editing lines.
+struct OpLine {
+    std::string op;
+    std::vector<std::pair<std::string, std::string>> values;
+
+    [[nodiscard]] const std::string* find(std::string_view key) const;
+    [[nodiscard]] std::string get(std::string_view key, std::string fallback = {}) const;
+    void set(std::string_view key, std::string value);  // replaces it, or appends it
+    void erase(std::string_view key);
+};
+// Throws std::invalid_argument on a malformed line.
+[[nodiscard]] OpLine parse_op_line(std::string_view line);
+[[nodiscard]] std::string format_op_line(const OpLine& line);
+// Values as the parser reads them back exactly: the shortest round-trip
+// number, `x,y,z`, and navigation points `x,y,z[,rotation];...`.
+[[nodiscard]] std::string op_number(float value);
+[[nodiscard]] std::string op_vec3(Vec3 value);
+[[nodiscard]] std::string op_points(const std::vector<NavPointSpec>& points);
+[[nodiscard]] std::vector<NavPointSpec> parse_op_points(std::string_view text);  // throws std::invalid_argument
+
+// The lines that make each recipe: run_mission_ops reads them back to the same
+// recipe (a walk grid's ground comes from MissionOpsOptions).
+[[nodiscard]] std::string ops_text(const GuardPatrol& recipe);
+[[nodiscard]] std::string ops_text(const GuardIdle& recipe);
+[[nodiscard]] std::string ops_text(const AnimalPatrol& recipe);
+[[nodiscard]] std::string ops_text(const CoverGroup& recipe);
+[[nodiscard]] std::string ops_text(const WalkGrid& recipe);
+[[nodiscard]] std::string ops_text(const Objectives& recipe);
+[[nodiscard]] std::string ops_text(const Equipment& recipe);
+[[nodiscard]] std::string ops_text(const Tips& recipe);
+[[nodiscard]] std::string ops_text(const IntroCutscene& recipe);
 
 } // namespace csf

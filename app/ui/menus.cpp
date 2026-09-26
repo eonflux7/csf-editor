@@ -30,7 +30,10 @@ void draw_recent_files(AppState& state) {
     // Copy: opening a file reorders the settings list while we iterate.
     const auto recent = state.settings.recent_files;
     for (const auto& entry : recent) {
-        const auto label = std::string(entry.mission ? "[mission] " : "[file] ") +
+        std::error_code error;
+        const auto label = std::string(std::filesystem::is_directory(entry.path, error) ? "[project] "
+                                       : entry.mission                                  ? "[mission] "
+                                                                                        : "[file] ") +
                            path_utf8(entry.path.filename());
         if (ImGui::MenuItem(label.c_str())) open_path(state, entry.path);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", path_utf8(entry.path).c_str());
@@ -84,46 +87,87 @@ void draw_selection_context_menu(AppState& state) {
     for (const char* id : {"nav.show_in_hex", "mission.references", "export.clump_gltf"}) draw_command_menu_item(state, id);
 }
 
+namespace {
+
+// One tab of the mode switch: text, an accent underline when active. Returns
+// whether it was clicked (and is available).
+bool mode_tab(const char* label, const bool active, const bool available, const char* tooltip, const float pad) {
+    const ImVec2 size{ImGui::CalcTextSize(label).x + pad * 2.0F, ImGui::GetFrameHeight()};
+    const ImVec2 position = ImGui::GetCursorScreenPos();
+    ImGui::PushID(label);
+    const bool clicked = ImGui::InvisibleButton("##tab", size) && available;
+    ImGui::PopID();
+    const bool hovered = ImGui::IsItemHovered();
+    auto* draw_list = ImGui::GetWindowDrawList();
+    const Token token = active ? Token::accent : (available ? (hovered ? Token::text : Token::text_dim) : Token::line);
+    draw_list->AddText({position.x + pad, position.y + (size.y - ImGui::GetTextLineHeight()) * 0.5F}, color_u32(token),
+                       label);
+    if (active)
+        draw_list->AddLine({position.x + pad * 0.5F, position.y + size.y - 1.0F},
+                           {position.x + size.x - pad * 0.5F, position.y + size.y - 1.0F}, color_u32(Token::accent),
+                           2.0F);
+    if (hovered && tooltip && *tooltip) ImGui::SetTooltip("%s", tooltip);
+    ImGui::SameLine(0.0F, 0.0F);
+    return clicked;
+}
+
+} // namespace
+
 void draw_workspace_tabs(AppState& state) {
-    constexpr Workspace order[] = {Workspace::mission,   Workspace::script, Workspace::animation,
-                                   Workspace::scene,     Workspace::geometry, Workspace::inspector};
-    const float pad = 8.0F * ui_scale();
+    // Mission, Script and Inspect on the right; in Inspect, its four
+    // workspaces as a smaller switch before them.
+    constexpr Workspace inspect_order[] = {Workspace::scene, Workspace::geometry, Workspace::animation,
+                                           Workspace::inspector};
+    constexpr Mode modes[] = {Mode::mission, Mode::script, Mode::inspect};
+    const float pad = 9.0F * ui_scale(), small_pad = 6.0F * ui_scale();
+    // Without a document there is no mode to show as active (Home).
+    const bool inspecting = state.document && mode_of(state.workspace) == Mode::inspect;
     float total = 0.0F;
-    for (const auto workspace : order) total += ImGui::CalcTextSize(workspace_tab_label(workspace)).x + pad * 2.0F;
+    ImGui::PushFont(font(Font::sans_bold));
+    for (const auto mode : modes) total += ImGui::CalcTextSize(mode_label(mode)).x + pad * 2.0F;
+    ImGui::PopFont();
+    if (inspecting) {
+        ImGui::PushFont(font(Font::caption));
+        for (const auto workspace : inspect_order)
+            total += ImGui::CalcTextSize(workspace_tab_label(workspace)).x + small_pad * 2.0F;
+        ImGui::PopFont();
+        total += 16.0F * ui_scale();
+    }
     const float start = ImGui::GetWindowWidth() - total - ImGui::GetStyle().WindowPadding.x;
     if (start > ImGui::GetCursorPosX() + 24.0F) ImGui::SetCursorPosX(start);
-    ImGui::PushFont(font(Font::sans_bold));
-    for (const auto workspace : order) {
-        const bool available = workspace_available(state, workspace);
-        const bool active = state.workspace == workspace;
-        const char* label = workspace_tab_label(workspace);
-        const ImVec2 size{ImGui::CalcTextSize(label).x + pad * 2.0F, ImGui::GetFrameHeight()};
-        const ImVec2 position = ImGui::GetCursorScreenPos();
-        ImGui::PushID(label);
-        const bool clicked = ImGui::InvisibleButton("##tab", size) && available;
-        ImGui::PopID();
-        const bool hovered = ImGui::IsItemHovered();
-        auto* draw_list = ImGui::GetWindowDrawList();
-        const Token token = active ? Token::accent : (available ? (hovered ? Token::text : Token::text_dim) : Token::line);
-        draw_list->AddText({position.x + pad, position.y + (size.y - ImGui::GetTextLineHeight()) * 0.5F},
-                           color_u32(token), label);
-        if (active)
-            draw_list->AddLine({position.x + pad * 0.5F, position.y + size.y - 1.0F},
-                               {position.x + size.x - pad * 0.5F, position.y + size.y - 1.0F},
-                               color_u32(Token::accent), 2.0F);
-        if (hovered && available) {
-            const auto* command = state.commands.find(std::string("view.workspace.") + workspace_key(workspace));
-            if (command) ImGui::SetTooltip("%s", command->shortcut.c_str());
+    const auto shortcut = [&](const char* id) {
+        const auto* command = state.commands.find(id);
+        return command ? command->label + "  " + command->shortcut : std::string{};
+    };
+    if (inspecting) {
+        ImGui::PushFont(font(Font::caption));
+        for (const auto workspace : inspect_order) {
+            const std::string id = std::string("view.workspace.") + workspace_key(workspace);
+            if (mode_tab(workspace_tab_label(workspace), state.workspace == workspace,
+                         workspace_available(state, workspace), shortcut(id.c_str()).c_str(), small_pad))
+                state.commands.run(id);
         }
-        if (clicked) state.commands.run(std::string("view.workspace.") + workspace_key(workspace));
+        ImGui::PopFont();
+        ImGui::Dummy({16.0F * ui_scale(), 1.0F});
         ImGui::SameLine(0.0F, 0.0F);
+    }
+    ImGui::PushFont(font(Font::sans_bold));
+    for (const auto mode : modes) {
+        const char* id = mode == Mode::mission  ? "view.workspace.mission"
+                         : mode == Mode::script ? "view.workspace.script"
+                                                : "view.mode.inspect";
+        const auto* command = state.commands.find(id);
+        const bool available = command && (!command->enabled || command->enabled());
+        if (mode_tab(mode_label(mode), state.document && mode_of(state.workspace) == mode,
+                     available, shortcut(id).c_str(), pad))
+            state.commands.run(id);
     }
     ImGui::PopFont();
 }
 
 void draw_menus(AppState& state) {
     if (!ImGui::BeginMainMenuBar()) return;
-    for (const char* category : {"File", "Edit", "View", "Mission", "Tools", "Export", "Help"}) {
+    for (const char* category : {"File", "Edit", "View", "Place", "Mission", "Build", "Inspect", "Help"}) {
         if (!ImGui::BeginMenu(category)) continue;
         draw_category(state, category);
         ImGui::EndMenu();

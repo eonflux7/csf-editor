@@ -1,0 +1,26 @@
+# A new project from Home's wizard (Phase 4, E9): in the fixture's slot, into
+# the output directory; it opens with the slot emptied, and the Build panel
+# shows its archives, test install and playtest log.
+remove $UI_OUTPUT/Outpost
+setting resource_root $RWSMAN_UI_FIXTURE/..
+setting projects_root $UI_OUTPUT
+
+click "New project..."
+click "New project::new_project_name"
+key Ctrl+A
+type Outpost
+expect item:"New project::Create" visible
+click "New project::Create"
+wait idle
+expect project.open true
+expect project.name Outpost
+expect project.slot Fixture
+expect mission.open true
+expect count.actors 0
+expect count.components 0
+expect project.dirty false
+expect log.errors 0
+click "Build..."
+expect item:"Build::Build archives" visible
+expect item:Build::record visible
+expect project.builds 0

@@ -208,7 +208,7 @@ bool GeometryPreview::update_edit_gizmo() {
         return true;
     }
 
-    if (edit_tool_ == EditTool::select || !edit_handle_ || !canvas_hovered_ ||
+    if ((edit_tool_ != EditTool::move && edit_tool_ != EditTool::rotate) || !edit_handle_ || !canvas_hovered_ ||
         !ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         return false;
     const auto& handle = *edit_handle_;
@@ -260,7 +260,7 @@ bool GeometryPreview::update_edit_gizmo() {
 }
 
 void GeometryPreview::draw_edit_gizmo(ImDrawList* draw_list) {
-    if (edit_tool_ == EditTool::select || !edit_handle_) return;
+    if ((edit_tool_ != EditTool::move && edit_tool_ != EditTool::rotate) || !edit_handle_) return;
     const auto position = edit_drag_ ? edit_drag_->position : edit_handle_->position;
     const auto heading = edit_drag_ ? edit_drag_->heading : edit_handle_->heading_radians;
     const auto center = project_point(position);

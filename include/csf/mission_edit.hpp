@@ -51,6 +51,9 @@ enum class MissionFileKind {
     visual_index,
     visual_map, // the map's RenderWare stream, edited in place (scene instances)
     asset,
+    // The editor's component list (components.csfops, csf/mission_components.hpp):
+    // saved in the workspace beside authored/, never packaged.
+    components,
 };
 
 struct MissionFile {
@@ -106,6 +109,14 @@ struct LightEdit {
 };
 
 using ScalarValue = std::variant<std::int32_t, float, std::string>; // strings are UTF-8
+
+// A gameplay record by kind and ID, as components own them.
+struct MissionRecordId {
+    enum class Type : std::uint8_t { actor, navigation_group, dummy, area, script, cutscene_script };
+    Type type{Type::actor};
+    std::int32_t id{};
+    friend auto operator<=>(const MissionRecordId&, const MissionRecordId&) = default;
+};
 
 // Non-destructive, transactional mission editing over canonical CSFFBS trees.
 //
@@ -202,6 +213,25 @@ public:
     // that did not apply (its operation was rejected), everything it applied
     // is undone and forgotten.
     EditResult batch(std::string label, const std::function<EditResult()>& body);
+    // A batch that deletes records and adds their replacements, after which
+    // what it added takes the places of what it deleted in every list of the
+    // scene and programs (records, cross-group links, folders), and the rest
+    // keeps its order: regenerating records gives the bytes a fresh build in
+    // that order would.
+    EditResult replace_in_place(std::string label, const std::function<EditResult()>& body);
+
+    // Every actor, navigation group, dummy, area and script, sorted.
+    [[nodiscard]] std::vector<MissionRecordId> record_ids() const;
+    // The record's content as canonical text, for comparing (a navigation
+    // group's cross-group links are not in it); nothing when it does not exist.
+    [[nodiscard]] std::optional<std::string> record_text(MissionRecordId record) const;
+    // Deletes any record kind (see the delete_* operations for `force`).
+    EditResult delete_record(MissionRecordId record, bool force = false);
+
+    // The component list's text (empty when the mission has none) and its
+    // replacement, one undo step like any edit.
+    [[nodiscard]] std::string components_text() const;
+    EditResult set_components_text(std::string_view text, std::string label = "Edit components");
     // A class that is `source_class` scaled: its body model scaled into a new
     // model file (<stem>_x<percent>.rpc beside it, listed in the model index),
     // a copy of its record naming that model with the box, basic collision
@@ -299,6 +329,11 @@ public:
     EditResult import_class(const std::filesystem::path& donor_package_root, std::int32_t class_id);
     EditResult import_animation(const std::filesystem::path& donor_package_root,
                                 std::int32_t animation_id);
+
+    // Replaces a generated file's content (an authoring project's build rebuilt
+    // it) outside the history: not an edit, not undone. History steps that
+    // changed the file forget that part, as it would restore stale bytes.
+    void rebase_file(std::size_t file, std::vector<std::byte> bytes);
 
     // Writes every modified file under `project.workspace_root/authored`, with
     // a change manifest, registers it in the project and saves the project.

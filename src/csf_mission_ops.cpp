@@ -2,6 +2,8 @@
 
 #include "csf/mission_recipes.hpp"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <fstream>
 #include <iterator>
@@ -29,32 +31,12 @@ struct Line {
     }
 };
 
-Line parse_line(const std::string_view line) {
+Line parse_line(const std::string_view text) {
+    auto parsed = parse_op_line(text);
     Line result;
-    std::size_t i = 0;
-    const auto skip = [&] {
-        while (i < line.size() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) ++i;
-    };
-    skip();
-    while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r') result.op.push_back(line[i++]);
-    for (skip(); i < line.size(); skip()) {
-        std::string key;
-        while (i < line.size() && line[i] != '=' && line[i] != ' ') key.push_back(line[i++]);
-        if (i >= line.size() || line[i] != '=') throw std::invalid_argument("expected key=value, got '" + key + "'");
-        ++i;
-        std::string value;
-        if (i < line.size() && line[i] == '"') {
-            for (++i; i < line.size() && line[i] != '"'; ++i) {
-                if (line[i] == '\\' && i + 1 < line.size() && (line[i + 1] == '"' || line[i + 1] == '\\')) ++i;
-                value.push_back(line[i]);
-            }
-            if (i >= line.size()) throw std::invalid_argument("unterminated string");
-            ++i;
-        } else {
-            while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r') value.push_back(line[i++]);
-        }
-        if (!result.values.emplace(key, value).second) throw std::invalid_argument("repeated " + key + "=");
-    }
+    result.op = std::move(parsed.op);
+    for (auto& [key, value] : parsed.values)
+        if (!result.values.emplace(key, std::move(value)).second) throw std::invalid_argument("repeated " + key + "=");
     return result;
 }
 
@@ -98,15 +80,7 @@ std::vector<Vec3> vec3_list(const std::string& text) {
     return values;
 }
 
-std::vector<NavPointSpec> nav_points(const std::string& text) {
-    std::vector<NavPointSpec> points;
-    for (const auto& part : split(text, ';')) {
-        const auto v = floats(part);
-        if (v.size() != 3 && v.size() != 4) throw std::invalid_argument("expected x,y,z[,rotation], got '" + part + "'");
-        points.push_back({{v[0], v[1], v[2]}, v.size() == 4 ? v[3] : 0.0F, 0.0F});
-    }
-    return points;
-}
+std::vector<NavPointSpec> nav_points(const std::string& text) { return parse_op_points(text); }
 
 std::pair<std::int32_t, std::int32_t> cell(const std::string& text) {
     const auto slash = text.find('/');
@@ -357,6 +331,103 @@ EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOpt
 
 } // namespace
 
+const std::string* OpLine::find(const std::string_view key) const {
+    const auto found = std::ranges::find(values, key, &std::pair<std::string, std::string>::first);
+    return found == values.end() ? nullptr : &found->second;
+}
+
+std::string OpLine::get(const std::string_view key, std::string fallback) const {
+    const auto* value = find(key);
+    return value ? *value : std::move(fallback);
+}
+
+void OpLine::set(const std::string_view key, std::string value) {
+    const auto found = std::ranges::find(values, key, &std::pair<std::string, std::string>::first);
+    if (found != values.end()) found->second = std::move(value);
+    else values.emplace_back(std::string(key), std::move(value));
+}
+
+void OpLine::erase(const std::string_view key) {
+    std::erase_if(values, [&](const auto& pair) { return pair.first == key; });
+}
+
+OpLine parse_op_line(const std::string_view line) {
+    OpLine result;
+    std::size_t i = 0;
+    const auto skip = [&] {
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) ++i;
+    };
+    skip();
+    while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r') result.op.push_back(line[i++]);
+    for (skip(); i < line.size(); skip()) {
+        std::string key;
+        while (i < line.size() && line[i] != '=' && line[i] != ' ') key.push_back(line[i++]);
+        if (i >= line.size() || line[i] != '=') throw std::invalid_argument("expected key=value, got '" + key + "'");
+        ++i;
+        std::string value;
+        if (i < line.size() && line[i] == '"') {
+            for (++i; i < line.size() && line[i] != '"'; ++i) {
+                if (line[i] == '\\' && i + 1 < line.size() && (line[i + 1] == '"' || line[i + 1] == '\\')) ++i;
+                value.push_back(line[i]);
+            }
+            if (i >= line.size()) throw std::invalid_argument("unterminated string");
+            ++i;
+        } else {
+            while (i < line.size() && line[i] != ' ' && line[i] != '\t' && line[i] != '\r') value.push_back(line[i++]);
+        }
+        result.values.emplace_back(std::move(key), std::move(value));
+    }
+    return result;
+}
+
+std::string format_op_line(const OpLine& line) {
+    std::string text = line.op;
+    for (const auto& [key, value] : line.values) {
+        text += ' ' + key + '=';
+        if (!value.empty() && value.find_first_of(" \t\"\\") == std::string::npos) {
+            text += value;
+            continue;
+        }
+        text += '"';
+        for (const char c : value) {
+            if (c == '"' || c == '\\') text += '\\';
+            text += c;
+        }
+        text += '"';
+    }
+    return text;
+}
+
+std::string op_number(const float value) {
+    std::array<char, 32> buffer{};
+    const auto [end, error] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    return {buffer.data(), end};
+}
+
+std::string op_vec3(const Vec3 value) {
+    return op_number(value.x) + ',' + op_number(value.y) + ',' + op_number(value.z);
+}
+
+std::string op_points(const std::vector<NavPointSpec>& points) {
+    std::string text;
+    for (const auto& point : points) {
+        if (!text.empty()) text += ';';
+        text += op_vec3(point.position);
+        if (point.rotation_radians != 0.0F) text += ',' + op_number(point.rotation_radians);
+    }
+    return text;
+}
+
+std::vector<NavPointSpec> parse_op_points(const std::string_view text) {
+    std::vector<NavPointSpec> points;
+    for (const auto& part : split(std::string(text), ';')) {
+        const auto v = floats(part);
+        if (v.size() != 3 && v.size() != 4) throw std::invalid_argument("expected x,y,z[,rotation], got '" + part + "'");
+        points.push_back({{v[0], v[1], v[2]}, v.size() == 4 ? v[3] : 0.0F, 0.0F});
+    }
+    return points;
+}
+
 std::vector<MissionOpOutcome> run_mission_ops(MissionEditor& editor, const std::string_view text,
                                               const MissionOpsOptions& options) {
     std::vector<MissionOpOutcome> outcomes;
@@ -390,6 +461,200 @@ std::vector<MissionOpOutcome> run_mission_ops(MissionEditor& editor, const std::
                             {false, "objective, kit or shot lines were not followed by their objectives, equipment or "
                                     "intro line", {}}});
     return outcomes;
+}
+
+} // namespace csf
+
+namespace csf {
+namespace {
+
+void set_id(OpLine& line, const std::string_view key, const std::optional<std::int32_t> id) {
+    if (id) line.set(key, std::to_string(*id));
+}
+
+void set_text(OpLine& line, const std::string_view key, const std::string& value) {
+    if (!value.empty()) line.set(key, value);
+}
+
+// id= name= class= [pos=] [heading=] [pitch=] [portrait=]
+void set_actor(OpLine& line, const ActorSpec& actor, const bool with_position) {
+    set_id(line, "id", actor.id);
+    line.set("name", actor.name);
+    line.set("class", std::to_string(actor.class_id));
+    if (with_position) line.set("pos", op_vec3(actor.placement.position));
+    if (actor.placement.heading_degrees != 0.0F) line.set("heading", op_number(actor.placement.heading_degrees));
+    if (actor.placement.pitch_degrees != 0.0F) line.set("pitch", op_number(actor.placement.pitch_degrees));
+    if (actor.portrait) line.set("portrait", *actor.portrait);
+}
+
+void set_route(OpLine& line, const RouteSpec& route) {
+    set_id(line, "route", route.id);
+    line.set("route-name", route.name);
+    line.set("points", op_points(route.points));
+}
+
+void set_script(OpLine& line, const ScriptSpec& script, const std::string_view id_key = "script",
+                const std::string_view name_key = "script-name") {
+    set_id(line, id_key, script.id);
+    set_text(line, name_key, script.name);
+}
+
+std::string lines(const std::vector<OpLine>& values) {
+    std::string text;
+    for (const auto& value : values) text += format_op_line(value) + '\n';
+    return text;
+}
+
+} // namespace
+
+std::string ops_text(const GuardPatrol& recipe) {
+    OpLine line{"guard-patrol", {}};
+    set_actor(line, recipe.actor, false);
+    set_route(line, recipe.route);
+    line.set("pause", op_number(recipe.pause_seconds));
+    set_id(line, "cover", recipe.cover_group);
+    set_script(line, recipe.script);
+    if (!recipe.route.loop) line.set("loop", "0");
+    return lines({line});
+}
+
+std::string ops_text(const GuardIdle& recipe) {
+    OpLine line{"guard-idle", {}};
+    set_actor(line, recipe.actor, true);
+    set_id(line, "cover", recipe.cover_group);
+    set_script(line, recipe.script);
+    std::string loop;
+    for (const auto& step : recipe.loop) {
+        if (!loop.empty()) loop += ',';
+        loop += std::to_string(step.animation);
+        if (step.random_cycles)
+            loop += ':' + op_number(step.random_cycles->first) + '-' + op_number(step.random_cycles->second);
+    }
+    line.set("loop", loop);
+    return lines({line});
+}
+
+std::string ops_text(const AnimalPatrol& recipe) {
+    OpLine line{"animal-patrol", {}};
+    set_actor(line, recipe.actor, true);
+    set_route(line, recipe.route);
+    line.set("walk", std::to_string(recipe.walk_animation));
+    set_script(line, recipe.script);
+    if (!recipe.route.loop) line.set("loop", "0");
+    return lines({line});
+}
+
+std::string ops_text(const CoverGroup& recipe) {
+    OpLine line{"cover-group", {}};
+    set_id(line, "id", recipe.id);
+    line.set("name", recipe.name);
+    line.set("points", op_points(recipe.points));
+    return lines({line});
+}
+
+std::string ops_text(const WalkGrid& recipe) {
+    OpLine line{"walk-grid", {}};
+    set_id(line, "id", recipe.id);
+    line.set("name", recipe.name);
+    line.set("spacing", op_number(recipe.spacing));
+    line.set("x", op_number(recipe.min_x) + ".." + op_number(recipe.max_x));
+    line.set("z", op_number(recipe.min_z) + ".." + op_number(recipe.max_z));
+    if (!recipe.stagger) line.set("stagger", "0");
+    std::string boxes, circles;
+    for (const auto& box : recipe.excluded_boxes)
+        boxes += (boxes.empty() ? "" : ";") + op_number(box[0]) + ',' + op_number(box[1]) + ',' + op_number(box[2]) + ',' +
+                 op_number(box[3]);
+    for (const auto& circle : recipe.avoided_circles)
+        circles += (circles.empty() ? "" : ";") + op_number(circle[0]) + ',' + op_number(circle[1]) + ',' +
+                   op_number(circle[2]);
+    set_text(line, "exclude", boxes);
+    set_text(line, "avoid", circles);
+    return lines({line});
+}
+
+std::string ops_text(const Objectives& recipe) {
+    std::vector<OpLine> values;
+    for (const auto& objective : recipe.objectives) {
+        OpLine line{"objective", {}};
+        line.set("n", std::to_string(objective.number));
+        line.set("kind", objective.kind == Objective::Kind::enter_zone  ? "zone"
+                         : objective.kind == Objective::Kind::kill_actor ? "kill"
+                                                                         : "use");
+        line.set("target", std::to_string(objective.target));
+        line.set("label", objective.label);
+        line.set("done", objective.done);
+        set_text(line, "prompt", objective.prompt);
+        if (objective.secondary) line.set("secondary", "1");
+        set_script(line, objective.script);
+        values.push_back(std::move(line));
+    }
+    OpLine end{"objectives", {}};
+    set_script(end, recipe.setup, "setup", "setup-name");
+    end.set("success", recipe.success_message);
+    end.set("pause", op_number(recipe.success_pause));
+    values.push_back(std::move(end));
+    return lines(values);
+}
+
+std::string ops_text(const Equipment& recipe) {
+    std::vector<OpLine> values;
+    for (const auto& kit : recipe.kits) {
+        OpLine line{"kit", {}};
+        line.set("actor", std::to_string(kit.actor));
+        std::string weapons;
+        for (const auto& weapon : kit.weapons) {
+            if (!weapons.empty()) weapons += ',';
+            weapons += std::to_string(weapon.weapon_class);
+            if (weapon.ammunition)
+                weapons += '@' + op_number(weapon.ammunition->first) + '/' + op_number(weapon.ammunition->second);
+        }
+        line.set("weapons", weapons);
+        set_id(line, "select", kit.selected);
+        set_id(line, "disguise", kit.disguise);
+        values.push_back(std::move(line));
+    }
+    OpLine end{"equipment", {}};
+    set_script(end, recipe.script);
+    values.push_back(std::move(end));
+    return lines(values);
+}
+
+std::string ops_text(const Tips& recipe) {
+    OpLine line{"tips", {}};
+    std::string tips;
+    for (const auto& tip : recipe.tips) tips += (tips.empty() ? "" : ",") + tip;
+    line.set("tips", tips);
+    line.set("pos", op_number(recipe.position.first) + ',' + op_number(recipe.position.second));
+    set_script(line, recipe.script);
+    return lines({line});
+}
+
+std::string ops_text(const IntroCutscene& recipe) {
+    std::vector<OpLine> values;
+    for (const auto& shot : recipe.shots) {
+        OpLine line{"shot", {}};
+        line.set("camera", op_vec3(shot.camera));
+        line.set("end", op_vec3(shot.camera_end));
+        line.set("target", op_vec3(shot.target));
+        line.set("seconds", op_number(shot.seconds));
+        if (shot.aim) line.set("aim", op_number(shot.aim->first) + ',' + op_number(shot.aim->second));
+        if (shot.heading) line.set("heading", op_number(*shot.heading));
+        if (shot.speed) line.set("speed", op_number(*shot.speed));
+        values.push_back(std::move(line));
+    }
+    OpLine end{"intro", {}};
+    end.set("class", std::to_string(recipe.camera_class));
+    if (!recipe.send_init) end.set("send-init", "0");
+    set_id(end, "dummy", recipe.first_dummy);
+    set_id(end, "actor", recipe.first_actor);
+    set_id(end, "group", recipe.first_group);
+    set_script(end, recipe.intro);
+    if (std::ranges::all_of(recipe.cutscene_ids, [](const auto& id) { return id.has_value(); }))
+        end.set("cutscene", std::to_string(*recipe.cutscene_ids[0]) + ',' + std::to_string(*recipe.cutscene_ids[1]) + ',' +
+                                std::to_string(*recipe.cutscene_ids[2]) + ',' + std::to_string(*recipe.cutscene_ids[3]));
+    end.set("cutscene-name", recipe.cutscene_name);
+    values.push_back(std::move(end));
+    return lines(values);
 }
 
 } // namespace csf

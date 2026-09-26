@@ -99,7 +99,9 @@ void compute(AppState& state, const std::string& query, const UiState::PaletteMo
         }
     }
     if (!query.empty() || mode == UiState::PaletteMode::go_to) {
-        for (auto& result : state.search_index.query(query, 60)) {
+        // Mission mode looks for gameplay records first; Inspect keeps file order.
+        const bool gameplay_first = mode_of(state.workspace) != Mode::inspect;
+        for (auto& result : state.search_index.query(query, 60, gameplay_first)) {
             Row row;
             row.entry = result.entry;
             row.score = result.score;

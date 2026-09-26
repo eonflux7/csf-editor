@@ -15,6 +15,8 @@ How to use the tools, from first run to authoring.
   `rws-corpus`, with the mission-graph and inspection modes.
 - [GUI usage](guides/gui.md) — workspaces, Explorer, Inspector,
   viewport and markers, settings, and camera controls.
+- [UI tests](guides/ui-tests.md) — `rws-man --run-script` scenario scripts, the
+  fixture mission, reference screenshots and `./test.sh --ui`.
 - [Geometry and scene export](guides/export.md) — OBJ and glTF output, manifests,
   and coordinate conversion.
 - [Mission editor](guides/mission-editor.md) — editing missions, project files,
@@ -31,6 +33,8 @@ Active plans; each moves to [`archive/`](archive/) when it ships.
 - [Hello-world mission](plans/hello-world-mission.md) — a new Blender-built
   world with vanilla props, actors and scripts, plus the asset store, mission
   flow view and scene editor it needs.
+- [Mission editor UI/UX redesign](plans/editor-ux-redesign.md) — the GUI
+  rebuilt around creating a mission end to end, plus a UI test harness.
 
 ## Game knowledge
 

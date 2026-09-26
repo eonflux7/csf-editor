@@ -10,16 +10,21 @@
 #else
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
+#include "authoring.hpp"
 #include "app_actions.hpp"
+#include "mission_editing.hpp"
 
 #include "app_util.hpp"
+#include "commands.hpp"
 #include "file_dialogs.hpp"
 #include "mission_loader.hpp"
 #include "mission_overlays.hpp"
 #include "navigation.hpp"
+#include "viewport_tools.hpp"
 #include "rws/decoded.hpp"
 #include "rws/obj_export.hpp"
 #include "rws/scene_export.hpp"
@@ -171,7 +176,8 @@ std::filesystem::path next_screenshot_path(const AppState& state) {
 
 void restore_mission_overlays(AppState& state) {
     if (!state.mission.scene) return;
-    const auto overlays = make_mission_overlays(*state.mission.scene);
+    auto overlays = make_mission_overlays(*state.mission.scene, state.mission.objects.get());
+    append_placement_overlays(state, overlays);
     state.preview.set_mission_overlays(overlays);
 }
 
@@ -301,7 +307,7 @@ void open_pairing(AppState& state, const RecentPairing& pairing) {
 
 void start_mission_load(AppState& state, const std::filesystem::path& path,
                         std::optional<std::filesystem::path> project, const bool discard) {
-    if (!discard && state.mission.editor && state.mission.editor->dirty()) {
+    if (!discard && edits_unsaved(state)) {
         state.ui.pending_discard = [&state, path, project] { start_mission_load(state, path, project, true); };
         state.ui.pending_discard_label = "Loading " + path_utf8(path.filename());
         return;
@@ -355,6 +361,7 @@ void poll_mission_load(AppState& state) {
             textures.add(csf::read_txl(mission.editor->files()[*file].raw, mission.editor->package_path(*file)),
                          mission.resources);
     state.preview.set_texture_catalog(std::move(textures));
+    append_placement_overlays(state, result->overlays);
     state.preview.set_mission_overlays(result->overlays);
     state.preview.set_mission_actor_models(std::move(result->actor_models));
     state.display_names = resolve_chunk_display_names(
@@ -370,7 +377,11 @@ void poll_mission_load(AppState& state) {
     state.ui.hex_highlight.reset();
     rebuild_search_index(state);
     rebuild_diagnostics(state);
-    state.settings.add_recent_file(result->input, true);
+    // A project reopens as the project (its folder), not as the shipped scene.
+    const auto recent = state.authoring.project ? state.authoring.project->directory
+                        : mission.project        ? mission.project->workspace_root
+                                                 : result->input;
+    state.settings.add_recent_file(recent, true);
     state.settings_dirty = true;
 
     state.log.push(state.collision_document ? LogLevel::info : LogLevel::warn,
@@ -381,7 +392,10 @@ void poll_mission_load(AppState& state) {
     // Logged last: the status bar shows the newest log line, and the warning count
     // already has its own status segment.
     char seconds[16];
-    std::snprintf(seconds, sizeof(seconds), "%.2f", result->seconds);
+    if (state.ui.deterministic)
+        std::snprintf(seconds, sizeof(seconds), "-");
+    else
+        std::snprintf(seconds, sizeof(seconds), "%.2f", result->seconds);
     state.ok("Loaded mission " + path_utf8(mission.graph->scene_path()) + " (" + seconds + " s, " +
              std::to_string(count_chunks(state.document->chunks(), 0x10)) + " clumps, " +
              std::to_string(mission.scene->actors().size()) + " actors, " +
@@ -389,7 +403,21 @@ void poll_mission_load(AppState& state) {
 }
 
 void open_path(AppState& state, const std::filesystem::path& path) {
-    if (lower_ascii(path_utf8(path.extension())) == ".scn")
+    // A project opens from its folder, its project.csfproj, or a mission
+    // project workspace (the folder with .csf-mission): dropped, recent, or on
+    // the command line.
+    std::error_code error;
+    const auto extension = lower_ascii(path_utf8(path.extension()));
+    if (extension == ".csfproj") return open_mission_project(state, path.parent_path());
+    if (std::filesystem::is_directory(path, error)) {
+        if (std::filesystem::is_regular_file(path / "project.csfproj", error) ||
+            csf::read_mission_project_info(path))
+            return open_mission_project(state, path);
+        return state.notify(LogLevel::error, "Cannot open " + path_utf8(path) +
+                                                 ": the folder is neither an authoring project (project.csfproj) "
+                                                 "nor a mission project");
+    }
+    if (extension == ".scn")
         start_mission_load(state, path);
     else
         load_document(state, path);
@@ -452,6 +480,66 @@ void open_folder(const std::filesystem::path& folder) {
     }
     if (child > 0)
         while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {}
+#endif
+}
+
+bool launch_detached(const std::vector<std::string>& arguments) {
+    if (arguments.empty()) return false;
+#ifdef _WIN32
+    std::wstring command;
+    for (const auto& argument : arguments) {
+        const auto wide = std::filesystem::path(std::u8string(argument.begin(), argument.end())).wstring();
+        command += (command.empty() ? L"\"" : L" \"") + wide + L"\"";
+    }
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS, nullptr, nullptr, &startup,
+                        &process))
+        return false;
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return true;
+#else
+    // As open_folder: a double fork, so the program is init's child and no zombie is left.
+    std::vector<char*> argv;
+    for (const auto& argument : arguments) argv.push_back(const_cast<char*>(argument.c_str()));
+    argv.push_back(nullptr);
+    int pipe_ends[2];
+    if (pipe(pipe_ends) != 0) return false;
+    const pid_t child = fork();
+    if (child == 0) {
+        close(pipe_ends[0]);
+        setsid();
+        if (fork() == 0) {
+            fcntl(pipe_ends[1], F_SETFD, FD_CLOEXEC);
+            execvp(argv[0], argv.data());
+            const char failed = 1;
+            (void)!write(pipe_ends[1], &failed, 1);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    close(pipe_ends[1]);
+    if (child > 0)
+        while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {}
+    // The grandchild writes a byte only when exec failed; exec closes the pipe.
+    char failed = 0;
+    const auto read_bytes = read(pipe_ends[0], &failed, 1);
+    close(pipe_ends[0]);
+    return child > 0 && read_bytes == 0;
+#endif
+}
+
+std::filesystem::path executable_directory() {
+#ifdef _WIN32
+    std::wstring buffer(32768, L'\0');
+    const auto size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    buffer.resize(size);
+    return std::filesystem::path(buffer).parent_path();
+#else
+    std::error_code error;
+    return std::filesystem::read_symlink("/proc/self/exe", error).parent_path();
 #endif
 }
 

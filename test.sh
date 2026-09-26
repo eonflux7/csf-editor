@@ -4,6 +4,7 @@ set -euo pipefail
 config=Release
 core_only=0
 no_build=0
+ui=0
 
 usage() {
     cat <<'EOF'
@@ -13,6 +14,8 @@ Options:
   -c, --config <Debug|Release>  Configuration to test (default: Release)
       --core-only               Test the core targets only
       --no-build                Run tests without rebuilding the test executable
+      --ui                      Also build rws-man and run the UI tests (label ui;
+                                under xvfb-run when there is no display)
   -h, --help                    Show this help
 EOF
 }
@@ -29,6 +32,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-build)
             no_build=1
+            shift
+            ;;
+        --ui)
+            ui=1
             shift
             ;;
         -h|--help)
@@ -51,6 +58,11 @@ case "$config" in
         ;;
 esac
 
+if [[ $core_only -eq 1 && $ui -eq 1 ]]; then
+    echo "--ui needs the GUI build; drop --core-only" >&2
+    exit 2
+fi
+
 if [[ $core_only -eq 1 ]]; then
     configure_preset=linux-core
     build_directory=build-core
@@ -67,7 +79,13 @@ if [[ ! -f "$build_directory/CMakeCache.txt" ]]; then
 fi
 
 if [[ $no_build -eq 0 ]]; then
-    cmake --build --preset "$test_preset" --target rws_core_tests --parallel
+    targets=(rws_core_tests csf_authoring_tests fake_pakman)
+    [[ $ui -eq 1 ]] && targets+=(rws-man rwsman_ui_fixture)
+    cmake --build --preset "$test_preset" --target "${targets[@]}" --parallel
 fi
 
-ctest --preset "$test_preset"
+if [[ $ui -eq 1 ]]; then
+    ctest --preset "$test_preset"
+else
+    ctest --preset "$test_preset" --label-exclude ui
+fi

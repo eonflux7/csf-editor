@@ -5,7 +5,10 @@ param(
 
     [switch]$CoreOnly,
 
-    [switch]$NoBuild
+    [switch]$NoBuild,
+
+    # Also build rws-man and run the UI tests (label ui).
+    [switch]$Ui
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,6 +32,10 @@ $testPreset = $presetPrefix + $Config.ToLowerInvariant()
 $buildDirectory = if ($CoreOnly) { 'build-core' } else { 'build' }
 $cachePath = Join-Path $PSScriptRoot "$buildDirectory/CMakeCache.txt"
 
+if ($CoreOnly -and $Ui) {
+    throw '-Ui needs the GUI build; drop -CoreOnly.'
+}
+
 Push-Location $PSScriptRoot
 try {
     if (-not (Test-Path -LiteralPath $cachePath)) {
@@ -36,12 +43,17 @@ try {
     }
 
     if (-not $NoBuild) {
-        Invoke-Native 'cmake' @(
-            '--build', '--preset', $testPreset, '--target', 'rws_core_tests', '--parallel'
-        )
+        $targets = @('rws_core_tests', 'csf_authoring_tests', 'fake_pakman')
+        if ($Ui) { $targets += @('rws-man', 'rwsman_ui_fixture') }
+        Invoke-Native 'cmake' (@('--build', '--preset', $testPreset, '--target') + $targets + @('--parallel'))
     }
 
-    Invoke-Native 'ctest' @('--preset', $testPreset)
+    if ($Ui) {
+        Invoke-Native 'ctest' @('--preset', $testPreset)
+    }
+    else {
+        Invoke-Native 'ctest' @('--preset', $testPreset, '--label-exclude', 'ui')
+    }
 }
 finally {
     Pop-Location

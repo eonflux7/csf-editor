@@ -57,6 +57,59 @@ int kind_weight(const SymbolKind kind) {
     }
 }
 
+// Extra weight in Mission mode: what an author looks for comes first.
+int gameplay_weight(const SymbolKind kind) {
+    switch (kind) {
+    case SymbolKind::actor:
+    case SymbolKind::area:
+    case SymbolKind::navigation_group:
+    case SymbolKind::script:
+    case SymbolKind::dummy:
+    case SymbolKind::class_record:
+        return 60;
+    case SymbolKind::navigation_point:
+    case SymbolKind::light:
+    case SymbolKind::effect:
+    case SymbolKind::variable:
+    case SymbolKind::animation:
+        return 20;
+    case SymbolKind::chunk:
+    case SymbolKind::instance:
+    case SymbolKind::resource:
+    case SymbolKind::scene_object:
+        return -40;
+    case SymbolKind::count:
+        break;
+    }
+    return 0;
+}
+
+// "actor:" and the other kind prefixes of a query: the kinds they allow.
+std::optional<std::vector<SymbolKind>> prefix_kinds(const std::string_view prefix) {
+    using K = SymbolKind;
+    static const std::pair<std::string_view, std::vector<SymbolKind>> table[]{
+        {"actor", {K::actor}},
+        {"zone", {K::area}},
+        {"area", {K::area}},
+        {"route", {K::navigation_group, K::navigation_point}},
+        {"nav", {K::navigation_group, K::navigation_point}},
+        {"marker", {K::dummy}},
+        {"dummy", {K::dummy}},
+        {"light", {K::light}},
+        {"effect", {K::effect}},
+        {"script", {K::script}},
+        {"variable", {K::variable}},
+        {"class", {K::class_record}},
+        {"animation", {K::animation}},
+        {"chunk", {K::chunk}},
+        {"instance", {K::instance}},
+        {"resource", {K::resource}},
+    };
+    for (const auto& [name, kinds] : table)
+        if (name == prefix) return kinds;
+    return std::nullopt;
+}
+
 } // namespace
 
 const char* symbol_kind_name(const SymbolKind kind) noexcept {
@@ -118,12 +171,23 @@ bool SearchIndex::contains(const std::size_t index, const std::string_view needl
     return needle.empty() || (index < lowered_.size() && lowered_[index].find(needle) != std::string::npos);
 }
 
-std::vector<SearchResult> SearchIndex::query(const std::string_view raw,
-                                             const std::size_t limit) const {
+std::vector<SearchResult> SearchIndex::query(const std::string_view raw, const std::size_t limit,
+                                             const bool gameplay_first) const {
     std::vector<SearchResult> results;
-    const auto text = trim(raw);
-    if (text.empty() || limit == 0) return results;
+    auto text = trim(raw);
+    std::optional<std::vector<SymbolKind>> only;
+    if (const auto colon = text.find(':'); colon != std::string_view::npos && colon > 0) {
+        if (auto kinds = prefix_kinds(lower(std::string(text.substr(0, colon))))) {
+            only = std::move(kinds);
+            text = trim(text.substr(colon + 1));
+        }
+    }
+    if (limit == 0 || (text.empty() && !only)) return results;
     const auto finish = [&] {
+        if (only)
+            std::erase_if(results, [&](const SearchResult& r) { return std::ranges::find(*only, r.entry->kind) == only->end(); });
+        if (gameplay_first)
+            for (auto& result : results) result.score += gameplay_weight(result.entry->kind);
         std::ranges::stable_sort(results, std::greater{}, &SearchResult::score);
         if (results.size() > limit) results.resize(limit);
         return results;
@@ -144,6 +208,12 @@ std::vector<SearchResult> SearchIndex::query(const std::string_view raw,
         return finish();
     }
 
+    if (text.empty()) {
+        // "actor:" alone lists every entry of the kind.
+        for (const auto& kind : *only)
+            for (const auto index : indices_of(kind)) results.push_back({&entries_[index], 0, {}});
+        return finish();
+    }
     const bool explicit_id = text.front() == '#';
     if (const auto number = parse_decimal(explicit_id ? text.substr(1) : text)) {
         for (const auto& entry : entries_)

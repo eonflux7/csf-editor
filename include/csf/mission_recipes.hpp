@@ -179,6 +179,12 @@ EditResult add_guard_patrol(MissionEditor& editor, GuardPatrol recipe);
 EditResult add_guard_idle(MissionEditor& editor, GuardIdle recipe);
 EditResult add_animal_patrol(MissionEditor& editor, AnimalPatrol recipe);
 EditResult add_cover_group(MissionEditor& editor, const CoverGroup& recipe, std::int32_t* new_id = nullptr);
+// The walk grid's points (IDs 1..n in order) and links, as add_walk_grid makes them (and a preview shows them).
+struct WalkGridLayout {
+    std::vector<NavPointSpec> points;
+    std::vector<std::pair<std::int32_t, std::int32_t>> links;
+};
+[[nodiscard]] WalkGridLayout walk_grid_layout(const WalkGrid& recipe);
 EditResult add_walk_grid(MissionEditor& editor, const WalkGrid& recipe, std::int32_t* new_id = nullptr);
 // Links every point of `group` to the nearest point of `target` (in XZ),
 // as routes join the walking grid.

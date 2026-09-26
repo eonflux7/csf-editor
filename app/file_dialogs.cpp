@@ -4,6 +4,7 @@
 #endif
 
 #include "file_dialogs.hpp"
+#include "project_actions.hpp"
 
 #include "app_actions.hpp"
 #include "app_util.hpp"
@@ -90,6 +91,18 @@ void request_file_dialog(AppState& state, const DialogKind kind, const std::file
     case DialogKind::import_donor:
         pending->folder = std::make_unique<pfd::select_folder>("Choose an unpacked mission to import from", start);
         break;
+    case DialogKind::blender:
+        pending->file = std::make_unique<pfd::open_file>("Choose the Blender executable", start,
+                                                         std::vector<std::string>{"All files", "*"});
+        break;
+    case DialogKind::test_install:
+        pending->folder = std::make_unique<pfd::select_folder>("Choose the test install (a game folder)", start);
+        break;
+    case DialogKind::original_archive:
+        pending->file = std::make_unique<pfd::open_file>(
+            "Choose the untouched shipped archive", start,
+            std::vector<std::string>{"Archives", "*.pak", "All files", "*"});
+        break;
     case DialogKind::export_original:
         pending->file = std::make_unique<pfd::open_file>(
             "Choose the shipped mission archive", start,
@@ -155,6 +168,16 @@ void poll_file_dialogs(AppState& state) {
         break;
     case DialogKind::import_donor:
         copy_path(state.ui.import_donor, chosen);
+        break;
+    case DialogKind::blender:
+        state.settings.blender = chosen;
+        state.settings_dirty = true;
+        break;
+    case DialogKind::test_install:
+        set_test_install(state, chosen);
+        break;
+    case DialogKind::original_archive:
+        set_original_archive(state, state.ui.original_archive_for, chosen);
         break;
     case DialogKind::export_original:
         copy_path(state.ui.export_original, chosen);

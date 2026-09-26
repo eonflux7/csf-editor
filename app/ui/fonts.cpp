@@ -19,13 +19,16 @@ namespace {
 #include "ui/fonts/lucide_subset.inc"
 
 // Sizes at 100% UI scale. IosevkaTerm is narrow, so it matches Inter's line
-// height at the same size while fitting more hex and IDs per column.
-constexpr float sans_size = 16.0F;
-constexpr float mono_size = 15.0F;
-constexpr float icon_size = 15.0F;
-constexpr float title_size = 26.0F;
+// height at the same size while fitting more hex and IDs per column. The type
+// scale (docs/plans/editor-ux-redesign.md, V2) is caption, body (and the bold
+// body for headings) and title.
+constexpr float sans_size = 15.0F;
+constexpr float mono_size = 14.0F;
+constexpr float icon_size = 14.0F;
+constexpr float title_size = 24.0F;
+constexpr float caption_size = 13.0F;
 
-ImFont* fonts[4]{};
+ImFont* fonts[5]{};
 float applied_os_scale = 0.0F, applied_framebuffer_scale = 0.0F, applied_user_scale = 0.0F;
 float current_scale = 1.0F;
 
@@ -102,6 +105,10 @@ bool update_fonts_and_style(GLFWwindow* window, const float user_scale) {
     merge_icons(io, icon_size * raster);
     fonts[static_cast<int>(Font::title)] =
         add_text_font(io, inter_semibold_compressed_data_base85, title_size * raster);
+    merge_icons(io, title_size * 0.85F * raster);
+    fonts[static_cast<int>(Font::caption)] =
+        add_text_font(io, inter_regular_compressed_data_base85, caption_size * raster);
+    merge_icons(io, caption_size * raster);
     io.FontDefault = fonts[static_cast<int>(Font::sans)];
     io.FontGlobalScale = 1.0F / fb_scale;
     io.Fonts->Build();

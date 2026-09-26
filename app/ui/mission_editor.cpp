@@ -1,5 +1,6 @@
-// Mission editing UI: the Edit section of the Inspector, the Changes panel
-// (project, history, mission properties, adding and importing), and the export
+// Mission editing UI: the record edit cards (Properties and the Inspector's
+// Edit section), the Mission mode panels (History, Mission settings, Assets,
+// Behaviours, Objectives, Intro cutscene, Flow, Texts, Build), and the export
 // and unsaved-edits dialogs. Every change goes through csf::MissionEditor via
 // mission_editing.hpp; nothing here writes files directly.
 #include "app_state.hpp"
@@ -7,11 +8,15 @@
 
 #include "app_actions.hpp"
 #include "app_util.hpp"
+#include "authoring.hpp"
 #include "commands.hpp"
 #include "file_dialogs.hpp"
 #include "mission_authoring.hpp"
+#include "references.hpp"
 #include "mission_editing.hpp"
 #include "navigation.hpp"
+#include "rwsman/entity_kind.hpp"
+#include "viewport_tools.hpp"
 #include "ui/fonts.hpp"
 #include "ui/icons.hpp"
 #include "ui/property_grid.hpp"
@@ -222,144 +227,174 @@ csf::MissionEditor& editor(AppState& state) { return *state.mission.editor; }
 
 void record_buttons(AppState& state, const bool duplicable) {
     if (duplicable) {
-        if (ImGui::Button((std::string(icons::LC_COPY) + " Duplicate").c_str())) duplicate_selected_record(state);
+        if (secondary_button((std::string(icons::LC_COPY) + " Duplicate").c_str())) duplicate_selected_record(state);
         ImGui::SameLine();
     }
-    if (ImGui::Button((std::string(icons::LC_TRASH) + " Delete").c_str())) delete_selected_record(state, false);
+    if (danger_button((std::string(icons::LC_TRASH) + " Delete").c_str())) delete_selected_record(state, false);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Refuses while scripts reference the record; Shift+Delete forces");
 }
 
 void draw_actor_editor(AppState& state, const csf::MissionActor& actor) {
     const auto id = *actor.id;
-    if (begin_fields("##actor_fields")) {
-        std::string name;
-        if (text_field("name", actor.name.value_or(""), name))
-            apply_mission_edit(state, editor(state).set_actor_name(id, name));
-        csf::Vec3 position = actor.position.value_or(csf::Vec3{});
-        if (vec3_field("position", position, position))
-            apply_mission_edit(state, editor(state).set_actor_placement(
-                                          id, {position, actor.heading.value_or(0), actor.pitch.value_or(0)}));
-        float heading = actor.heading.value_or(0);
-        if (float_field("heading", heading, heading, 0.5F, "%.1f deg"))
-            apply_mission_edit(state, editor(state).set_actor_placement(
-                                          id, {position, heading, actor.pitch.value_or(0)}));
-        float pitch = actor.pitch.value_or(0);
-        if (float_field("pitch", pitch, pitch, 0.5F, "%.1f deg"))
-            apply_mission_edit(state, editor(state).set_actor_placement(id, {position, heading, pitch}));
-        begin_row("class");
-        if (const auto picked = filtered_combo("##class", class_label(state, actor.class_id), class_items(state)))
-            apply_mission_edit(state, editor(state).set_actor_class(id, *picked));
-        begin_row("model");
-        if (const auto picked = filtered_combo("##model", model_label(state, actor.class_id), model_items(state)))
-            apply_mission_edit(state, editor(state).set_actor_look(id, *picked));
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Another class's model; the actor keeps its behaviour (uses a copy of its class)");
-        begin_row("faction");
-        static const std::vector<std::pair<std::string, std::string>> factions{
-            {"", "(none)"}, {"NEUTRO", "NEUTRO"}, {"ALEMAN", "ALEMAN"}, {"ALIADO", "ALIADO"}};
-        if (const auto picked = filtered_combo("##faction", actor.faction.value_or("(none)"), factions))
-            apply_mission_edit(state, editor(state).set_actor_faction(
-                                          id, picked->empty() ? std::nullopt : std::optional{*picked}));
-        int value{};
-        if (int_field("collision", actor.collision.value_or(0), value))
-            apply_mission_edit(state, editor(state).set_actor_integer(id, ".COLISION", value));
-        if (int_field("flags", static_cast<int>(actor.flags.value_or(0)), value))
-            apply_mission_edit(state, editor(state).set_actor_integer(id, ".FLAGS", value));
-        if (int_field("2nd explosion", actor.secondary_explosion.value_or(0), value))
-            apply_mission_edit(state, editor(state).set_actor_integer(id, ".SEGUNDA_EXPLOSION", value));
-        ImGui::EndTable();
+    csf::Vec3 position = actor.position.value_or(csf::Vec3{});
+    float heading = actor.heading.value_or(0);
+    if (begin_card("##transform", "Transform", {icons::LC_MOVE_3D})) {
+        if (begin_fields("##actor_transform")) {
+            if (vec3_field("position", position, position))
+                apply_mission_edit(state, editor(state).set_actor_placement(
+                                              id, {position, actor.heading.value_or(0), actor.pitch.value_or(0)}));
+            if (float_field("heading", heading, heading, 0.5F, "%.1f deg"))
+                apply_mission_edit(state, editor(state).set_actor_placement(
+                                              id, {position, heading, actor.pitch.value_or(0)}));
+            float pitch = actor.pitch.value_or(0);
+            if (float_field("pitch", pitch, pitch, 0.5F, "%.1f deg"))
+                apply_mission_edit(state, editor(state).set_actor_placement(id, {position, heading, pitch}));
+            ImGui::EndTable();
+        }
+        end_card();
+    }
+
+    if (begin_card("##identity", "Identity", {icons::LC_USER})) {
+        if (begin_fields("##actor_identity")) {
+            std::string name;
+            if (text_field("name", actor.name.value_or(""), name))
+                apply_mission_edit(state, editor(state).set_actor_name(id, name));
+            begin_row("class");
+            if (const auto picked = filtered_combo("##class", class_label(state, actor.class_id), class_items(state)))
+                apply_mission_edit(state, editor(state).set_actor_class(id, *picked));
+            begin_row("model");
+            if (const auto picked = filtered_combo("##model", model_label(state, actor.class_id), model_items(state)))
+                apply_mission_edit(state, editor(state).set_actor_look(id, *picked));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Another class's model; the actor keeps its behaviour (uses a copy of its class)");
+            begin_row("faction");
+            static const std::vector<std::pair<std::string, std::string>> factions{
+                {"", "(none)"}, {"NEUTRO", "NEUTRO"}, {"ALEMAN", "ALEMAN"}, {"ALIADO", "ALIADO"}};
+            if (const auto picked = filtered_combo("##faction", actor.faction.value_or("(none)"), factions))
+                apply_mission_edit(state, editor(state).set_actor_faction(
+                                              id, picked->empty() ? std::nullopt : std::optional{*picked}));
+            ImGui::EndTable();
+        }
+        const bool player = state.mission.scene->player().active_player == actor.id;
+        ImGui::BeginDisabled(player);
+        if (secondary_button(player ? "Starting player" : "Make starting player"))
+            apply_mission_edit(state, editor(state).set_player_actor(id));
+        ImGui::EndDisabled();
+        end_card();
     }
 
     // Per-actor scripts: non-trigger scripts run with THIS = this actor.
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Scripts");
-    const auto choices = editor(state).actor_script_choices();
-    auto scripts = actor.script_ids;
-    for (std::size_t i = 0; i < scripts.size(); ++i) {
-        ImGui::PushID(static_cast<int>(i));
-        const auto choice = std::ranges::find(choices, scripts[i], &std::pair<std::int32_t, std::string>::first);
-        ImGui::BulletText("%d  %s", scripts[i], choice == choices.end() ? "(unknown)" : choice->second.c_str());
-        ImGui::SameLine();
-        if (ImGui::SmallButton(icons::LC_X)) {
-            auto updated = scripts;
-            updated.erase(updated.begin() + static_cast<std::ptrdiff_t>(i));
-            apply_mission_edit(state, editor(state).set_actor_scripts(id, updated));
+    if (begin_card("##scripts", "Scripts", {icons::LC_SCROLL_TEXT, {}, nullptr,
+                                            "Scripts that run with THIS = this actor. Behaviours in the "
+                                            "Behaviours panel write the actor, its route and its script "
+                                            "together."})) {
+        const auto choices = editor(state).actor_script_choices();
+        auto scripts = actor.script_ids;
+        if (scripts.empty()) dim_text("No scripts: the actor stands still.");
+        for (std::size_t i = 0; i < scripts.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            const auto choice =
+                std::ranges::find(choices, scripts[i], &std::pair<std::int32_t, std::string>::first);
+            ImGui::BulletText("%d  %s", scripts[i], choice == choices.end() ? "(unknown)" : choice->second.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton(icons::LC_X)) {
+                auto updated = scripts;
+                updated.erase(updated.begin() + static_cast<std::ptrdiff_t>(i));
+                apply_mission_edit(state, editor(state).set_actor_scripts(id, updated));
+                ImGui::PopID();
+                break;
+            }
             ImGui::PopID();
-            break;
         }
-        ImGui::PopID();
-    }
-    std::vector<std::pair<std::int32_t, std::string>> script_items;
-    for (const auto& [script_id, name] : choices)
-        if (std::ranges::find(scripts, script_id) == scripts.end())
-            script_items.emplace_back(script_id, std::to_string(script_id) + "  " + name);
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (const auto picked = filtered_combo("##add_script", "Add a script...", script_items)) {
-        scripts.push_back(*picked);
-        apply_mission_edit(state, editor(state).set_actor_scripts(id, scripts));
+        std::vector<std::pair<std::int32_t, std::string>> script_items;
+        for (const auto& [script_id, name] : choices)
+            if (std::ranges::find(scripts, script_id) == scripts.end())
+                script_items.emplace_back(script_id, std::to_string(script_id) + "  " + name);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (const auto picked = filtered_combo("##add_script", "Add a script...", script_items)) {
+            scripts.push_back(*picked);
+            apply_mission_edit(state, editor(state).set_actor_scripts(id, scripts));
+        }
+        if (secondary_button("Set up a behaviour...")) {
+            state.tools.class_id = actor.class_id.value_or(0);
+            show_panel(state, Panel::behaviours);
+        }
+        end_card();
     }
 
     // Animation overrides: per-actor .ANIMACIONES slots.
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Animation overrides");
-    std::vector<csf::ActorAnimationOverride> overrides;
-    for (const auto& binding : actor.animations)
-        if (binding.id && binding.type) overrides.push_back({*binding.id, *binding.type});
-    const auto slots = csf::animation_slot_names();
-    std::vector<std::pair<std::string, std::string>> slot_items;
-    for (const auto slot : slots) slot_items.emplace_back(std::string(slot), std::string(slot));
-    const auto animations = animation_items(state);
-    if (ImGui::BeginTable("##overrides", 3, ImGuiTableFlags_SizingStretchProp)) {
-        for (std::size_t i = 0; i < overrides.size(); ++i) {
-            ImGui::PushID(static_cast<int>(i));
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (const auto picked = filtered_combo("##slot", overrides[i].slot, slot_items)) {
-                auto updated = overrides;
-                updated[i].slot = *picked;
-                apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
+    CardOptions animation_options{icons::LC_FILM};
+    animation_options.default_open = !actor.animations.empty();
+    animation_options.help = "Slots come from the game's slot table; preview a clip on the actor in the Inspect "
+                             "mode's Animation workspace. Scripts can still play other animations over these.";
+    if (begin_card("##animations", "Animation overrides", animation_options)) {
+        std::vector<csf::ActorAnimationOverride> overrides;
+        for (const auto& binding : actor.animations)
+            if (binding.id && binding.type) overrides.push_back({*binding.id, *binding.type});
+        const auto slots = csf::animation_slot_names();
+        std::vector<std::pair<std::string, std::string>> slot_items;
+        for (const auto slot : slots) slot_items.emplace_back(std::string(slot), std::string(slot));
+        const auto animations = animation_items(state);
+        if (ImGui::BeginTable("##overrides", 3, ImGuiTableFlags_SizingStretchProp)) {
+            for (std::size_t i = 0; i < overrides.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (const auto picked = filtered_combo("##slot", overrides[i].slot, slot_items)) {
+                    auto updated = overrides;
+                    updated[i].slot = *picked;
+                    apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
+                }
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (const auto picked =
+                        filtered_combo("##anim", animation_label(state, overrides[i].animation_id), animations)) {
+                    auto updated = overrides;
+                    updated[i].animation_id = *picked;
+                    apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
+                }
+                ImGui::TableNextColumn();
+                if (ImGui::SmallButton(icons::LC_X)) {
+                    auto updated = overrides;
+                    updated.erase(updated.begin() + static_cast<std::ptrdiff_t>(i));
+                    apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
+                }
+                ImGui::PopID();
             }
-            ImGui::TableNextColumn();
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (const auto picked =
-                    filtered_combo("##anim", animation_label(state, overrides[i].animation_id), animations)) {
-                auto updated = overrides;
-                updated[i].animation_id = *picked;
-                apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
-            }
-            ImGui::TableNextColumn();
-            if (ImGui::SmallButton(icons::LC_X)) {
-                auto updated = overrides;
-                updated.erase(updated.begin() + static_cast<std::ptrdiff_t>(i));
-                apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
-            }
-            ImGui::PopID();
+            ImGui::EndTable();
         }
-        ImGui::EndTable();
+        static std::string new_slot = "DISTRAIDO_IDLE_ARMA1";
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.45F);
+        if (const auto picked = filtered_combo("##new_slot", new_slot, slot_items)) new_slot = *picked;
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (const auto picked = filtered_combo("##new_anim", "Add animation...", animations)) {
+            auto updated = std::move(overrides);
+            std::erase_if(updated, [&](const auto& value) { return value.slot == new_slot; });
+            updated.push_back({*picked, new_slot});
+            apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
+        }
+        end_card();
     }
-    static std::string new_slot = "DISTRAIDO_IDLE_ARMA1";
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.45F);
-    if (const auto picked = filtered_combo("##new_slot", new_slot, slot_items)) new_slot = *picked;
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    if (const auto picked = filtered_combo("##new_anim", "Add animation...", animations)) {
-        auto updated = std::move(overrides);
-        std::erase_if(updated, [&](const auto& value) { return value.slot == new_slot; });
-        updated.push_back({*picked, new_slot});
-        apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
-    }
-    dim_text("Slots come from the game's slot table; preview a clip on the actor in the Animation "
-             "workspace. Scripts can still play other animations over these.");
 
-    ImGui::Spacing();
+    CardOptions advanced{icons::LC_SLIDERS_HORIZONTAL};
+    advanced.default_open = false;
+    advanced.help = "Raw actor fields the editor does not explain yet; the values are written as they are.";
+    if (begin_card("##advanced", "Advanced", advanced)) {
+        if (begin_fields("##actor_advanced")) {
+            int value{};
+            if (int_field("collision", actor.collision.value_or(0), value))
+                apply_mission_edit(state, editor(state).set_actor_integer(id, ".COLISION", value));
+            if (int_field("flags", static_cast<int>(actor.flags.value_or(0)), value))
+                apply_mission_edit(state, editor(state).set_actor_integer(id, ".FLAGS", value));
+            if (int_field("2nd explosion", actor.secondary_explosion.value_or(0), value))
+                apply_mission_edit(state, editor(state).set_actor_integer(id, ".SEGUNDA_EXPLOSION", value));
+            ImGui::EndTable();
+        }
+        end_card();
+    }
     record_buttons(state, true);
-    ImGui::SameLine();
-    const bool player = state.mission.scene->player().active_player == actor.id;
-    ImGui::BeginDisabled(player);
-    if (ImGui::Button(player ? "Starting player" : "Make starting player"))
-        apply_mission_edit(state, editor(state).set_player_actor(id));
-    ImGui::EndDisabled();
 }
 
 void draw_dummy_editor(AppState& state, const csf::MissionDummy& dummy) {
@@ -573,77 +608,95 @@ const Donor& donor_for(const std::filesystem::path& root) {
     return cached;
 }
 
-void draw_project_bar(AppState& state) {
+void project_bar(AppState& state) {
     auto& mission = state.mission;
     auto& editor = *mission.editor;
-    if (mission.project)
-        dim_text("Project: %s", path_utf8(mission.project->workspace_root).c_str());
-    else
-        dim_text("Not saved yet. Ctrl+S creates a project in %s", path_utf8(default_project_workspace(state)).c_str());
-    if (editor.dirty()) {
+    if (begin_card("##project", "Project", {icons::LC_FOLDER})) {
+        if (mission.project)
+            dim_text("%s", state.ui.shown(path_utf8(mission.project->workspace_root)).c_str());
+        else
+            dim_text("Not saved yet. Save creates a project in %s",
+                     state.ui.shown(path_utf8(default_project_workspace(state))).c_str());
+        const bool unsaved = edits_unsaved(state);
+        ImGui::BeginDisabled(!unsaved && mission.project);
+        if (secondary_button((std::string(icons::LC_SAVE) + (unsaved ? " Save" : " Saved")).c_str()))
+            save_mission_project(state);
+        ImGui::EndDisabled();
         ImGui::SameLine();
-        token_text(Token::dirty, "%s unsaved", icons::LC_DOT);
+        if (secondary_button("Save as...")) state.commands.run("file.save_mission_as");
+        end_card();
     }
-    if (ImGui::Button((std::string(icons::LC_SAVE) + " Save").c_str())) save_mission_project(state);
-    ImGui::SameLine();
-    if (ImGui::Button("Save as...")) state.commands.run("file.save_mission_as");
-    ImGui::SameLine();
-    if (ImGui::Button((std::string(icons::LC_PACKAGE) + " Export .pak...").c_str())) state.ui.show_export_dialog = true;
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!editor.can_undo());
-    if (icon_button("##undo", icons::LC_UNDO_2, "Undo (Ctrl+Z)")) mission_undo(state);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!editor.can_redo());
-    if (icon_button("##redo", icons::LC_REDO_2, "Redo (Ctrl+Y)")) mission_redo(state);
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::TextUnformatted("|");
-    ImGui::SameLine();
-    const auto tool = state.preview.edit_tool();
-    if (icon_button("##select", icons::LC_MOUSE_POINTER, "Select", tool == GeometryPreview::EditTool::select))
-        state.preview.set_edit_tool(GeometryPreview::EditTool::select);
-    ImGui::SameLine();
-    if (icon_button("##move", icons::LC_MOVE_3D, "Move tool (G): drag the center to slide on the ground, an arrow "
-                                                 "for one axis. Alt toggles surface snapping.",
-                    tool == GeometryPreview::EditTool::move))
-        state.preview.set_edit_tool(GeometryPreview::EditTool::move);
-    ImGui::SameLine();
-    if (icon_button("##rotate", icons::LC_REFRESH_CW, "Rotate tool (R): drag around the ring; Ctrl snaps to 15 degrees",
-                    tool == GeometryPreview::EditTool::rotate))
-        state.preview.set_edit_tool(GeometryPreview::EditTool::rotate);
-    ImGui::SameLine();
-    bool snap = state.preview.snap_to_surface();
-    if (ImGui::Checkbox("Snap to ground", &snap)) state.preview.set_snap_to_surface(snap);
+    if (state.authoring.project && begin_card("##map", "Map", {icons::LC_MOUNTAIN})) {
+        const bool busy = authoring_pending(state);
+        const auto findings = state.authoring.findings.size();
+        if (busy)
+            token_text(Token::inferred, "Building...");
+        else if (findings)
+            token_text(Token::warn, "%zu placements or actors are off their height rules", findings);
+        else
+            dim_text("Built from the Blender exports and the placements.");
+        ImGui::BeginDisabled(busy);
+        if (secondary_button("Rebuild map")) state.commands.run("mission.project_rebuild");
+        ImGui::SameLine();
+        if (secondary_button("Height report")) state.commands.run("mission.project_heights");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(findings == 0);
+        if (secondary_button("Resnap all")) state.commands.run("mission.project_resnap");
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
+        if (secondary_button((std::string(icons::LC_MOUNTAIN) + " Edit in Blender").c_str()))
+            state.commands.run("build.edit_in_blender");
+        end_card();
+    }
+    // An authoring project builds both archives (the Build panel's pipeline).
+    if (!state.authoring.project && begin_card("##package", "Package", {icons::LC_PACKAGE})) {
+        dim_text("Rebuilds the mission archive from the shipped one, replacing or adding only the changed files.");
+        if (primary_button((std::string(icons::LC_PACKAGE) + " Export mission archive...").c_str()))
+            state.ui.show_export_dialog = true;
+        end_card();
+    }
 }
 
-void draw_history(AppState& state) {
-    auto& editor = *state.mission.editor;
-    const auto labels = editor.history_labels();
+void history_body(AppState& state) {
+    ImGui::BeginDisabled(!can_undo_edit(state));
+    if (secondary_button((std::string(icons::LC_UNDO_2) + " Undo").c_str())) undo_edit(state);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!can_redo_edit(state));
+    if (secondary_button((std::string(icons::LC_REDO_2) + " Redo").c_str())) redo_edit(state);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    dim_text("Ctrl+Z / Ctrl+Y; click a step to go back to it.");
+    // Mission edits and project edits (placements, texts) in one list.
+    const auto [labels, position] = edit_history(state);
     if (labels.empty()) {
-        dim_text("No edits yet. Select a record in the viewport or Explorer and change it in the "
-                 "Inspector's Edit section, or use the move (G) and rotate (R) tools.");
+        empty_state(icons::LC_HISTORY, "No edits yet. Select something in the viewport or the Outliner and change "
+                                       "it in Properties, or move it with G and turn it with R.");
         return;
     }
-    const auto position = editor.history_position();
-    if (ImGui::Selectable("(original)", position == 0))
-        while (editor.can_undo()) editor.undo();
+    const auto go_to = [&state](const std::size_t target) {
+        for (int guard = 0; guard < 10000; ++guard) {
+            const auto current = edit_history(state).second;
+            if (current > target && can_undo_edit(state))
+                undo_edit(state);
+            else if (current < target && can_redo_edit(state))
+                redo_edit(state);
+            else
+                break;
+        }
+    };
+    if (ImGui::Selectable("(original)", position == 0)) go_to(0);
     for (std::size_t i = 0; i < labels.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         const bool undone = i >= position;
         if (undone) ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
-        if (ImGui::Selectable(labels[i].c_str(), i + 1 == position)) {
-            while (editor.history_position() > i + 1 && editor.undo()) {
-            }
-            while (editor.history_position() < i + 1 && editor.redo()) {
-            }
-        }
+        if (ImGui::Selectable(labels[i].c_str(), i + 1 == position)) go_to(i + 1);
         if (undone) ImGui::PopStyleColor();
         ImGui::PopID();
     }
 }
 
-void draw_files(AppState& state) {
+void files_body(AppState& state) {
     const auto& editor = *state.mission.editor;
     const auto modified = editor.modified_files();
     if (modified.empty()) {
@@ -660,7 +713,7 @@ void draw_files(AppState& state) {
     dim_text("Only these files are replaced or added when the mission archive is exported.");
 }
 
-void draw_mission_properties(AppState& state) {
+void mission_settings_body(AppState& state) {
     auto& editor = *state.mission.editor;
     const auto& scene = *state.mission.scene;
     if (!begin_fields("##mission_props")) return;
@@ -718,85 +771,171 @@ void draw_mission_properties(AppState& state) {
     ImGui::TreePop();
 }
 
-void draw_assets(AppState& state) {
+// One placeable thing in the Assets panel: a class (this mission's or another
+// mission's, imported on placing) or a building of the authoring project.
+struct AssetRow {
+    EntityKind kind{};
+    std::optional<AuthoringTools::CatalogEntry> entry;
+    std::string building;
+    std::string label, detail;
+};
+
+// The Assets panel's chips: which kinds each shows.
+bool in_category(const EntityKind kind, const int category) {
+    switch (category) {
+    case 1: return kind == EntityKind::player || kind == EntityKind::enemy || kind == EntityKind::animal;
+    case 2: return kind == EntityKind::vehicle;
+    case 3: return kind == EntityKind::prop || kind == EntityKind::usable || kind == EntityKind::helper;
+    case 4: return kind == EntityKind::pickup;
+    case 5: return kind == EntityKind::building;
+    default: return true;
+    }
+}
+
+bool armed(const AuthoringTools& tools, const AssetRow& row) {
+    if (!row.building.empty()) return tools.place_building_asset == row.building;
+    return tools.place_entry && row.entry && tools.place_entry->class_id == row.entry->class_id &&
+           tools.place_entry->package == row.entry->package;
+}
+
+void asset_row(AppState& state, const AssetRow& row, const int id) {
     auto& tools = state.tools;
-    dim_text("Places a class at the ground under the viewport centre: characters on a new placement point, "
-             "props and pickups without one. Classes from other missions are imported first (with their "
-             "models, textures and animations); one undo step either way.");
+    const bool active = armed(tools, row) && state.preview.edit_tool() == GeometryPreview::EditTool::place;
+    ImGui::PushID(id);
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    // The row's name is its ID, so UI scripts can address it ("Assets::OFICIAL").
+    if (ImGui::Selectable(("##" + row.label).c_str(), active, ImGuiSelectableFlags_AllowDoubleClick)) {
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            // Double click: at the view centre, as before the Place tool.
+            if (!row.building.empty()) place_building(state, row.building);
+            else if (row.entry) place_asset(state, *row.entry);
+        } else if (!row.building.empty()) {
+            tools.place_entry.reset();
+            tools.place_building_asset = row.building;
+            set_viewport_tool(state, GeometryPreview::EditTool::place);
+        } else if (row.entry) {
+            arm_place_tool(state, *row.entry);
+        }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+        ImGui::SetTooltip("Click, then click in the viewport to place it (Shift keeps placing).\n"
+                          "Drag it into the viewport, or double-click to place it at the view centre.");
+    if (ImGui::BeginDragDropSource()) {
+        tools.drag_entry = row.entry;
+        tools.drag_building = row.building;
+        ImGui::SetDragDropPayload("RWSMAN_ASSET", &id, sizeof(id));
+        ImGui::TextUnformatted(row.label.c_str());
+        ImGui::EndDragDropSource();
+    }
+    ImGui::SetCursorScreenPos(start);
+    ImGui::PushStyleColor(ImGuiCol_Text, kind_color(row.kind));
+    ImGui::TextUnformatted(kind_icon(row.kind));
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::TextUnformatted(row.label.c_str());
+    if (!row.detail.empty()) {
+        ImGui::SameLine();
+        ImGui::PushFont(font(Font::caption));
+        dim_text("%s", row.detail.c_str());
+        ImGui::PopFont();
+    }
+    ImGui::PopID();
+}
+
+void assets_body(AppState& state) {
+    auto& tools = state.tools;
     search_input("##asset_filter", "filter by ID, name, type or mission", tools.asset_filter.data(),
                  tools.asset_filter.size());
+    ImGui::SameLine();
+    help_marker("Click an asset, then click in the viewport to place it; drag it into the viewport; or "
+                "double-click it to place it at the view centre. Classes from other missions are imported "
+                "first (with their models, textures and animations); one undo step either way. Buildings are "
+                "the project's own, built into the map.");
+    static constexpr std::array<const char*, 6> categories{"All", "Characters", "Vehicles", "Props", "Pickups",
+                                                           "Buildings"};
+    // The chips wrap onto a second line in a narrow panel.
+    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    for (int i = 0; i < static_cast<int>(categories.size()); ++i) {
+        const char* label = categories[static_cast<std::size_t>(i)];
+        const float width = ImGui::CalcTextSize(label).x + 16.0F * ui_scale();
+        if (i) {
+            ImGui::SameLine(0.0F, 4.0F);
+            if (ImGui::GetCursorScreenPos().x + width > right) ImGui::NewLine();
+        }
+        if (chip(label, tools.asset_category == i)) tools.asset_category = i;
+    }
     const char* filter = tools.asset_filter.data();
-    if (ImGui::BeginChild("##assets", {0, 200.0F * ui_scale()}, ImGuiChildFlags_Borders)) {
-        section("This mission");
-        if (state.mission.objects)
-            for (const auto& definition : state.mission.objects->definitions()) {
-                if (!definition.class_id) continue;
-                const auto label = std::to_string(*definition.class_id) + "  " + definition.name.value_or("") + "  " +
-                                   definition.type.value_or("");
-                if (!matches(label, filter)) continue;
-                ImGui::PushID(*definition.class_id);
-                if (ImGui::SmallButton(icons::LC_PLUS))
-                    place_asset(state, {state.mission.editor->package_root(), "this mission", *definition.class_id,
-                                        definition.name.value_or(""), definition.type.value_or("")});
-                ImGui::SameLine();
-                ImGui::TextUnformatted(label.c_str());
-                ImGui::PopID();
-            }
-        if (const auto* project = state.authoring.project.get()) {
+    const auto kind_of = [](const std::string& type, const std::string& name) {
+        return classify_actor({true, type, name, {}}, false);
+    };
+    int id = 0;
+    std::size_t shown = 0;
+    const auto show = [&](const AssetRow& row) {
+        if (!in_category(row.kind, tools.asset_category) || !matches(row.label + "  " + row.detail, filter)) return;
+        ++shown;
+        asset_row(state, row, id++);
+    };
+    if (ImGui::BeginChild("##assets", {0, 0}, ImGuiChildFlags_Borders)) {
+        if (const auto* project = state.authoring.project.get(); project && in_category(EntityKind::building, tools.asset_category)) {
             section("Project buildings");
             bool any = false;
             for (const auto& asset : project->assets) {
-                if (asset.kind != csf::ProjectAsset::Kind::building || !matches(asset.id, filter)) continue;
+                if (asset.kind != csf::ProjectAsset::Kind::building) continue;
                 any = true;
-                ImGui::PushID(asset.id.c_str());
-                if (ImGui::SmallButton(icons::LC_PLUS)) place_building(state, asset.id);
-                ImGui::SameLine();
                 std::size_t placed = 0;
                 for (const auto& placement : project->placements) placed += placement.asset == asset.id;
-                ImGui::Text("%s  (%zu placed)", asset.id.c_str(), placed);
-                ImGui::PopID();
+                show({EntityKind::building, std::nullopt, asset.id, asset.id, std::to_string(placed) + " placed"});
             }
             if (!any) dim_text("Tag a mesh as a building in Blender and send it (CSF panel).");
         }
-        section("Other missions");
-        if (tools.catalog_root != state.settings.resource_root || tools.catalog.empty()) {
-            ImGui::BeginDisabled(state.discovered.empty());
-            if (ImGui::SmallButton("List their classes")) build_asset_catalog(state);
-            ImGui::EndDisabled();
-            if (state.discovered.empty()) dim_text("Set the resource root in Preferences to find other missions.");
-        } else {
-            std::size_t shown = 0;
-            for (std::size_t i = 0; i < tools.catalog.size(); ++i) {
-                const auto& entry = tools.catalog[i];
-                const auto label = std::to_string(entry.class_id) + "  " + entry.name + "  " + entry.type + "  (" +
-                                   entry.package_name + ")";
-                if (!matches(label, filter)) continue;
-                if (++shown > 300) {
-                    dim_text("Refine the filter to see more.");
-                    break;
+        if (tools.asset_category != 5) {
+            section("This mission");
+            if (state.mission.objects)
+                for (const auto& definition : state.mission.objects->definitions()) {
+                    if (!definition.class_id) continue;
+                    const auto name = definition.name.value_or(""), type = definition.type.value_or("");
+                    show({kind_of(type, name),
+                          AuthoringTools::CatalogEntry{state.mission.editor->package_root(), "this mission",
+                                                       *definition.class_id, name, type},
+                          {}, name.empty() ? "class " + std::to_string(*definition.class_id) : name,
+                          type + "  ·  " + std::to_string(*definition.class_id)});
                 }
-                ImGui::PushID(static_cast<int>(i));
-                if (ImGui::SmallButton(icons::LC_PLUS)) place_asset(state, entry);
-                ImGui::SameLine();
-                ImGui::TextUnformatted(label.c_str());
-                ImGui::PopID();
+            section("Other missions");
+            if (tools.catalog_root != state.settings.resource_root || tools.catalog.empty()) {
+                ImGui::BeginDisabled(state.discovered.empty());
+                if (secondary_button("List their classes")) build_asset_catalog(state);
+                ImGui::EndDisabled();
+                if (state.discovered.empty()) dim_text("Set the resource root in Preferences to find other missions.");
+            } else {
+                const std::size_t before = shown;
+                for (const auto& entry : tools.catalog) {
+                    if (shown - before >= 300) {
+                        dim_text("Refine the filter to see more.");
+                        break;
+                    }
+                    show({kind_of(entry.type, entry.name), entry, {}, entry.name,
+                          entry.type + "  ·  " + std::to_string(entry.class_id) + "  ·  " + entry.package_name});
+                }
             }
         }
+        if (shown == 0 && filter[0]) dim_text("Nothing matches the filter.");
     }
     ImGui::EndChild();
 }
 
-void draw_presets(AppState& state) {
+void behaviours_body(AppState& state) {
     auto& tools = state.tools;
     using Preset = AuthoringTools::Preset;
-    dim_text("Behaviour presets write the actor, its navigation groups and its script together, as one undo "
-             "step. Points are taken at the ground under the viewport centre.");
+    ImGui::TextUnformatted("Behaviour");
+    help_marker("Behaviour presets write the actor, its navigation groups and its script together, as one undo "
+                "step. Points are taken at the ground under the viewport centre.");
     static constexpr std::array<const char*, 5> names{"Guard on patrol", "Guard idling", "Animal on patrol",
                                                       "Cover group", "Walk grid"};
     int preset = static_cast<int>(tools.preset);
     ImGui::SetNextItemWidth(-FLT_MIN);
-    if (ImGui::Combo("##preset", &preset, names.data(), static_cast<int>(names.size())))
-        tools.preset = static_cast<Preset>(preset);
+    const bool picked_preset = ImGui::Combo("##preset", &preset, names.data(), static_cast<int>(names.size()));
+    name_last_item("##preset");
+    if (picked_preset) tools.preset = static_cast<Preset>(preset);
     const bool actor = tools.preset == Preset::guard_patrol || tools.preset == Preset::guard_idle ||
                        tools.preset == Preset::animal_patrol;
     const bool route = tools.preset == Preset::guard_patrol || tools.preset == Preset::animal_patrol;
@@ -852,6 +991,13 @@ void draw_presets(AppState& state) {
             ImGui::DragFloat("##preset_spacing", &tools.grid_spacing, 10.0F, 100.0F, 5000.0F, "%.0f cm");
             begin_row("Clear of props");
             ImGui::DragFloat("##preset_avoid", &tools.grid_avoid, 10.0F, 0.0F, 2000.0F, "%.0f cm");
+            begin_row("Preview");
+            ImGui::Checkbox("##preview_grid", &tools.preview_grid);
+            if (tools.preview_grid) {
+                update_walk_grid_preview(state);
+                ImGui::SameLine();
+                dim_text("%zu points, %zu links in the viewport", tools.grid_points.size(), tools.grid_links.size());
+            }
         }
         ImGui::EndTable();
     }
@@ -880,11 +1026,12 @@ void draw_presets(AppState& state) {
     dim_text("Empties this slot's actors, navigation, zones, dummies and scripts (undoable).");
 }
 
-void draw_flow(AppState& state) {
+void flow_body(AppState& state) {
     const auto* flow = mission_flow(state);
     if (!flow) return;
-    dim_text("How the scripts connect, read from the programs as they are. Findings are evidence to check, "
-             "not proof of what the game does.");
+    ImGui::TextUnformatted("How the scripts connect");
+    help_marker("Read from the programs as they are. Findings are evidence to check, not proof of what the game "
+                "does.");
     const auto script_link = [&](const std::string_view program, const std::int32_t id) {
         const auto* script = flow->script(program, id);
         const auto label = std::to_string(id) + (script ? " " + script->name : std::string{});
@@ -943,13 +1090,16 @@ void draw_flow(AppState& state) {
     }
 }
 
-void draw_objectives(AppState& state) {
+void objectives_body(AppState& state) {
     auto& tools = state.tools;
     const bool project = state.authoring.project != nullptr;
-    dim_text(project ? "Objectives, their completion scripts and the success check, as one undo step. Type the "
-                       "text; the project stores it in the mission's text file (GlobalEK)."
-                     : "Objectives, their completion scripts and the success check, as one undo step. Without an "
-                       "authoring project, text fields are FLI string IDs.");
+    // The objectives, equipment and tips already made: their recipes, editable.
+    draw_component_cards(state, {"objective", "objectives", "kit", "equipment", "tips"});
+    ImGui::TextUnformatted("New objectives");
+    help_marker(project ? "Objectives, their completion scripts and the success check, as one undo step. Type the "
+                          "text; the project stores it in the mission's text file (GlobalEK)."
+                        : "Objectives, their completion scripts and the success check, as one undo step. Without an "
+                          "authoring project, text fields are FLI string IDs.");
     std::vector<std::pair<int, std::string>> zones, actors;
     if (state.mission.scene) {
         for (const auto& area : state.mission.scene->areas())
@@ -975,7 +1125,15 @@ void draw_objectives(AppState& state) {
             std::string current = std::to_string(form.target);
             for (const auto& [id, label] : items)
                 if (id == form.target) current = label;
+            ImGui::SetNextItemWidth(-ImGui::GetFrameHeightWithSpacing());
             if (const auto picked = filtered_combo("##target", current, items)) form.target = *picked;
+            ImGui::SameLine(0.0F, 2.0F);
+            const bool zone = form.kind == 0;
+            pick_button(state, "##pick_target", {zone ? MissionRecordKey::Kind::area : MissionRecordKey::Kind::actor},
+                        zone ? "Pick the objective's zone" : "Pick the objective's actor",
+                        [&tools, i](const MissionRecordKey& key) {
+                            if (i < tools.objectives.size()) tools.objectives[i].target = key.id;
+                        });
             begin_row("Text");
             ImGui::InputText("##label", form.label.data(), form.label.size());
             begin_row("Done message");
@@ -1009,6 +1167,11 @@ void draw_objectives(AppState& state) {
             if (id == kit.actor) current = label;
         ImGui::SetNextItemWidth(160.0F * ui_scale());
         if (const auto picked = filtered_combo("##kit_actor", current, actors)) kit.actor = *picked;
+        ImGui::SameLine(0.0F, 2.0F);
+        pick_button(state, "##pick_kit_actor", {MissionRecordKey::Kind::actor}, "Pick the player this kit is for",
+                    [&tools, i](const MissionRecordKey& key) {
+                        if (i < tools.kits.size()) tools.kits[i].actor = key.id;
+                    });
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-220.0F * ui_scale());
         ImGui::InputTextWithHint("##weapons", "weapons: 16,102@100/100,...", kit.weapons.data(), kit.weapons.size());
@@ -1035,7 +1198,7 @@ void draw_objectives(AppState& state) {
     ImGui::EndDisabled();
 }
 
-void draw_texts(AppState& state) {
+void texts_body(AppState& state) {
     auto* project = state.authoring.project.get();
     if (!project || !project->texts) {
         dim_text("Mission text belongs to an authoring project with a texts record (see "
@@ -1086,11 +1249,13 @@ void draw_texts(AppState& state) {
     if (removed) set_project_text(state, *removed, std::nullopt);
 }
 
-void draw_cutscene(AppState& state) {
+void cutscene_body(AppState& state) {
     auto& tools = state.tools;
-    dim_text("Travelling shots for an intro cutscene: frame each shot in the viewport and capture it; the camera "
-             "moves by the travel distance at constant height while keeping its target in view. Playing the shots "
-             "here approximates the game (its field of view and timing differ).");
+    draw_component_cards(state, {"shot", "intro"});
+    help_marker("Travelling shots for an intro cutscene: frame each shot in the viewport and capture it; the "
+                "camera moves by the travel distance at constant height while keeping its target in view. Playing "
+                "the shots here approximates the game (its field of view and timing differ).");
+    ImGui::SameLine();
     if (ImGui::Button("Capture shot from view")) capture_shot(state);
     ImGui::SameLine();
     ImGui::BeginDisabled(tools.shots.empty());
@@ -1144,9 +1309,9 @@ void draw_cutscene(AppState& state) {
     ImGui::EndDisabled();
 }
 
-void draw_import(AppState& state) {
-    dim_text("Copies a class (with its models, collision, weapons, textures and animations) or an "
-             "animation from another unpacked mission into this one, updating the package indexes.");
+void import_body(AppState& state) {
+    help_marker("Copies a class (with its models, collision, weapons, textures and animations) or an animation "
+                "from another unpacked mission into this one, updating the package indexes.");
     ImGui::SetNextItemWidth(-90.0F * ui_scale());
     ImGui::InputTextWithHint("##donor", "unpacked mission folder", state.ui.import_donor.data(),
                              state.ui.import_donor.size());
@@ -1205,14 +1370,19 @@ void draw_import(AppState& state) {
 
 } // namespace
 
-void draw_mission_edit_section(AppState& state, const std::uint32_t entry) {
+void draw_record_editor(AppState& state, const std::uint32_t entry) {
     if (!mission_editable(state)) return;
     const auto& scene = *state.mission.scene;
     const auto key = mission_record_key(scene, entry);
     if (key.kind == MissionRecordKey::Kind::none) return;
-    if (!begin_section(state, "Edit", true)) return;
     ImGui::PushID(static_cast<int>(key.kind) * 1000003 + key.id * 1009 + key.sub_id);
     using Kind = MissionRecordKey::Kind;
+    // Records other than actors edit in one card named after their kind.
+    const auto card = [&](const char* title, const EntityKind kind, auto&& body) {
+        if (!begin_card("##record", title, {kind_icon(kind), kind_color(kind)})) return;
+        body();
+        end_card();
+    };
     switch (key.kind) {
     case Kind::actor:
         for (const auto& actor : scene.actors())
@@ -1220,42 +1390,53 @@ void draw_mission_edit_section(AppState& state, const std::uint32_t entry) {
         break;
     case Kind::dummy:
         for (const auto& dummy : scene.dummies())
-            if (dummy.id == key.id) draw_dummy_editor(state, dummy);
+            if (dummy.id == key.id) card("Marker", EntityKind::marker, [&] { draw_dummy_editor(state, dummy); });
         break;
     case Kind::light:
         for (const auto& light : scene.lights())
-            if (light.id == key.id) draw_light_editor(state, light);
+            if (light.id == key.id) card("Light", EntityKind::light, [&] { draw_light_editor(state, light); });
         break;
     case Kind::nav_point:
-        if (const auto* point = scene.navigation_point(key.id, key.sub_id)) draw_nav_point_editor(state, *point);
+        if (const auto* point = scene.navigation_point(key.id, key.sub_id))
+            card("Point", EntityKind::route, [&] { draw_nav_point_editor(state, *point); });
         break;
     case Kind::area:
         for (const auto& area : scene.areas())
-            if (area.id == key.id) draw_area_editor(state, area);
+            if (area.id == key.id) card("Zone", EntityKind::zone, [&] { draw_area_editor(state, area); });
         break;
     case Kind::nav_group:
-        if (ImGui::Button((std::string(icons::LC_PLUS) + " Add point at view center").c_str())) {
-            const auto target = state.preview.view_target();
-            std::int32_t added{};
-            if (apply_mission_edit(state, state.mission.editor->add_navigation_point(
-                                              key.id, {target.x, target.y, target.z}, &added)))
-                select_after_refresh(state, {Kind::nav_point, key.id, added});
-        }
+        card("Points", EntityKind::route, [&] {
+            if (secondary_button((std::string(icons::LC_PLUS) + " Add point at view center").c_str())) {
+                const auto target = state.preview.view_target();
+                std::int32_t added{};
+                if (apply_mission_edit(state, state.mission.editor->add_navigation_point(
+                                                  key.id, {target.x, target.y, target.z}, &added)))
+                    select_after_refresh(state, {Kind::nav_point, key.id, added});
+            }
+        });
         break;
     default:
-        dim_text("Use the fields below to edit this record.");
         break;
     }
-    if (ImGui::TreeNode("All fields")) {
-        dim_text("Every stored value of the record; edits keep the stored value kind.");
+    CardOptions raw{icons::LC_BRACES};
+    raw.default_open = false;
+    raw.help = "Every stored value of the record; edits keep the stored value kind.";
+    if (begin_card("##all_fields", "All fields", raw)) {
         if (const auto* node = find_node(state.mission.document->roots(), entry))
             if (begin_fields("##raw_fields")) {
                 draw_raw_scalars(state, *node, *state.mission.document, {});
                 ImGui::EndTable();
             }
-        ImGui::TreePop();
+        end_card();
     }
     ImGui::PopID();
+}
+
+void draw_mission_edit_section(AppState& state, const std::uint32_t entry) {
+    if (!mission_editable(state)) return;
+    if (mission_record_key(*state.mission.scene, entry).kind == MissionRecordKey::Kind::none) return;
+    if (!begin_section(state, "Edit", true)) return;
+    draw_record_editor(state, entry);
     end_section();
 }
 
@@ -1278,69 +1459,75 @@ void draw_map_instance_edit_section(AppState& state, const rws::SceneInstance& i
     end_section();
 }
 
-void draw_changes(AppState& state) {
-    if (!state.mission.editor || !state.mission.scene) {
-        section("Session changes");
-        if (state.document && state.document->dirty())
-            token_text(Token::dirty, "%s %s has unsaved byte edits", icons::LC_DOT,
-                       path_utf8(state.document->source_path().filename()).c_str());
-        else
-            dim_text("No pending changes. Open a mission to edit it; byte edits made in the Hex "
-                     "workspace appear here.");
-        return;
-    }
-    if (!mission_editable(state)) {
+namespace {
+
+// Panels that edit the mission need an editable mission; otherwise they say so.
+bool editing_ready(AppState& state) {
+    if (mission_editable(state)) return true;
+    if (state.mission.editor && state.mission.scene)
         dim_text("The mission is loading.");
-        return;
+    else
+        empty_state(icons::LC_FILE, "Open a mission or a project to edit it.");
+    return false;
+}
+
+} // namespace
+
+void draw_changes(AppState& state) {
+    section("Session changes");
+    if (state.document && state.document->dirty())
+        token_text(Token::dirty, "%s %s has unsaved byte edits", icons::LC_DOT,
+                   path_utf8(state.document->source_path().filename()).c_str());
+    else
+        dim_text("No byte edits. Byte edits made in the Hex workspace appear here.");
+    if (mission_editable(state)) {
+        section("Mission files");
+        files_body(state);
     }
-    draw_project_bar(state);
-    if (!ImGui::BeginTabBar("##mission_editing")) return;
-    if (ImGui::BeginTabItem("History")) {
-        draw_history(state);
-        ImGui::EndTabItem();
+}
+
+void draw_history_panel(AppState& state) {
+    if (editing_ready(state)) history_body(state);
+}
+
+void draw_mission_settings(AppState& state) {
+    if (editing_ready(state)) mission_settings_body(state);
+}
+
+void draw_assets_panel(AppState& state) {
+    if (!editing_ready(state)) return;
+    if (ImGui::CollapsingHeader("Import a class without placing it")) import_body(state);
+    assets_body(state);
+}
+
+void draw_behaviours(AppState& state) {
+    if (editing_ready(state)) behaviours_body(state);
+}
+
+void draw_flow_panel(AppState& state) {
+    if (editing_ready(state)) flow_body(state);
+}
+
+void draw_objectives_panel(AppState& state) {
+    if (editing_ready(state)) objectives_body(state);
+}
+
+void draw_texts_panel(AppState& state) {
+    if (editing_ready(state)) texts_body(state);
+}
+
+void draw_timeline(AppState& state) {
+    if (editing_ready(state)) cutscene_body(state);
+}
+
+void draw_build(AppState& state) {
+    if (!editing_ready(state)) return;
+    project_bar(state);
+    draw_project_pipeline(state);
+    if (begin_card("##files", "Changed files", {icons::LC_FILE})) {
+        files_body(state);
+        end_card();
     }
-    if (ImGui::BeginTabItem("Files")) {
-        draw_files(state);
-        ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Mission")) {
-        draw_mission_properties(state);
-        ImGui::EndTabItem();
-    }
-    const auto tab = [&](const char* name) {
-        const bool focus = state.ui.mission_edit_tab && std::strcmp(state.ui.mission_edit_tab, name) == 0;
-        if (focus) state.ui.mission_edit_tab = nullptr;
-        return ImGui::BeginTabItem(name, nullptr, focus ? ImGuiTabItemFlags_SetSelected : 0);
-    };
-    if (tab("Assets")) {
-        draw_assets(state);
-        ImGui::EndTabItem();
-    }
-    if (tab("Presets")) {
-        draw_presets(state);
-        ImGui::EndTabItem();
-    }
-    if (tab("Objectives")) {
-        draw_objectives(state);
-        ImGui::EndTabItem();
-    }
-    if (tab("Cutscene")) {
-        draw_cutscene(state);
-        ImGui::EndTabItem();
-    }
-    if (tab("Flow")) {
-        draw_flow(state);
-        ImGui::EndTabItem();
-    }
-    if (tab("Texts")) {
-        draw_texts(state);
-        ImGui::EndTabItem();
-    }
-    if (ImGui::BeginTabItem("Import")) {
-        draw_import(state);
-        ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
 }
 
 void draw_mission_dialogs(AppState& state) {
@@ -1356,13 +1543,43 @@ void draw_mission_dialogs(AppState& state) {
             };
             if (ImGui::Button("Save and continue")) {
                 save_mission_project(state);
-                if (!state.mission.editor->dirty()) run();
+                if (!edits_unsaved(state)) run();
             }
             ImGui::SameLine();
             if (ImGui::Button("Discard edits")) run();
             ImGui::SameLine();
             if (ImGui::Button("Cancel")) {
                 state.ui.pending_discard = nullptr;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
+    if (!state.ui.force_delete_reason.empty()) {
+        ImGui::OpenPopup("Delete a record that is in use");
+        ImGui::SetNextWindowSize({520.0F * ui_scale(), 0}, ImGuiCond_Appearing);
+        if (ImGui::BeginPopupModal("Delete a record that is in use", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::PushTextWrapPos(500.0F * ui_scale());
+            ImGui::TextUnformatted(state.ui.force_delete_reason.c_str());
+            ImGui::PopTextWrapPos();
+            auto rows = collect_references(state, state.selection);
+            std::erase_if(rows, [](const ReferenceRow& row) { return row.group != "Script uses"; });
+            if (!rows.empty()) {
+                ImGui::Spacing();
+                dim_text("Deleting it leaves these references dangling:");
+                for (std::size_t i = 0; i < rows.size() && i < 12; ++i)
+                    ImGui::BulletText("%s  %s", rows[i].label.c_str(), rows[i].detail.c_str());
+                if (rows.size() > 12) dim_text("... and %zu more", rows.size() - 12);
+            }
+            ImGui::Spacing();
+            if (danger_button("Delete anyway")) {
+                state.ui.force_delete_reason.clear();
+                ImGui::CloseCurrentPopup();
+                state.commands.run("mission.delete_force");
+            }
+            ImGui::SameLine();
+            if (secondary_button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                state.ui.force_delete_reason.clear();
                 ImGui::CloseCurrentPopup();
             }
             ImGui::EndPopup();

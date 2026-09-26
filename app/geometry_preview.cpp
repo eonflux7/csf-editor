@@ -539,6 +539,12 @@ void GeometryPreview::set_mission_entries_visible(const std::span<const std::uin
     }
 }
 
+void GeometryPreview::set_mission_entry_states(std::unordered_set<std::uint32_t> hidden,
+                                               std::unordered_set<std::uint32_t> locked) {
+    hidden_mission_entries_ = std::move(hidden);
+    locked_mission_entries_ = std::move(locked);
+}
+
 bool GeometryPreview::mission_entry_visible(const std::uint32_t entry) const noexcept {
     return !hidden_mission_entries_.contains(entry);
 }
@@ -3451,6 +3457,66 @@ bool GeometryPreview::draw_scene(
     };
     // The edit gizmo owns the mouse from the press on a handle to the release.
     const bool gizmo_owns_mouse = update_edit_gizmo();
+    const bool authoring = authoring_tool(edit_tool_);
+    // An asset dragged from the Assets panel: dropped, it is placed there.
+    const auto* payload = ImGui::GetDragDropPayload();
+    const bool dragging_asset = payload && payload->IsDataType("RWSMAN_ASSET");
+    std::optional<ImVec2> dropped;
+    if (ImGui::BeginDragDropTarget()) {
+        if (ImGui::AcceptDragDropPayload("RWSMAN_ASSET")) dropped = ImGui::GetIO().MousePos;
+        ImGui::EndDragDropTarget();
+    }
+    hover_ground_.reset();
+    // The ground under a screen point: the collision surface, else the plane
+    // at the height of the last surface hit (open terrain edges, no collision).
+    const auto ground_at = [&](const ImVec2 screen) -> std::optional<rws::Vec3> {
+        if (const auto surface = surface_point(screen)) {
+            last_ground_height_ = surface->y;
+            return surface;
+        }
+        if (const auto ray = viewport_ray(screen.x, screen.y); ray && std::abs(ray->direction.y) > 1e-5F) {
+            const float t = (last_ground_height_ - ray->origin.y) / ray->direction.y;
+            if (t > 0)
+                return rws::Vec3{ray->origin.x + ray->direction.x * t, last_ground_height_,
+                                 ray->origin.z + ray->direction.z * t};
+        }
+        return std::nullopt;
+    };
+    if ((ImGui::IsItemHovered() && authoring) ||
+        (dragging_asset && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)))
+        hover_ground_ = ground_at(ImGui::GetIO().MousePos);
+    if (dropped) {
+        ViewportClick drop{*dropped, ground_at(*dropped)};
+        drop.drop = true;
+        viewport_clicks_.push_back(drop);
+    }
+    // Shift+drag with the select tool draws a selection box.
+    if (ImGui::IsItemHovered() && !gizmo_owns_mouse && edit_tool_ == EditTool::select && ImGui::GetIO().KeyShift &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        box_start_ = ImGui::GetIO().MousePos;
+    if (box_start_) {
+        const auto& io = ImGui::GetIO();
+        const ImVec2 a = *box_start_, b = io.MousePos;
+        const ImVec2 lo{std::min(a.x, b.x), std::min(a.y, b.y)}, hi{std::max(a.x, b.x), std::max(a.y, b.y)};
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            ImGui::GetForegroundDrawList()->AddRectFilled(lo, hi, ui::color_u32(ui::Token::accent, 0.12F));
+            ImGui::GetForegroundDrawList()->AddRect(lo, hi, ui::color_u32(ui::Token::accent, 0.8F));
+        } else {
+            PickEvent event;
+            event.is_box = true;
+            event.shift = true;
+            event.ctrl = io.KeyCtrl;
+            for (const auto& marker : overlay_markers_) {
+                if (marker.screen.x < lo.x || marker.screen.x > hi.x || marker.screen.y < lo.y || marker.screen.y > hi.y)
+                    continue;
+                const auto entry = mission_points_[marker.point].source_entry;
+                if (!locked_mission_entries_.contains(entry) && std::ranges::find(event.box, entry) == event.box.end())
+                    event.box.push_back(entry);
+            }
+            if ((hi.x - lo.x) * (hi.y - lo.y) > 16.0F) pick_event_ = std::move(event);
+            box_start_.reset();
+        }
+    }
     if (ImGui::IsItemHovered() && !gizmo_owns_mouse) {
         const auto& io = ImGui::GetIO();
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -3463,26 +3529,43 @@ bool GeometryPreview::draw_scene(
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             const auto drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left);
             if (!gizmo_press_ && drag.x * drag.x + drag.y * drag.y < 16.0F) {
-                if (!overlay_click(io.MousePos)) {
-                    selected_mission_entry_.reset();
-                    const auto collision_hit = pick_collision(io.MousePos.x, io.MousePos.y);
-                    if (collision_hit && (prefer_collision_ || measurement_mode_ || io.KeyAlt)) {
-                        select_collision(*collision_hit);
-                    } else if (const auto picked = pick_scene(io.MousePos.x, io.MousePos.y)) {
-                        if ((*picked & 0x8000000000000000ULL) != 0)
-                            selected_mission_entry_ = static_cast<std::uint32_t>(*picked);
-                        else
-                            selected_chunk = *picked;
-                    } else if (collision_hit) {
-                        select_collision(*collision_hit);
+                if (authoring) {
+                    // The authoring tools take the click (AppState applies it).
+                    viewport_clicks_.push_back({io.MousePos, ground_at(io.MousePos), io.KeyShift, io.KeyCtrl,
+                                                io.KeyAlt, io.MouseClickedLastCount[ImGuiMouseButton_Left] >= 2});
+                } else {
+                    // Shift/Ctrl clicks add or remove the marker under the pointer, never the next one.
+                    if (!overlay_click(io.MousePos, !io.KeyShift && !io.KeyCtrl)) {
+                        selected_mission_entry_.reset();
+                        const auto collision_hit = pick_collision(io.MousePos.x, io.MousePos.y);
+                        if (collision_hit && (prefer_collision_ || measurement_mode_ || io.KeyAlt)) {
+                            select_collision(*collision_hit);
+                        } else if (const auto picked = pick_scene(io.MousePos.x, io.MousePos.y)) {
+                            if ((*picked & 0x8000000000000000ULL) != 0)
+                                selected_mission_entry_ = static_cast<std::uint32_t>(*picked);
+                            else
+                                selected_chunk = *picked;
+                        } else if (collision_hit) {
+                            select_collision(*collision_hit);
+                        }
                     }
+                    // Shift/Ctrl clicks extend the selection; a plain click resets it.
+                    PickEvent event;
+                    event.entry = selected_mission_entry_;
+                    event.shift = io.KeyShift;
+                    event.ctrl = io.KeyCtrl;
+                    pick_event_ = std::move(event);
                 }
             }
         }
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) gizmo_press_ = false;
-        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !gizmo_press_) reset_view();
+        // A double click on empty ground resets the view; on a marker (or with
+        // Shift/Ctrl, picking) it is a second click.
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !gizmo_press_ && !authoring && !io.KeyShift &&
+            !io.KeyCtrl && overlay_candidates(io.MousePos).empty())
+            reset_view();
         const float look_sign = invert_y_ ? -1.0F : 1.0F;
-        if (projection_ == 0 && !gizmo_press_ && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+        if (projection_ == 0 && !gizmo_press_ && !box_start_ && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             target_yaw_ -= io.MouseDelta.x * 0.01F;
             target_pitch_ = std::clamp(target_pitch_ + io.MouseDelta.y * 0.01F * look_sign, -1.5F, 1.5F);
             preserve_camera_position_ = true;
@@ -3680,6 +3763,15 @@ bool GeometryPreview::draw_scene(
     draw_edit_gizmo(draw_list);
     draw_list->PopClipRect();
     draw_viewport_hud(draw_list, origin, size, collision_status);
+    if (!tool_hint_.empty()) {
+        // The active tool's guidance, centred above the HUD lines at the bottom of the viewport.
+        const auto text_size = ImGui::CalcTextSize(tool_hint_.c_str());
+        const float pad = 6.0F * ui::ui_scale();
+        const ImVec2 at{origin.x + (size.x - text_size.x) * 0.5F, origin.y + size.y - 4.0F * text_size.y - 4.0F * pad};
+        draw_list->AddRectFilled({at.x - pad, at.y - pad * 0.6F}, {at.x + text_size.x + pad, at.y + text_size.y + pad * 0.6F},
+                                 ui::viewport_color(ui::Viewport::hud_background), 4.0F * ui::ui_scale());
+        draw_list->AddText(at, ui::viewport_color(ui::Viewport::hud_text), tool_hint_.c_str());
+    }
     draw_overlay_legend(draw_list, origin, size);
     draw_axis_gizmo(draw_list, origin, size);
     draw_overlay_hover_tooltip();
@@ -3724,7 +3816,6 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
                                                  "Base + lightmap", "Wireframe"};
     constexpr const char* projection_names[] = {"Perspective", "Top (X/Z)", "Front (X/Y)",
                                                 "Side (Z/Y)"};
-    constexpr const char* projection_short[] = {"Persp", "Top", "Front", "Side"};
     const auto selected_style = std::find(scene_styles.begin(), scene_styles.end(), view_style_);
     const std::size_t style_index =
         selected_style == scene_styles.end()
@@ -3759,41 +3850,65 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
             ImGui::SetNextWindowPos(anchor, ImGuiCond_Always);
             return ImGui::BeginPopup(id);
         };
-        const auto labelled = [&](const char* icon, const std::string& text) {
-            return compact ? std::string(icon) : std::string(icon) + " " + text;
-        };
 
-        if (popup_button("style", labelled(ui::icons::LC_EYE, scene_style_names[style_index]) + " " + chevron,
-                         "Shading")) {
+        // Three labelled menus (docs/plans/editor-ux-redesign.md, C2): View
+        // (shading, projection, framing, options), Show (layers, clipping) and
+        // Markers; then the quick toggles and the marker filter.
+        if (popup_button("view", std::string(ui::icons::LC_EYE) + " View " + chevron,
+                         "Shading, projection (numpad 1/3/7, 5), framing and view options")) {
+            ui::section("Shading");
             for (std::size_t i = 0; i < std::size(scene_style_names); ++i)
                 if (ImGui::Selectable(scene_style_names[i], i == style_index)) view_style_ = scene_styles[i];
-            ImGui::EndPopup();
-        }
-        ImGui::SameLine();
-        if (popup_button("projection", labelled(ui::icons::LC_BOX, projection_short[projection_]) + " " + chevron,
-                         "Projection (numpad 1/3/7, 5 toggles perspective)")) {
+            ui::section("Projection");
             for (int i = 0; i < 4; ++i)
                 if (ImGui::Selectable(projection_names[i], i == projection_)) set_projection(i);
-            ImGui::EndPopup();
-        }
-        ImGui::SameLine();
-        if (popup_button("frame", labelled(ui::icons::LC_SCAN, "Frame") + " " + chevron, "Frame the camera")) {
+            ui::section("Frame");
             if (ImGui::MenuItem("All", "Home")) frame_all();
-            if (ImGui::MenuItem("Visual", nullptr, false, has_visual)) frame_bounds(visual_center_, visual_radius_, visual_extent_);
-            if (ImGui::MenuItem("Collision", nullptr, false, has_collision))
+            if (ImGui::MenuItem("Visual map", nullptr, false, has_visual))
+                frame_bounds(visual_center_, visual_radius_, visual_extent_);
+            if (ImGui::MenuItem("Collision map", nullptr, false, has_collision))
                 frame_bounds(collision_center_, collision_radius_, collision_extent_);
             if (ImGui::MenuItem("Selection", "F", false, selected_mission_entry_.has_value()))
                 frame_selection(std::nullopt);
+            ui::section("Options");
+            ImGui::Checkbox("Stats HUD", &show_hud_);
+            ImGui::Checkbox("Wire overlay", &wireframe_);
+            ImGui::Checkbox("Cull backfaces", &cull_backfaces_);
+            ImGui::Checkbox("Prefer collision on click", &prefer_collision_);
+            ImGui::SetNextItemWidth(160.0F * ui::ui_scale());
+            ImGui::SliderFloat("Move speed", &navigation_speed_, 0.05F, 4.0F, "%.2fx", ImGuiSliderFlags_Logarithmic);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Render settings panel...")) open_tools = true;
             ImGui::EndPopup();
         }
         ImGui::SameLine();
-        if (popup_button("layers", labelled(ui::icons::LC_LAYERS, "Layers") + " " + chevron, "Layers and overlays")) {
+        bool any_clip = false;
+        for (const auto& clip : clips_) any_clip = any_clip || clip.enabled;
+        if (popup_button("show", std::string(ui::icons::LC_LAYERS) + " Show " + chevron,
+                         "Map layers, collision, clip planes", any_clip)) {
             draw_layers_popup(has_visual, has_collision);
+            ui::section("Clip planes");
+            const char* axes = "XYZ";
+            for (std::size_t i = 0; i < clips_.size(); ++i) {
+                auto& clip = clips_[i];
+                ImGui::PushID(static_cast<int>(i));
+                const std::string label = std::string("Clip ") + axes[i];
+                ImGui::Checkbox(label.c_str(), &clip.enabled);
+                if (clip.enabled) {
+                    ImGui::SameLine();
+                    ImGui::Checkbox("keep greater", &clip.keep_greater);
+                    ImGui::SetNextItemWidth(180.0F * ui::ui_scale());
+                    ImGui::DragFloat("##clip_position", &clip.position, 0.5F);
+                }
+                ImGui::PopID();
+            }
+            ImGui::Checkbox("Leaf bounds", &show_leaf_bounds_);
+            ImGui::Checkbox("Selected BSP path", &show_bsp_path_);
             ImGui::EndPopup();
         }
         if (has_mission_overlays()) {
             ImGui::SameLine();
-            if (popup_button("markers", labelled(ui::icons::LC_MAP_PIN, "Markers") + " " + chevron,
+            if (popup_button("markers", std::string(ui::icons::LC_MAP_PIN) + " Markers " + chevron,
                              "Marker display: labels, depth, fading, merging, height slice")) {
                 draw_markers_popup();
                 ImGui::EndPopup();
@@ -3829,6 +3944,8 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
                                   overlay_options_.dim_filtered ? "dimmed" : "hidden");
             if (ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape)) overlay_filter_.fill('\0');
         }
+        collision_loaded_for_measure_ = has_collision;
+        if (!tool_strip_) {
         ImGui::SameLine();
         ImGui::BeginDisabled(!has_collision);
         // The measure button is a plain toggle, not a popup.
@@ -3839,49 +3956,55 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
             ImGui::SetTooltip("Measure two points on the level collision");
         if (measure_clicked) measurement_mode_ = !measurement_mode_;
         ImGui::EndDisabled();
-        ImGui::SameLine();
-        bool any_clip = false;
-        for (const auto& clip : clips_) any_clip = any_clip || clip.enabled;
-        if (popup_button("clip", labelled(ui::icons::LC_SCISSORS, "Clip") + " " + chevron, "Clip planes", any_clip)) {
-            const char* axes = "XYZ";
-            for (std::size_t i = 0; i < clips_.size(); ++i) {
-                auto& clip = clips_[i];
-                ImGui::PushID(static_cast<int>(i));
-                const std::string label = std::string("Clip ") + axes[i];
-                ImGui::Checkbox(label.c_str(), &clip.enabled);
-                if (clip.enabled) {
-                    ImGui::SameLine();
-                    ImGui::Checkbox("keep greater", &clip.keep_greater);
-                    ImGui::SetNextItemWidth(180.0F * ui::ui_scale());
-                    ImGui::DragFloat("##clip_position", &clip.position, 0.5F);
-                }
-                ImGui::PopID();
-            }
-            ImGui::Separator();
-            ImGui::Checkbox("Leaf bounds", &show_leaf_bounds_);
-            ImGui::Checkbox("Selected BSP path", &show_bsp_path_);
-            ImGui::EndPopup();
-        }
-        ImGui::SameLine();
-        if (popup_button("view", std::string(ui::icons::LC_SETTINGS) + " " + chevron, "View options")) {
-            ImGui::Checkbox("Stats HUD", &show_hud_);
-            ImGui::Checkbox("Wire overlay", &wireframe_);
-            ImGui::Checkbox("Cull backfaces", &cull_backfaces_);
-            ImGui::Checkbox("Prefer collision on click", &prefer_collision_);
-            ImGui::SetNextItemWidth(160.0F * ui::ui_scale());
-            ImGui::SliderFloat("Move speed", &navigation_speed_, 0.05F, 4.0F, "%.2fx", ImGuiSliderFlags_Logarithmic);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Render settings panel...")) open_tools = true;
-            ImGui::EndPopup();
         }
         ImGui::SameLine();
         if (ui::icon_button("screenshot", ui::icons::LC_CAMERA, "Save a PNG screenshot (F12)"))
             screenshot_requested_ = true;
     }
     ImGui::EndChild();
+    toolbar_bottom_ = ImGui::GetItemRectMax().y;
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(3);
+    if (tool_strip_) draw_tool_strip(origin);
     return open_tools;
+}
+
+void GeometryPreview::draw_tool_strip(const ImVec2 origin) {
+    // The editing tools (docs/plans/editor-ux-redesign.md, C1), a column on
+    // the viewport's left edge under the toolbar.
+    const float scale = ui::ui_scale();
+    ImGui::SetCursorScreenPos({origin.x + 8.0F * scale, toolbar_bottom_ + 8.0F * scale});
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::color(ui::Token::bg0, 0.88F));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {3.0F, 3.0F});
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {0.0F, 2.0F});
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 3.0F);
+    if (ImGui::BeginChild("##tool_strip", {0.0F, 0.0F},
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY |
+                              ImGuiChildFlags_AlwaysUseWindowPadding,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                              ImGuiWindowFlags_NoSavedSettings)) {
+        const auto tool = [&](const char* id, const char* icon, const EditTool value, const char* tooltip) {
+            if (ui::icon_button(id, icon, tooltip, edit_tool_ == value)) edit_tool_ = value;
+        };
+        tool("select_tool", ui::icons::LC_MOUSE_POINTER, EditTool::select, "Select (Q): click to select, F frames it");
+        tool("move_tool", ui::icons::LC_MOVE_3D, EditTool::move,
+             "Move (G): drag the centre to slide on the ground, an arrow for one axis; Alt toggles snapping");
+        tool("rotate_tool", ui::icons::LC_REFRESH_CW, EditTool::rotate,
+             "Rotate (R): drag around the ring; Ctrl snaps to 15 degrees");
+        ImGui::Separator();
+        if (ui::icon_button("snap_tool", ui::icons::LC_MAGNET,
+                            snap_to_surface_ ? "Snap to the ground: on (moves follow the collision surface)"
+                                             : "Snap to the ground: off (moves keep their height)",
+                            snap_to_surface_))
+            snap_to_surface_ = !snap_to_surface_;
+        ImGui::BeginDisabled(!collision_loaded_for_measure_);
+        if (ui::icon_button("measure_tool", ui::icons::LC_RULER, "Measure two points on the ground", measurement_mode_))
+            measurement_mode_ = !measurement_mode_;
+        ImGui::EndDisabled();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor();
 }
 
 void GeometryPreview::draw_viewport_hud(ImDrawList* draw_list, const ImVec2 origin, const ImVec2 size,
@@ -3890,9 +4013,14 @@ void GeometryPreview::draw_viewport_hud(ImDrawList* draw_list, const ImVec2 orig
         const std::size_t triangles = (show_visual_ ? visual_triangle_total_ : 0) +
                                       (show_collision_ ? collision_triangle_total_ : 0);
         char first[96];
-        std::snprintf(first, sizeof(first), "fps %.0f \xC2\xB7 %s tris \xC2\xB7 cam %d", frame_fps_,
-                      compact_count(triangles).c_str(),
-                      static_cast<int>(projection_ == 0 ? distance_ : orthographic_scale_));
+        // A negative rate hides it (UI test runs).
+        if (frame_fps_ < 0)
+            std::snprintf(first, sizeof(first), "%s tris \xC2\xB7 cam %d", compact_count(triangles).c_str(),
+                          static_cast<int>(projection_ == 0 ? distance_ : orthographic_scale_));
+        else
+            std::snprintf(first, sizeof(first), "fps %.0f \xC2\xB7 %s tris \xC2\xB7 cam %d", frame_fps_,
+                          compact_count(triangles).c_str(),
+                          static_cast<int>(projection_ == 0 ? distance_ : orthographic_scale_));
         std::ostringstream second;
         second << scene_clump_count_ << " clumps \xC2\xB7 " << scene_instance_count_ << " instances \xC2\xB7 "
                << scene_custom_instance_count_ << " placements";

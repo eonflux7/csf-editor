@@ -18,6 +18,9 @@ enum class DialogKind {
     export_original,    // Shipped mission archive, for the export dialog.
     export_output,      // Where the rebuilt mission archive is written.
     import_donor,       // Another unpacked mission to import from.
+    blender,            // The Blender executable.
+    test_install,       // The authoring project's test install (a game copy to deploy into).
+    original_archive,   // An untouched shipped archive for the authoring project's builds.
 };
 
 // Opens a native file or folder dialog without blocking the frame loop. Only one

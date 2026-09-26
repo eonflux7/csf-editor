@@ -41,6 +41,8 @@ add_library(csf_core
     src/csf_mission_edit.cpp
     src/csf_mission_flow.cpp
     src/csf_mission_ops.cpp
+    src/csf_mission_components.cpp
+    src/csf_project_pipeline.cpp
     src/csf_mission_recipes.cpp
     src/csf_mission_scene.cpp
     src/csf_mod_project.cpp
@@ -92,6 +94,10 @@ add_library(rwsman_ui_model STATIC
     src/ui_model_index_builders.cpp
     src/ui_model_log.cpp
     src/ui_model_mission_lookup.cpp
+    src/ui_model_contrast.cpp
+    src/ui_model_entity_kind.cpp
+    src/ui_model_script.cpp
+    src/ui_model_problems.cpp
     src/ui_model_search.cpp
     src/ui_model_settings.cpp
     src/ui_model_viewport_overlays.cpp
@@ -176,10 +182,19 @@ if(RWSMAN_BUILD_GUI)
         ${imgui_SOURCE_DIR}/imgui_widgets.cpp
         ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
         ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+        app/imgui/imgui_hooks.cpp
     )
     target_include_directories(imgui_backend PUBLIC
         ${imgui_SOURCE_DIR}
         ${imgui_SOURCE_DIR}/backends
+        app/imgui
+    )
+    # rws-man's ImGui configuration: assertions and the test-engine item hooks
+    # report to the UI test harness (app/ui_automation.hpp). The hooks cost one
+    # branch per item unless a UI script turns them on.
+    target_compile_definitions(imgui_backend PUBLIC
+        IMGUI_USER_CONFIG="rwsman_imconfig.h"
+        IMGUI_ENABLE_TEST_ENGINE
     )
     target_link_libraries(imgui_backend PUBLIC glfw OpenGL::GL)
     target_compile_features(imgui_backend PUBLIC cxx_std_20)
@@ -200,6 +215,11 @@ if(RWSMAN_BUILD_GUI)
         app/navigation.cpp
         app/references.cpp
         app/screenshot.cpp
+        app/state_snapshot.cpp
+        app/ui_automation.cpp
+        app/ui_script_runner.cpp
+        app/viewport_tools.cpp
+    app/project_actions.cpp
         app/ui/actor_animation.cpp
         app/ui/center.cpp
         app/ui/chunk_details.cpp
@@ -214,8 +234,13 @@ if(RWSMAN_BUILD_GUI)
         app/ui/property_grid.cpp
         app/ui/mission_details.cpp
         app/ui/mission_editor.cpp
+        app/ui/outliner.cpp
         app/ui/overlays.cpp
         app/ui/preferences.cpp
+        app/ui/problems.cpp
+        app/ui/properties.cpp
+    app/ui/component_card.cpp
+    app/ui/project_panels.cpp
         app/ui/height_report.cpp
         app/ui/palette.cpp
         app/ui/panels.cpp
@@ -228,7 +253,8 @@ if(RWSMAN_BUILD_GUI)
         app/ui/widgets.cpp
     )
     target_include_directories(rws-man PRIVATE app ${pfd_SOURCE_DIR})
-    target_compile_definitions(rws-man PRIVATE RWSMAN_VERSION="${PROJECT_VERSION}")
+    target_compile_definitions(rws-man PRIVATE RWSMAN_VERSION="${PROJECT_VERSION}"
+                                               RWSMAN_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(rws-man PRIVATE rws::core csf::core rws::image rwsman::ui_model imgui_backend)
     if(WIN32)
         target_link_libraries(rws-man PRIVATE Shell32 Comdlg32)
@@ -245,4 +271,39 @@ if(RWSMAN_BUILD_TESTS)
     add_executable(fake_pakman tests/fake_pakman.cpp)
     target_compile_features(fake_pakman PRIVATE cxx_std_20)
     add_test(NAME csf_authoring_tests COMMAND csf_authoring_tests $<TARGET_FILE:fake_pakman>)
+
+    # UI tests (docs/plans/editor-ux-redesign.md, T8): every tests/ui/*.uiscript
+    # runs in a hidden rws-man window against a generated fixture mission, with
+    # its own config directory. Label `ui`; `./test.sh --ui` runs them. Without
+    # a display they run under xvfb-run, or are skipped (exit 77).
+    add_executable(rwsman_ui_fixture tests/ui/make_fixture.cpp)
+    target_link_libraries(rwsman_ui_fixture PRIVATE rws::core csf::core)
+    if(RWSMAN_BUILD_GUI)
+        set(ui_test_root "${CMAKE_CURRENT_BINARY_DIR}/ui-tests")
+        add_test(NAME ui.fixture COMMAND rwsman_ui_fixture "${ui_test_root}/fixture")
+        set_tests_properties(ui.fixture PROPERTIES FIXTURES_SETUP ui_fixture LABELS ui)
+        if(WIN32)
+            set(ui_launcher)
+        else()
+            set(ui_launcher "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/run_ui_test.sh")
+        endif()
+        # tests/ui/local/ needs game data through environment variables
+        # (RWSMAN_HELLO_WORLD=<project>) and skips without them.
+        file(GLOB ui_scripts CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/*.uiscript"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/local/*.uiscript")
+        foreach(script IN LISTS ui_scripts)
+            get_filename_component(name "${script}" NAME_WE)
+            get_filename_component(folder "${script}" DIRECTORY)
+            if(folder MATCHES "/local$")
+                set(name "local.${name}")
+            endif()
+            add_test(NAME ui.${name}
+                COMMAND ${ui_launcher} $<TARGET_FILE:rws-man> --run-script "${script}"
+                    --config-dir "${ui_test_root}/config/${name}" --output-dir "${ui_test_root}/out"
+                    --golden-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/golden" --overwrite --size 1280x720)
+            set_tests_properties(ui.${name} PROPERTIES
+                FIXTURES_REQUIRED ui_fixture LABELS ui SKIP_RETURN_CODE 77 TIMEOUT 120
+                ENVIRONMENT "RWSMAN_UI_FIXTURE=${ui_test_root}/fixture/Fixture;RWSMAN_UI_CONFIG=${ui_test_root}/config/${name}")
+        endforeach()
+    endif()
 endif()

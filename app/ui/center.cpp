@@ -1,9 +1,13 @@
 #include "app_state.hpp"
+#include "commands.hpp"
 #include "ui/ui.hpp"
 
 #include "app_actions.hpp"
+#include "viewport_tools.hpp"
 
 #include <imgui.h>
+
+#include <utility>
 
 namespace rwsman::ui {
 
@@ -17,9 +21,13 @@ void draw_center(AppState& state, const Workspace workspace) {
                 document->chunks(), document->bytes(), document->scene_instances(),
                 document->source_path(), state.selected, collision_export_document(state),
                 state.main_is_collision, state.collision_status)) {
-            state.ui.show_render_settings = true;
-            state.ui.focus_render_settings = true;
+            show_panel(state, Panel::render_settings);
         }
+        // After a map rebuild the preview reloaded its scene this frame; put
+        // the camera back where the user had it.
+        if (const auto camera = std::exchange(state.mission.restore_camera, std::nullopt))
+            state.preview.set_camera(*camera);
+        if (workspace == Workspace::mission) update_viewport_tools(state);
     } else if (workspace == Workspace::geometry) {
         const auto* selected_chunk =
             state.selected ? find_chunk(document->chunks(), *state.selected) : nullptr;

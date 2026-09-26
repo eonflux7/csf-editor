@@ -46,3 +46,28 @@ jobs:
 
       - name: Build and test core
         run: ./test.sh --core-only
+
+  linux-ui-tests:
+    name: UI tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install build tools, GLFW dependencies and a virtual display
+        run: >-
+          sudo apt-get update && sudo apt-get install -y ninja-build xvfb xauth libgl1-mesa-dri
+          libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev
+          libwayland-dev libxkbcommon-dev wayland-protocols
+
+      - name: Build and run the UI tests
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: ./test.sh --ui
+
+      - name: Keep failing screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-output
+          path: build/ui-tests/out

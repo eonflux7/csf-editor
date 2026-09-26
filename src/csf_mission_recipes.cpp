@@ -437,13 +437,12 @@ EditResult add_cover_group(MissionEditor& editor, const CoverGroup& recipe, std:
     return editor.add_navigation_group(recipe.name, 3, recipe.points, {}, recipe.id, new_id);
 }
 
-EditResult add_walk_grid(MissionEditor& editor, const WalkGrid& recipe, std::int32_t* new_id) {
-    if (!(recipe.spacing > 0) || recipe.max_x < recipe.min_x || recipe.max_z < recipe.min_z || !recipe.ground)
-        return {false, "The walk grid needs a positive spacing, a range and ground", {}};
+WalkGridLayout walk_grid_layout(const WalkGrid& recipe) {
+    WalkGridLayout layout;
+    if (!(recipe.spacing > 0) || recipe.max_x < recipe.min_x || recipe.max_z < recipe.min_z || !recipe.ground) return layout;
     const auto columns = static_cast<std::int32_t>(std::floor((recipe.max_x - recipe.min_x) / recipe.spacing)) + 1;
     const auto rows = static_cast<std::int32_t>(std::floor((recipe.max_z - recipe.min_z) / recipe.spacing)) + 1;
     std::map<std::pair<std::int32_t, std::int32_t>, std::int32_t> index;
-    std::vector<NavPointSpec> points;
     for (std::int32_t row = 0; row < rows; ++row)
         for (std::int32_t column = 0; column < columns; ++column) {
             const float x = recipe.min_x + static_cast<float>(column) * recipe.spacing +
@@ -458,20 +457,26 @@ EditResult add_walk_grid(MissionEditor& editor, const WalkGrid& recipe, std::int
             if (boxed || near) continue;
             const auto height = recipe.ground(x, z);
             if (!height) continue;
-            index[{column, row}] = static_cast<std::int32_t>(points.size() + 1);
-            points.push_back({{x, *height, z}, 0, 0});
+            index[{column, row}] = static_cast<std::int32_t>(layout.points.size() + 1);
+            layout.points.push_back({{x, *height, z}, 0, 0});
         }
-    std::vector<std::pair<std::int32_t, std::int32_t>> links;
     for (std::int32_t row = 0; row < rows; ++row)
         for (std::int32_t column = 0; column < columns; ++column) {
             const auto a = index.find({column, row});
             if (a == index.end()) continue;
             for (const auto& [dc, dr] : {std::pair{1, 0}, std::pair{0, 1}})
                 if (const auto b = index.find({column + dc, row + dr}); b != index.end())
-                    links.emplace_back(a->second, b->second);
+                    layout.links.emplace_back(a->second, b->second);
         }
-    if (points.empty()) return {false, "No walk grid point has ground under it", {}};
-    return editor.add_navigation_group(recipe.name, 0, points, links, recipe.id, new_id);
+    return layout;
+}
+
+EditResult add_walk_grid(MissionEditor& editor, const WalkGrid& recipe, std::int32_t* new_id) {
+    if (!(recipe.spacing > 0) || recipe.max_x < recipe.min_x || recipe.max_z < recipe.min_z || !recipe.ground)
+        return {false, "The walk grid needs a positive spacing, a range and ground", {}};
+    const auto layout = walk_grid_layout(recipe);
+    if (layout.points.empty()) return {false, "No walk grid point has ground under it", {}};
+    return editor.add_navigation_group(recipe.name, 0, layout.points, layout.links, recipe.id, new_id);
 }
 
 EditResult link_to_nearest(MissionEditor& editor, const std::int32_t group, const std::int32_t target) {

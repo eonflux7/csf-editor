@@ -6,7 +6,9 @@
 #include "csf/export.hpp"
 #include "csf/mission_edit.hpp"
 #include "csf/mission_flow.hpp"
+#include "csf/mission_components.hpp"
 #include "csf/mission_ops.hpp"
+#include "csf/project_pipeline.hpp"
 #include "csf/mission_recipes.hpp"
 #include "csf/mod_project.hpp"
 #include "csf/script_signatures.hpp"
@@ -39,6 +41,10 @@
 #include "rwsman/log.hpp"
 #include "rwsman/search_index.hpp"
 #include "rwsman/settings.hpp"
+#include "rwsman/contrast.hpp"
+#include "rwsman/entity_kind.hpp"
+#include "rwsman/problems.hpp"
+#include "rwsman/ui_script.hpp"
 #include "rwsman/viewport_overlays.hpp"
 
 #include <algorithm>
@@ -541,7 +547,7 @@ void test_settings_model() {
     settings.ui_scale = 1.25F;
     settings.theme = "dark";
     settings.workspace = "mission";
-    settings.show_bottom_dock = true;
+    settings.show_bottom_dock = false;
     settings.show_hud = false;
     settings.invert_y = true;
     settings.move_speed = 2.5F;
@@ -718,6 +724,16 @@ void test_search_index() {
           !index.contains(0, "patrol") && index.contains(0, ""));
     CHECK(parse_hex_offset("0x2C79D6") == 0x2C79D6 && !parse_hex_offset("0x") &&
           !parse_hex_offset("2C79D6") && !parse_hex_offset("0xZZ"));
+    // Kind prefixes filter; "actor:" alone lists the kind.
+    results = index.query("script:guard", 10);
+    CHECK(results.size() == 1 && results[0].entry->label == "GuardPatrol");
+    CHECK(index.query("actor:", 10).size() == 2 && index.query("chunk:geo", 10).size() == 1);
+    CHECK(index.query("unknown:guard", 10).empty());  // not a prefix: the whole text is searched
+    // Mission mode ranks gameplay above chunks that match better.
+    add(SymbolKind::chunk, "Geo", "0x2000", 0, 0x2000);
+    add(SymbolKind::area, "GeoZone", "area 3", 3, 0x2100);
+    CHECK(index.query("geo", 10)[0].entry->label == "Geo");
+    CHECK(index.query("geo", 10, true)[0].entry->label == "GeoZone");
 }
 
 void test_mission_index() {
@@ -1370,6 +1386,14 @@ void test_mission_editor() {
         CHECK(std::equal(edited.begin(), edited.begin() + static_cast<std::ptrdiff_t>(record), map_bytes.begin()));
         CHECK(with_map.undo() && with_map.files()[*index].raw == map_bytes);
         CHECK(with_map.redo() && with_map.modified_files().size() == 1);
+        // A rebuilt map replaces the file outside the history: undoing the
+        // instance edit no longer touches it.
+        const auto revision = with_map.revision();
+        auto rebuilt = map_bytes;
+        rebuilt.push_back(std::byte{0x42});
+        with_map.rebase_file(*index, rebuilt);
+        CHECK(with_map.files()[*index].raw == rebuilt && with_map.revision() > revision);
+        CHECK(with_map.can_undo() && with_map.undo() && with_map.files()[*index].raw == rebuilt);
         std::filesystem::remove(map / "world.rws");
         std::filesystem::remove(map / "M1.vis");
     }
@@ -1563,6 +1587,98 @@ void test_mission_editor() {
             CHECK(!refused.applied && refused.message.find("cutscene program") != std::string::npos);
         }
 
+        // Components (E1): a recipe edited later regenerates in place, as a
+        // fresh build of the edited lines would, and hand edits show as Modified.
+        {
+            const auto patrol = [](const std::string& pause) {
+                return "guard-patrol id=40 name=WALKER class=10 heading=90 route=50 route-name=WALK "
+                       "points=0,0,0;100,0,0;100,0,100 pause=" + pause + " script=9200 script-name=WALK_LOOP\n";
+            };
+            const auto build = [&](const std::string& lines) {
+                auto editor = csf::MissionEditor::open(map / "M1.scn", package);
+                const auto outcomes = csf::run_component_ops(
+                    editor, "cover-group id=51 name=C points=0,0,0;50,0,50\n" + lines +
+                                "dummy id=60 name=AFTER pos=1,2,3\nlink-nearest group=50 target=51\n");
+                CHECK(!outcomes.empty() && outcomes.back().result.applied);
+                return editor;
+            };
+            const auto same_files = [](const csf::MissionEditor& a, const csf::MissionEditor& b) {
+                if (a.files().size() != b.files().size()) return false;
+                for (std::size_t i = 0; i < a.files().size(); ++i)
+                    if (a.files()[i].present != b.files()[i].present || a.files()[i].bytes() != b.files()[i].bytes())
+                        return false;
+                return true;
+            };
+            auto edited = build(patrol("2"));
+            const auto original = build(patrol("2"));
+            auto list = csf::mission_components(edited);
+            CHECK(list.size() == 2 && list[1].op() == "guard-patrol" && list[1].lines.size() == 2);  // with its link
+            CHECK((list[1].owns == std::vector<csf::MissionRecordId>{{csf::MissionRecordId::Type::actor, 40},
+                                                                      {csf::MissionRecordId::Type::navigation_group, 50},
+                                                                      {csf::MissionRecordId::Type::script, 9200}}));
+            CHECK(csf::component_title(list[1]) == "Guard patrol WALKER");
+            CHECK(csf::component_state(edited, list[1]) == csf::ComponentState::clean);
+            CHECK(same_files(edited, original));
+            CHECK(csf::components_that_drift(edited).empty());
+            // Editing a parameter gives the files a fresh build of the new lines gives.
+            auto result = csf::update_component(edited, list[1].id, patrol("5") + "link-nearest group=50 target=51\n");
+            CHECK(result.applied && result.message == "Edited Guard patrol WALKER");
+            CHECK(edited.history_labels().back() == "Edit Guard patrol WALKER");
+            CHECK(same_files(edited, build(patrol("5"))));
+            CHECK(edited.undo() && same_files(edited, original));
+            // A hand edit of an owned script: Modified until regenerated.
+            const auto mission_program = *edited.file_of_kind(csf::MissionFileKind::mission_script);
+            auto script = *edited.script_text(mission_program, 9200);
+            script.replace(script.find("WALK_LOOP"), 9, "WALK_BY_HAND");
+            CHECK(edited.set_script_text(mission_program, 9200, script).applied);
+            CHECK(csf::component_state(edited, csf::mission_components(edited)[1]) == csf::ComponentState::modified);
+            CHECK(csf::regenerate_component(edited, list[1].id).applied && same_files(edited, original));
+            // Detach keeps the records; delete removes them; both undo.
+            CHECK(csf::detach_component(edited, list[1].id).applied);
+            CHECK(csf::mission_components(edited).size() == 1 && edited.record_text({csf::MissionRecordId::Type::actor, 40}));
+            CHECK(edited.history_labels().back() == "Detach Guard patrol WALKER");
+            CHECK(edited.undo() && csf::mission_components(edited).size() == 2);
+            CHECK(csf::delete_component(edited, list[1].id).applied);
+            CHECK(!edited.record_text({csf::MissionRecordId::Type::actor, 40}) &&
+                  !edited.record_text({csf::MissionRecordId::Type::navigation_group, 50}));
+            CHECK(edited.undo() && same_files(edited, original));
+            // Lines without IDs get free ones, so they regenerate the same records.
+            std::int32_t added{};
+            CHECK(csf::add_component(edited, "guard-idle name=POST class=10 pos=5,0,5 script-name=POST loop=100\n", {},
+                                     &added).applied);
+            const auto post = csf::mission_components(edited).back();
+            CHECK(added == 3 && post.id == 3 && post.lines[0].find(" id=41") != std::string::npos &&
+                  post.lines[0].find(" script=9201") != std::string::npos);
+            CHECK(csf::components_that_drift(edited).empty());
+            CHECK(csf::component_owning(edited, {csf::MissionRecordId::Type::actor, 41})->id == 3);
+            CHECK(!csf::add_component(edited, "guard-idle name=BAD class=999 pos=0,0,0 script-name=B loop=100\n").applied);
+            CHECK(csf::mission_components(edited).size() == 3);  // a rejected component leaves nothing
+            // The list: a file in the workspace beside authored/, never a packaged file.
+            const auto workspace_dir = root / "components-workspace";
+            auto project = csf::ModProject::create(workspace_dir, package, "Components");
+            (void)edited.save(project);
+            CHECK(std::filesystem::is_regular_file(workspace_dir / "components.csfops"));
+            CHECK(std::ranges::none_of(project.files, [](const csf::ModFile& file) {
+                return file.relative_path.filename() == "components.csfops";
+            }));
+            const auto reopened = csf::MissionEditor::open(map / "M1.scn", package, &project);
+            CHECK(csf::mission_components(reopened).size() == 3);
+            CHECK(csf::format_components(csf::parse_components(edited.components_text())) == edited.components_text());
+            bool threw = false;
+            try {
+                (void)csf::parse_components("  guard-idle name=X\n");
+            } catch (const std::invalid_argument&) {
+                threw = true;
+            }
+            CHECK(threw);
+            // Lines round-trip with quoting.
+            auto line = csf::parse_op_line(R"(guard-idle portrait="Menus\\Retratos\\A b.fbs" pause=3)");
+            CHECK(line.get("portrait") == R"(Menus\Retratos\A b.fbs)");
+            line.set("pause", csf::op_number(4.5F));
+            CHECK(csf::format_op_line(line) == R"(guard-idle portrait="Menus\\Retratos\\A b.fbs" pause=4.5)");
+            CHECK(csf::op_points({{{1, 2, 3}, 0.5F, 0}, {{-1.25F, 0, 0}, 0, 0}}) == "1,2,3,0.5;-1.25,0,0");
+        }
+
         // A new mission keeps the environment and empties the rest.
         CHECK(fresh.new_mission().applied);
         const auto& emptied = fresh.scene();
@@ -1738,10 +1854,178 @@ void test_frame_pacing() {
     CHECK(sphere_in_view(ortho, 0, 10.4F, 0, 0.5F) && !sphere_in_view(ortho, 0, 11, 0, 0.5F));
 }
 
+void test_ui_script() {
+    using namespace rwsman;
+    // Steps, quoting, comments, ';' and argument checks.
+    const auto script = parse_ui_script(
+        "# comment\n"
+        "open \"~/my missions/M1.scn\"\n"
+        "click Inspector::Duplicate ; expect mission.dirty true  # trailing\n"
+        "type \"say \\\"hi\\\"\"\r\n"
+        "\n"
+        "bogus 1\n"
+        "expect only-one\n"
+        "compare \"unterminated\n");
+    CHECK(script.steps.size() == 5);
+    CHECK(script.steps[0].op == "open" && script.steps[0].args == std::vector<std::string>{"~/my missions/M1.scn"});
+    CHECK(script.steps[0].line == 2);
+    CHECK(script.steps[1].op == "click" && script.steps[1].args[0] == "Inspector::Duplicate");
+    CHECK(script.steps[2].op == "expect" && script.steps[2].line == 3 && script.steps[2].args[1] == "true");
+    CHECK(script.steps[3].op == "type" && script.steps[3].args[0] == "say \"hi\"");
+    CHECK(script.errors.size() == 3);
+    CHECK(script.errors[0].starts_with("line 6: unknown step 'bogus'"));
+    CHECK(script.errors[1].starts_with("line 7: 'expect' takes 2 argument(s)"));
+    CHECK(script.errors[2] == "line 8: unterminated quote");
+    CHECK(format_ui_script_step(script.steps[0]) == "open \"~/my missions/M1.scn\"");
+    CHECK(parse_ui_script(format_ui_script_step(script.steps[3])).steps[0].args == script.steps[3].args);
+    // Modifiers on pointer steps, dragging into the viewport, scratch copies.
+    const auto viewport = parse_ui_script("click Outliner::tree-2 Shift\nclick-world 1 2 3 Shift+Ctrl\n"
+                                          "drag-world 1 2 3 4 5 6 Ctrl\ndrag-to-world Assets::Crate 1 2 3\n"
+                                          "copy $RWSMAN_HELLO_WORLD hello\nclick-world 1 2\n");
+    CHECK(viewport.steps.size() == 5 && viewport.errors.size() == 1);
+    CHECK(viewport.steps[0].args.size() == 2 && viewport.steps[1].args[3] == "Shift+Ctrl");
+    CHECK(viewport.steps[3].op == "drag-to-world" && viewport.steps[4].op == "copy");
+    CHECK(viewport.errors[0].starts_with("line 6: 'click-world'"));
+
+    // The older --commands list.
+    const auto legacy = ui_script_from_commands({"view.frame_all", "goto:actor:OFICIAL", "palette:guard",
+                                                 "goto-palette:x", ""});
+    CHECK(legacy.size() == 4 && legacy[0].op == "command" && legacy[1].op == "goto" &&
+          legacy[1].args[0] == "actor:OFICIAL" && legacy[2].op == "palette" && legacy[3].op == "goto-palette");
+
+    // Widget targets: visible label, "##id", icons, window qualifiers.
+    const auto target = parse_ui_target("Inspector::Duplicate");
+    CHECK(target.window == "Inspector" && target.label == "Duplicate");
+    CHECK(parse_ui_target("Save").window.empty());
+    CHECK(ui_target_matches(target, "Inspector###mission.inspector", "\xEE\x80\x81 Duplicate"));
+    CHECK(ui_target_matches(target, "Inspector###mission.inspector", "Duplicate##dup"));
+    CHECK(!ui_target_matches(target, "Explorer###mission.explorer", "Duplicate"));
+    CHECK(!ui_target_matches(target, "Inspector###mission.inspector", "Duplicates"));
+    CHECK(ui_target_matches(parse_ui_target("name"), "Inspector", "##name"));
+    CHECK(ui_target_matches(parse_ui_target("mission.center::scene_canvas"), "Viewport###mission.center", "scene_canvas"));
+    CHECK(ui_target_matches(parse_ui_target("toolbar::Snap"), "Viewport###v/##toolbar_CB175E3F", "Snap") == false);
+    CHECK(ui_target_matches(parse_ui_target("Viewport::Snap"), "Viewport###v/##toolbar_CB175E3F", "Snap"));
+
+    // Snapshots as JSON.
+    CHECK(state_snapshot_json({{"a.b", "x\"y"}, {"c", "1\n"}}) == "{\n  \"a.b\": \"x\\\"y\",\n  \"c\": \"1\\n\"\n}\n");
+    CHECK(state_snapshot_json({}) == "{\n\n}\n");
+
+    // Registry lint.
+    CommandRegistry registry;
+    const auto add = [&](std::string id, std::string label, std::string category, std::string keys = {}) {
+        Command command;
+        command.id = std::move(id);
+        command.label = std::move(label);
+        command.category = std::move(category);
+        command.shortcut = std::move(keys);
+        command.run = [] {};
+        registry.add(std::move(command));
+    };
+    add("view.frame_all", "Frame all", "View", "F");
+    CHECK(lint_commands(registry).empty());
+    add("view.Bad", "Bad", "View");
+    add("nodots", "No dots", "View");
+    add("view.frame_again", "Frame all", "View", "F");
+    add("mission.empty", "", "");
+    const auto problems = lint_commands(registry);
+    const auto has = [&](const std::string& text) {
+        return std::ranges::any_of(problems, [&](const auto& problem) { return problem.find(text) != std::string::npos; });
+    };
+    CHECK(has("view.Bad: the ID") && has("nodots: the ID") && has("view.frame_again: another palette command") &&
+          has("mission.empty: no label") && has("mission.empty: no category") && has("shortcut F"));
+}
+
+void test_image_comparison() {
+    const std::vector<std::uint8_t> a{10, 20, 30, 255, 0, 0, 0, 255, 200, 200, 200, 255, 5, 5, 5, 0};
+    auto b = a;
+    b[0] = 18;   // within the tolerance
+    b[4] = 100;  // changed
+    b[15] = 255; // alpha is ignored
+    const auto difference = rws::compare_rgba_images(2, 2, a, 2, 2, b, 8);
+    CHECK(difference.same_size && difference.total_pixels == 4 && difference.changed_pixels == 1);
+    CHECK(difference.max_channel_delta == 100 && difference.changed_percent() == 25.0);
+    CHECK(difference.diff_rgba.size() == 16 && difference.diff_rgba[4] == 255 && difference.diff_rgba[5] == 0);
+    CHECK(rws::compare_rgba_images(2, 2, a, 2, 2, a, 0).changed_pixels == 0);
+    const auto resized = rws::compare_rgba_images(2, 2, a, 1, 1, std::span(b).first(4), 8);
+    CHECK(!resized.same_size && resized.changed_pixels == 1 && resized.diff_rgba.size() == 4);
+}
+
+void test_authoring_ui_models() {
+    using namespace rwsman;
+    // Entity kinds from class data, as the Outliner groups actors.
+    const auto facts = [](const char* type, const char* name, const char* model = "") {
+        ClassFacts value;
+        value.known = true;
+        value.type = type;
+        value.name = name;
+        value.model = model;
+        return value;
+    };
+    CHECK(classify_actor(facts("ALEMAN", "Infanteria Normal 2"), false) == EntityKind::enemy);
+    CHECK(classify_actor(facts("RUSO", "Infanteria"), false) == EntityKind::enemy);
+    CHECK(classify_actor(facts("ALEMAN", "Infanteria"), true) == EntityKind::player);
+    CHECK(classify_actor(facts("PLAYER", "Francotirador"), false) == EntityKind::player);
+    CHECK(classify_actor(facts("DECORATIVO", "Doberman"), false) == EntityKind::animal);
+    CHECK(classify_actor(facts("DECORATIVO", "Void"), false) == EntityKind::helper);
+    CHECK(classify_actor(facts("DECORATIVO", "Caja Madera_Estatica"), false) == EntityKind::prop);
+    CHECK(classify_actor(facts("GHOST", "Item Telefono Ghost"), false) == EntityKind::usable);
+    CHECK(classify_actor(facts("ITEM_ARMA", "Arma Mp40"), false) == EntityKind::pickup);
+    CHECK(classify_actor(facts("CAMION", "Mercedes L3000"), false) == EntityKind::vehicle);
+    CHECK(classify_actor(facts("Moto_SDK", "Moto"), false) == EntityKind::vehicle);
+    CHECK(classify_actor({}, false) == EntityKind::unresolved);
+    CHECK(classify_nav_group(3, "Parapeto", false) == EntityKind::cover);
+    CHECK(classify_nav_group(0, "MALLA", false) == EntityKind::walk_grid);
+    CHECK(classify_nav_group(0, "GE_RUTA", false) == EntityKind::route);
+    CHECK(classify_nav_group(0, "CAM_1", true) == EntityKind::camera_path);
+    for (int i = 0; i < static_cast<int>(EntityKind::count); ++i) {
+        CHECK(*entity_kind_name(static_cast<EntityKind>(i)) != '\0');
+        CHECK(*entity_kind_plural(static_cast<EntityKind>(i)) != '\0');
+    }
+
+    // Problems: zone polygons, unknown classes and project checks, errors first.
+    const auto scene_bytes = compile_source(R"([
+  .VERSION 17
+  .BICHOS ( [ .NOMBRE GHOSTLY .ID 4 .CLASSID 999 .POS (0.0 0.0 0.0) .ANGULO 0.0 ] )
+  .MALLA_AREAS [ .AREAS ( [ .ID 1 .NOMBRE FLAT .HEIGHT 100.0
+    .PUNTOS ( [ .POS (0.0 0.0 0.0) ] [ .POS (10.0 0.0 0.0) ] [ .POS (20.0 0.0 0.0) ] ) ] ) ]
+])");
+    const auto document = csf::Document::from_bytes(scene_bytes);
+    const auto scene = csf::MissionScene::project(document);
+    const csf::ObjectDatabase objects =
+        csf::ObjectDatabase::project(csf::Document::from_bytes(compile_source("[ .VERSION 10 .LISTADATOS ( ) ]")));
+    ProblemInputs inputs;
+    inputs.scene = &scene;
+    inputs.objects = &objects;
+    inputs.project_checks = {"text 0999 is outside the range"};
+    const auto problems = collect_problems(inputs);
+    CHECK(problems.size() >= 3);
+    CHECK(std::ranges::all_of(problems, [](const Problem& problem) { return problem.severity == Problem::Severity::error; }));
+    const auto source = [&](const std::string& name) {
+        return std::ranges::find(problems, name, &Problem::source);
+    };
+    CHECK(source("Zones") != problems.end() && source("Zones")->subject.kind == ProblemSubject::Kind::area &&
+          source("Zones")->subject.id == 1 && source("Zones")->kind == EntityKind::zone);
+    CHECK(source("Classes") != problems.end() && source("Classes")->subject.id == 4 &&
+          source("Classes")->message.find("999") != std::string::npos);
+    CHECK(source("Project") != problems.end());
+    // IDs are stable: the same inputs give the same IDs.
+    const auto again = collect_problems(inputs);
+    CHECK(again.size() == problems.size() && again.front().id == problems.front().id);
+    CHECK(count_problems(problems, Problem::Severity::error) == problems.size());
+
+    // Contrast (WCAG): black on white is 21:1, a colour on itself 1:1.
+    CHECK(contrast_ratio(0x000000, 0xFFFFFF) > 20.9 && contrast_ratio(0x000000, 0xFFFFFF) < 21.1);
+    CHECK(contrast_ratio(0x777777, 0x777777) == 1.0);
+    CHECK(contrast_ratio(0x878E9A, 0x1C2027) >= 4.5 && contrast_ratio(0x7D8490, 0x1C2027) < 4.5);
+}
+
 int main() {
     test_fuzzy_matcher();
     test_viewport_overlay_model();
     test_command_registry();
+    test_ui_script();
+    test_image_comparison();
+    test_authoring_ui_models();
     test_navigation_history();
     test_settings_model();
     test_frame_pacing();
@@ -3993,6 +4277,59 @@ int main() {
         CHECK(project.check().empty());
         // Text round-trips; errors name the file and line.
         CHECK(csf::AuthoringProject::parse(project.project_text()).project_text() == project.project_text());
+        {
+            // The project's lifecycle (csf/project_pipeline): playtests in the
+            // project, machine records in local.csfproj; slots, free text ranges
+            // and the untouched archive a build starts from.
+            auto lifecycle = csf::AuthoringProject::parse(
+                "csfproj 1\nname P\nslot M1 Maps/X/M1.scn maps/M1.pak\ndonor-map Maps/X/X.rws Maps/X/X_col.rws\n"
+                "playtest 20260926-120000 worked \"the patrol walks\"\n",
+                "csfproj-local 1\noriginal maps/M1.pak /games/M1.pak\n"
+                "deployment 20260926-120000 maps/M1.pak /games/test/.csf-mod-backups/1/deployment.state\n");
+            CHECK(lifecycle.playtests.size() == 1 && lifecycle.playtests[0].worked &&
+                  lifecycle.playtests[0].note == "the patrol walks");
+            CHECK(lifecycle.local.originals.at("maps/M1.pak") == "/games/M1.pak");
+            CHECK(lifecycle.local.deployments.size() == 1 && lifecycle.local.deployments[0].archive == "maps/M1.pak");
+            const auto again = csf::AuthoringProject::parse(lifecycle.project_text(), lifecycle.local_text());
+            CHECK(again.project_text() == lifecycle.project_text() && again.local_text() == lifecycle.local_text());
+
+            std::ofstream(maps / "M1.scn") << "";
+            const auto slots = csf::mission_slots(root / "corpus");
+            CHECK(slots.size() == 1 && slots[0].mission == "M1" && slots[0].scene == "Maps/X/M1.scn" &&
+                  slots[0].archive == "maps/M1.pak" && slots[0].collision_map == "Maps/X/X_col.rws");
+
+            // Text ranges: hundreds from 900, clear of the donor's IDs and other projects'.
+            const auto texts_dir = root / "corpus" / "GlobalEK" / "Texts";
+            std::filesystem::create_directories(texts_dir);
+            write_bytes(texts_dir / "M1.fli", csf::append_fli_strings({}, {{"1005", "donor"}}));
+            CHECK(csf::fli_string_ids(csf::append_fli_strings({}, {{"1005", "donor"}})) == std::set<std::string>{"1005"});
+            const auto others = root / "others";
+            std::filesystem::create_directories(others / "a");
+            std::ofstream(others / "a" / "project.csfproj")
+                << "csfproj 1\nname A\nslot M1 Maps/X/M1.scn maps/M1.pak\ntexts GlobalEK.pak Texts/M1.fli 900 999\n"
+                   "donor-map Maps/X/X.rws Maps/X/X_col.rws\n";
+            CHECK((csf::free_text_range(root / "corpus", "GlobalEK.pak", "Texts/M1.fli", others) ==
+                   std::pair<std::int32_t, std::int32_t>{1100, 1199}));
+            CHECK((csf::free_text_range(root / "corpus", "GlobalEK.pak", "Texts/M1.fli", others, others / "a") ==
+                   std::pair<std::int32_t, std::int32_t>{900, 999}));
+
+            // The untouched archive: the setting, else the oldest deployment backup, else the install's own.
+            const auto install = root / "install";
+            std::filesystem::create_directories(install / "maps");
+            std::ofstream(install / "maps" / "M1.pak") << "current";
+            lifecycle.local.originals.clear();
+            lifecycle.local.test_install = install;
+            CHECK(csf::find_original_archive(lifecycle, "maps/M1.pak") == install / "maps" / "M1.pak");
+            for (const auto* time : {"900", "1000"}) {
+                std::filesystem::create_directories(install / ".csf-mod-backups" / time / "files" / "maps");
+                std::ofstream(install / ".csf-mod-backups" / time / "files" / "maps" / "M1.pak") << time;
+            }
+            CHECK(csf::find_original_archive(lifecycle, "maps/M1.pak") ==
+                  install / ".csf-mod-backups" / "900" / "files" / "maps" / "M1.pak");
+            lifecycle.local.originals["maps/M1.pak"] = install / "maps" / "M1.pak";
+            CHECK(csf::find_original_archive(lifecycle, "maps/M1.pak") == install / "maps" / "M1.pak");
+            CHECK(!csf::find_original_archive(lifecycle, "GlobalEK.pak"));
+        }
         try {
             (void)csf::AuthoringProject::parse("csfproj 1\nbuilding b hut 0 0 0 0 floating\n");
             CHECK(false);

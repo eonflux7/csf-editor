@@ -526,14 +526,14 @@ void draw_scene_object(AppState& state, RecordContext& context, const csf::Scene
 
 } // namespace
 
-void draw_mission_record(AppState& state, const std::uint32_t entry) {
+void draw_mission_record(AppState& state, const std::uint32_t entry, const bool with_editor) {
     const auto& scene = *state.mission.scene;
     std::string kind, label;
     const auto* source = find_mission_source(scene, entry, kind, label);
     if (!source || !state.mission.document) return;
     const auto& document = *state.mission.document;
     RecordContext context{state, document, find_csf_node(document.roots(), entry), *source};
-    draw_mission_edit_section(state, entry);
+    if (with_editor) draw_mission_edit_section(state, entry);
 
     if (const auto found = std::ranges::find_if(scene.scene_objects(), [&](const auto& value) { return value.source.entry_index == entry; });
         found != scene.scene_objects().end()) {

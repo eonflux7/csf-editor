@@ -1,0 +1,102 @@
+# Components (Phase 3, E1 and E12): a recipe edited from Properties or moved in
+# the viewport regenerates in place as one undo step; a hand edit marks it
+# Modified until it is regenerated; deleting its actor deletes the component.
+open $RWSMAN_UI_FIXTURE/Maps/M1/M1.scn
+remember mission.hash
+add-component "guard-patrol name=WALKER class=10 heading=90 route-name=WALK points=-1500,-135,0;-1000,-110,0;-1000,-100,500 pause=2 script-name=WALK_LOOP"
+expect count.components 1
+expect mission.history.top "Add Guard patrol WALKER"
+goto actor:WALKER
+expect selection.component "Guard patrol WALKER"
+expect selection.component_state clean
+
+# A parameter: the pause at each point.
+double-click Properties::pause
+type 5
+key Enter
+expect mission.history.top "Edit Guard patrol WALKER"
+expect selection.component_state clean
+expect selection.title WALKER
+
+# A route point more, then back.
+remember count.nav_points
+click "Properties::Add point"
+expect-changed count.nav_points
+undo
+expect-same count.nav_points
+
+# Behaviour: the same guard at a post, its route gone; undo brings the patrol back.
+remember count.nav_groups
+click Properties::behaviour
+click "At a post (idle loop)"
+expect selection.component "Guard at a post WALKER"
+expect-changed count.nav_groups
+undo
+expect selection.component "Guard patrol WALKER"
+expect-same count.nav_groups
+
+# Moving the guard moves its route's first point, through the component.
+command mission.tool_move
+drag-world -1500 -135 0 -1300 -120 200
+expect mission.history.top "Edit Guard patrol WALKER"
+expect selection.component_state clean
+undo
+
+# A hand edit (align to the ground moves it directly): Modified, then regenerated.
+command mission.align_ground
+expect selection.component_state modified
+click Properties::Regenerate
+expect selection.component_state clean
+
+# The Cover tool makes a cover group component.
+command mission.tool_cover
+click-world 200 3 -800
+key Enter
+expect count.components 2
+expect selection.component "Cover group COBERTURA_1"
+
+# Deleting a component's record deletes the component and what it made.
+goto actor:WALKER
+command mission.delete
+expect count.components 1
+
+# A record the mission still needs (the starting player): the dialog says why
+# and can delete it anyway (E13).
+goto actor:COMMANDO
+remember count.actors
+command mission.delete
+expect-same count.actors
+click "Delete anyway"
+expect-changed count.actors
+undo-all
+expect-same mission.hash
+
+# Objectives made as a component: their card in the Objectives panel edits
+# them in place (retype a text ID, change the kind), one step each.
+add-component "objective n=1 kind=zone target=1 label=0900 done=0902|objectives success=g014"
+expect count.components 1
+command mission.objectives
+click Objectives::label
+key Ctrl+A
+type 0907
+key Enter
+expect mission.history.top "Edit Objectives"
+expect count.components 1
+click Objectives::kind
+click "Kill an actor"
+expect mission.history.top "Edit Objectives"
+undo-all
+expect-same mission.hash
+
+# The walk grid: previewed in the viewport, then generated as a component.
+command mission.presets
+click Behaviours::preset
+click "Walk grid"
+click Behaviours::preview_grid
+expect viewport.grid_preview_points 62
+remember count.nav_groups
+click Behaviours::Generate
+expect-changed count.nav_groups
+expect count.components 1
+expect mission.history.top "Add Walk grid MALLA"
+undo

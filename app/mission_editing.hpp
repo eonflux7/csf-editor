@@ -30,6 +30,9 @@ void select_after_refresh(AppState& state, const MissionRecordKey& key);
 // editor when it changed since the last call. Call once per frame, before
 // anything draws.
 void refresh_mission_from_editor(AppState& state);
+// After the refresh, once a frame: applies the Outliner's hidden and locked
+// records to the viewport and rebuilds the problem list when its inputs changed.
+void update_authoring_views(AppState& state);
 void mission_undo(AppState& state);
 void mission_redo(AppState& state);
 

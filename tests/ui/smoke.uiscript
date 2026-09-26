@@ -1,0 +1,11 @@
+# The start page, the command registry and the command palette, with no
+# document open.
+lint commands
+lint theme
+expect app.document false
+expect mission.open false
+compare start-page 0.5
+palette "reset layout"
+expect ui.palette commands
+key Escape
+expect ui.palette closed

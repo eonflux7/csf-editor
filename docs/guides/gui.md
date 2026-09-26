@@ -1,27 +1,52 @@
 # GUI usage
 
-`rws-man` is a workbench: a menu bar with workspace tabs across the top, an
-**Explorer** on the left, the **viewport** (or script listing, or hex view) in the
-middle, an **Inspector** on the right, an optional bottom dock (**Console**,
-**Diagnostics**, **References**, **Changes**, **Missions**), and a status bar. With
-no document open, a start page lists recent files, the missions under your resource
-root, and the key bindings.
+`rws-man` is the CSF Mission Editor. It has three modes, switched at the top
+right of the menu bar: **Mission** (`Ctrl+1`) for making missions,
+**Script** (`Ctrl+2`) for the mission's programs, and **Inspect** (`Ctrl+3`)
+for the file-level workbench. Inspect groups the **Scene**, **Geometry**,
+**Animation** and **Hex** workspaces (`Ctrl+4`...`Ctrl+7`; bare `1`-`4` still
+work while the viewport is hovered). With nothing open, **Home** lists recent
+projects, the shipped missions under your resource root and a setup checklist.
+The design behind the layout is [the UX plan](../plans/editor-ux-redesign.md).
 
-- **Open** a mission with `File > Open mission...` (`Ctrl+Shift+O`), pick one from
-  the start page or the Missions tab, or drop an `.scn`, `.rpc`, `.rws`, or `.anm`
-  file on the window. Missions load on a worker thread with a progress overlay and
-  a **Cancel** button; the current mission stays untouched until the new one has
-  loaded completely. Set a **resource root** in `Edit > Preferences...` to list the
-  missions under it (`<root>/Maps/*/*.scn` or `<root>/<package>/Maps/*/*.scn`).
-- **Workspaces** are the tabs `MISSION SCRIPT ANIM SCENE GEOM HEX` (`Ctrl+1`...`Ctrl+6`;
-  bare `1`-`4` still work while the viewport is hovered). A loaded document opens in
-  `SCENE`, or `GEOM` and then `HEX` when it has no scene; a mission opens in
-  `MISSION`.
+- **Open** a project folder (`File > Open project...`, or drop the folder on the
+  window), a mission with `File > Open mission...` (`Ctrl+Shift+O`), or an `.scn`,
+  `.rpc`, `.rws` or `.anm` file by dropping it. Missions load on a worker thread
+  with a progress overlay and a **Cancel** button; the current mission stays
+  untouched until the new one has loaded completely. Set a **resource root** in
+  `Edit > Preferences...` (or Home's setup list) to list the missions under it
+  (`<root>/Maps/*/*.scn` or `<root>/<package>/Maps/*/*.scn`).
+- **Mission mode.** The **Mission bar** under the menu shows the project, and one
+  step per stage of the mission (map, actors, zones, objectives, intro,
+  problems) with its count and status; click one to go there. **Save** and
+  **Build...** are at its right. The **Outliner** (left) lists the mission by
+  what things are: players, enemies, animals, vehicles, usable objects,
+  pickups, props, the project's buildings and map props, zones, routes, cover,
+  markers, camera paths, cutscene helpers, lights and effects, plus the
+  objectives. Click a row to select it, double-click to frame it, Shift+click
+  to add and Ctrl+click to toggle; the eye hides it in the viewport and the
+  lock keeps it from being picked there. **Assets** (under the Outliner)
+  places classes and the project's buildings: click one and then the ground,
+  drag it onto the ground, or double-click it to place it at the view centre. **Properties** (right) shows
+  the selection as cards (Transform, Identity, Scripts, Animation overrides,
+  Advanced, All fields, Used by), or the mission at a glance when nothing is
+  selected; file offsets and provenance appear there only with **Developer
+  details** in Preferences. **Objectives**, **Behaviours** and **Mission**
+  (settings) are tabs beside Properties. At the bottom: **Problems** (everything
+  the editor checks, with a link to each subject and a fix where there is one),
+  **History** (undo), **Intro cutscene**, **Texts**, **Build** and **Output**.
+- **Viewport.** The toolbar has three menus (**View**: shading, projection,
+  framing and options; **Show**: map layers and clip planes; **Markers**: marker
+  display), focus mode, the height slice, the marker filter and the screenshot
+  button. In Mission mode the **tool strip** on the left edge has Select (`Q`),
+  Move (`G`), Rotate (`R`), snap to the ground and measure. Markers take their
+  kind's colour, as in the Outliner.
 - **Layout.** Panels dock, tab, resize, collapse, and float. Each workspace keeps its
-  own layout (the script workspace gives the listing more width), and the layouts
-  persist between launches. `View > Reset layout` restores the current workspace's
-  default. `Ctrl+B` / `Ctrl+I` / `Ctrl+J` toggle the Explorer, Inspector, and bottom
-  dock, and `Ctrl+Space` maximizes the viewport.
+  own layout, and the layouts persist between launches. `View > Reset layout`
+  restores the current workspace's default, and `View > Panels` shows any panel.
+  `Ctrl+B` / `Ctrl+I` / `Ctrl+J` toggle the left, right and bottom panels, and
+  `Ctrl+Space` maximizes the viewport. `View > Theme` switches between the dark
+  and high-contrast themes.
 - **Go to anything** (`Ctrl+P`) searches actors, navigation groups and points,
   dummies, areas, lights, effects, scripts, variables, BDD classes, animations,
   chunks, and resources. `0x2C79D6` jumps to an offset, `#17` to an entry index. The
@@ -32,7 +57,7 @@ root, and the key bindings.
   through selections, restoring the workspace and camera. Following a cross-reference
   (a script operand to its actor, a "used by" row to the script instruction, a class
   to its BDD record) pushes onto the history, so you can always return.
-- **Inspector.** Selection only. A breadcrumb (`Ambush.scn > Actors > Espia > class
+- **Inspector** (Script and Inspect modes). Selection only. A breadcrumb (`Ambush.scn > Actors > Espia > class
   0x37 > Objetos.bdd#1659`) shows where the record lives, and every segment is a
   link. Values are shown in property grids: click a value to copy it, right-click an
   integer for hex/decimal, an angle for degrees/radians, a vector for per-component
@@ -44,17 +69,17 @@ root, and the key bindings.
   place. Pin the inspector to keep a record while you browse, or open a second
   inspector to compare two records. Fields are read-only; the lock icon marks where
   the guarded-authoring editors will attach.
-- **Explorer.** One frame for every workspace: a search prompt, filter chips
+- **Explorer** (Script and Inspect modes). One frame for every workspace: a search prompt, filter chips
   (kind, diagnostics, dirty), counts, then the tree. Rows show a kind icon,
   a diagnostic marker, and a dirty marker. Right-click any row for Frame, Isolate,
   Copy ID / identity / path, Show in hex, Show references, and Export. The mission
   Explorer also lists the **Classes** in the object database and the **Resources**
   of the mission graph (resolved, ambiguous, missing).
-- **Console and toasts.** Loads, exports, saves, screenshots, and settings problems
-  are logged with timestamps and severity in the Console (copy all, save to a new
+- **Output and toasts.** Loads, exports, saves, screenshots, and settings problems
+  are logged with timestamps and severity in the Output panel (copy all, save to a new
   file, filter by level). Export and save results also show a short toast with an
   **Open folder** action. The status bar shows the latest line.
-- **Diagnostics** merges RWS, CSFFBS, mission, resource, object-database, animation,
+- **Diagnostics** (Inspect mode) merges RWS, CSFFBS, mission, resource, object-database, animation,
   and script diagnostics into one sortable, filterable table; clicking a row selects
   its source.
 - **Screenshots** (`F12` or the camera button) save a PNG in `<settings>/screenshots`.
@@ -145,7 +170,10 @@ counts to the viewport HUD.
 | Right drag | Orbit the focus point |
 | Middle drag | Pan |
 | Mouse wheel | Zoom |
-| Double-click | Frame the current geometry or scene |
+| Double-click | Frame the current geometry or scene (on empty ground; on a marker it is a second click) |
+| Shift+click / Ctrl+click / Shift+drag | Add to the selection / toggle / box select (Select tool) |
+| `Q` / `G` / `R` | Select / Move / Rotate tool (viewport hovered) |
+| `P` / `N` / `B` / `C` | Place / Route / Zone / Cover tool (viewport hovered) |
 | `W` / `A` / `S` / `D` | Move horizontally while the viewport is hovered |
 | `Q` / `E` | Move down/up |
 | `Shift` | Move faster |
@@ -161,6 +189,26 @@ The whole-scene view also has a logarithmic movement-speed control for large map
 Orbit/look gestures are disabled in fixed orthographic views; pan and wheel zoom
 remain available.
 
+## Projects
+
+**New project...** (Home, `File`, `Ctrl+N`) makes a mission of your own in a
+shipped mission's slot: pick the slot and a name, and it creates the project in
+the projects folder with a flat starter terrain of that slot's ground, the
+slot's mission emptied, and a free range of text IDs, then opens it. **Edit in
+Blender** (the Map card, `Build`, or the status bar's Blender item) starts
+Blender with the CSF add-on and the project set, making `terrain.blend` from
+the starter terrain the first time; **Send** in Blender's CSF tab rebuilds the
+map here, even while the project has unsaved edits.
+
+The Build panel then holds the rest of the way to the game: **Build archives**
+(`Ctrl+Shift+B`) saves and writes the mission archive and GlobalEK.pak (when
+the project has texts) into `dist/<build>/`, starting from the untouched shipped
+archives (found in the test install's first deployment backup, or chosen
+there). **Deploy** copies a build into the test install after asking, keeping
+what it replaces, and each deployment has **Roll back**. The **Playtest log**
+records whether a build worked, with a note, in the project. Home lists each
+project with its slot, latest build and last playtest.
+
 ## Mission editing
 
 With a mission open, the Inspector's **Edit** section changes the selected actor,
@@ -168,9 +216,40 @@ dummy, light, navigation point, area or map prop, and **All fields** edits any
 stored value. In the viewport, **G** toggles the move tool (drag the center along
 the ground, snapping to the collision surface; drag an arrow for one axis) and
 **R** the rotate tool (**Ctrl** snaps to 15 degrees, **Esc** cancels a drag).
-**Ctrl+D** duplicates the selection and **Delete** removes it (refused while scripts
-still reference it; **Shift+Delete** forces). The Script workspace edits scripts as
-text. **Ctrl+Z** / **Ctrl+Y** undo and redo, **Ctrl+S** saves the mission project,
+**Ctrl+D** duplicates the selection and **Delete** removes it; a toast offers
+**Undo**. Deleting a record that scripts or the mission still use opens a dialog
+that lists those references and can delete it anyway (**Shift+Delete** skips it).
+
+The tool strip on the viewport's left edge also holds the authoring tools:
+**P** places the asset picked in Assets where you click (`[`/`]` turn it, Shift
+keeps placing), **N** draws a route, **B** a zone and **C** a cover group (click
+the points; **Enter** or a double click creates it, **Backspace** removes the last
+point, **Esc** cancels). **Q** returns to Select. In the viewport, Shift+click adds
+to the selection, Ctrl+click toggles, and Shift+drag selects everything in a box;
+moving one of a multi-selection with the gizmo moves them all in one undo step.
+The project's placements (trees, buildings, donor pieces) are selectable like
+mission records: Properties edits their position, heading and height rule, and a
+move or delete rebuilds the map in the background. Fields that name a record
+(an objective's zone, a kit's player, what an actor stands on) have an eyedropper:
+click it, then the record in the viewport or the Outliner.
+
+What the Behaviours, Objectives and Intro panels create (patrols, guards at a
+post, animals, cover groups, walk grids, objectives, equipment, tips, the intro
+cutscene) stays editable as a **component**: selecting its guard, route or
+marker shows its card in Properties (in the Objectives and Intro tabs for the
+ones without a record to select). Changing a value there (a patrol's pause or
+points, a guard's behaviour between patrol and post, an objective's target or
+text) makes its records again in place, as one undo step, and moving its guard
+or route points in the viewport does the same. The Outliner nests a patrol's
+route under its guard and the intro's helpers under one row. When a
+component's records were edited by hand, its card says so and offers **Keep my
+edits** (it becomes ordinary records) or **Regenerate**; it never overwrites
+them on its own. The walk grid preset can be previewed in the viewport before
+it is generated.
+
+The Script workspace edits scripts as
+text. **Ctrl+Z** / **Ctrl+Y** undo and redo (mission and project edits in one
+history), **Ctrl+S** saves the mission project and the authoring project together,
 and **Ctrl+E** exports the mission archive. The **Changes** panel holds the
 history, the changed files, mission properties, adding actors and importing
 classes or animations from another mission. `rws-man --project <folder>` opens a

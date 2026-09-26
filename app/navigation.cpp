@@ -1,6 +1,7 @@
 #include "navigation.hpp"
 
 #include "app_util.hpp"
+#include "viewport_tools.hpp"
 #include "rwsman/index_builders.hpp"
 #include "rwsman/mission_lookup.hpp"
 
@@ -265,6 +266,7 @@ std::optional<std::uint64_t> selection_offset(const AppState& state, const Selec
     case Kind::scene_instance:
         return ref.a;
     case Kind::mission_entry: {
+        if (placement_index(state, static_cast<std::uint32_t>(ref.a))) return std::nullopt;
         std::string kind, label;
         if (state.mission.scene)
             if (const auto* source = find_mission_source(*state.mission.scene,
@@ -399,6 +401,8 @@ std::string selection_title(const AppState& state, const SelectionRef& ref) {
                                                 : instance->prototype_name;
     }
     case Kind::mission_entry: {
+        if (const auto index = placement_index(state, static_cast<std::uint32_t>(ref.a)))
+            return state.authoring.project->placements[*index].id;
         std::string kind, label;
         if (state.mission.scene &&
             find_mission_source(*state.mission.scene, static_cast<std::uint32_t>(ref.a), kind, label))
@@ -441,6 +445,7 @@ std::string selection_kind_label(const AppState& state, const SelectionRef& ref)
     case Kind::scene_instance:
         return "Scene instance";
     case Kind::mission_entry: {
+        if (placement_index(state, static_cast<std::uint32_t>(ref.a))) return "Project placement";
         std::string kind, label;
         if (state.mission.scene &&
             find_mission_source(*state.mission.scene, static_cast<std::uint32_t>(ref.a), kind, label))

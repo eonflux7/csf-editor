@@ -442,6 +442,9 @@ std::string windows_path(std::string value) {
     return value;
 }
 
+// The component list, in the workspace beside authored/.
+constexpr std::string_view components_file_name = "components.csfops";
+
 } // namespace
 
 // ---- Files and caches -------------------------------------------------------
@@ -548,6 +551,17 @@ MissionEditor MissionEditor::open(const std::filesystem::path& scene,
             editor.baselines_.push_back(std::move(baseline));
             loaded.insert(key);
         }
+    if (project)
+        if (const auto path = project->workspace_root / components_file_name; std::filesystem::is_regular_file(path)) {
+            MissionFile components;
+            components.kind = MissionFileKind::components;
+            components.relative_path = components_file_name;
+            components.source_path = path;
+            components.added = true;
+            components.raw = read_file(path);
+            editor.files_.push_back(std::move(components));
+            editor.baselines_.emplace_back();
+        }
     return editor;
 }
 
@@ -568,7 +582,7 @@ ResourceIndex MissionEditor::resource_index(const ResourceIndex& base) const {
     auto index = base;
     std::error_code error;
     for (const auto& file : files_) {
-        if (!file.present || file.source_path.empty()) continue;
+        if (!file.present || file.source_path.empty() || file.kind == MissionFileKind::components) continue;
         const auto package = package_root_ / file.relative_path;
         if (std::filesystem::exists(file.source_path, error) &&
             std::filesystem::equivalent(file.source_path, package, error))
@@ -643,6 +657,15 @@ std::vector<std::string> MissionEditor::history_labels() const {
     std::vector<std::string> labels;
     for (const auto& entry : history_) labels.push_back(entry.label);
     return labels;
+}
+
+void MissionEditor::rebase_file(const std::size_t file, std::vector<std::byte> bytes) {
+    auto& target = files_.at(file);
+    if (target.tree) throw std::invalid_argument("rebase_file is for raw files");
+    for (auto& entry : history_)
+        std::erase_if(entry.files, [&](const FileSnapshot& snapshot) { return snapshot.file == file; });
+    target.raw = std::move(bytes);
+    changed(file);
 }
 
 void MissionEditor::changed(const std::size_t file) {
@@ -2967,8 +2990,23 @@ std::vector<std::filesystem::path> MissionEditor::save(ModProject& project) {
                                          problems.front() + " (the game crashes loading it)");
     std::set<std::string> keep;
     const auto authored_root = std::filesystem::weakly_canonical(project.workspace_root / "authored");
+    // The component list is the editor's, not the game's: beside authored/.
+    {
+        const auto path = project.workspace_root / components_file_name;
+        const auto index = file_of_kind(MissionFileKind::components);
+        std::error_code error;
+        if (index && !files_[*index].raw.empty()) {
+            if (!std::filesystem::is_regular_file(path, error) || read_file(path) != files_[*index].raw) {
+                write_file_atomically(path, files_[*index].raw);
+                written.push_back(path);
+            }
+        } else if (std::filesystem::is_regular_file(path, error)) {
+            std::filesystem::remove(path, error);
+        }
+    }
     for (const auto index : modified) {
         const auto& file = files_[index];
+        if (file.kind == MissionFileKind::components) continue;
         const auto bytes = file.bytes();
         // A file the project takes from elsewhere (an authoring project's
         // build/, `csf-mod add`) stays there unless an edit here changed it.
@@ -3032,6 +3070,239 @@ std::vector<std::filesystem::path> MissionEditor::save(ModProject& project) {
     return written;
 }
 
+// ---- Records by kind, components -------------------------------------------------
+
+namespace {
+
+void dump_node(const TreeNode& node, std::string& out) {
+    if (node.label) out += node.name();
+    out += '=';
+    switch (node.kind) {
+    case ValueKind::integer: out += std::to_string(static_cast<std::int32_t>(node.raw)); break;
+    case ValueKind::real: out += 'r' + std::to_string(node.raw); break;
+    case ValueKind::string: out += '"' + node.text + '"'; break;
+    case ValueKind::group:
+    case ValueKind::array:
+        out += node.kind == ValueKind::group ? '{' : '[';
+        for (const auto& child : node.children) {
+            dump_node(child, out);
+            out += ' ';
+        }
+        out += node.kind == ValueKind::group ? '}' : ']';
+        break;
+    default: break;
+    }
+}
+
+std::size_t label_count(const TreeNode& node, const std::string_view name) {
+    return static_cast<std::size_t>(std::ranges::count_if(node.children, [&](const TreeNode& child) {
+        return child.label && child.name() == name;
+    }));
+}
+
+// `after` is `before` with some children deleted and others added (at any
+// place): the added ones take the deleted ones' places, in order; extra ones
+// follow the last of those places. Children matched by content, and
+// containers whose label is unique on both sides, keep `before`'s order;
+// such containers are rearranged the same way inside.
+void keep_places(const TreeNode& before, TreeNode& after) {
+    const auto& old_children = before.children;
+    auto& new_children = after.children;
+    std::vector<std::ptrdiff_t> match_of_new(new_children.size(), -1), match_of_old(old_children.size(), -1);
+    for (std::size_t j = 0; j < new_children.size(); ++j) {
+        auto& child = new_children[j];
+        if (!child.label || !child.is_container() || label_count(after, child.name()) != 1 ||
+            label_count(before, child.name()) != 1)
+            continue;
+        const auto i = *before.child_index(child.name());
+        keep_places(old_children[i], child);
+        match_of_new[j] = static_cast<std::ptrdiff_t>(i);
+        match_of_old[i] = static_cast<std::ptrdiff_t>(j);
+    }
+    // Content matches, bucketed by a cheap key.
+    std::multimap<std::pair<std::size_t, std::uint32_t>, std::size_t> unmatched_old;
+    const auto key = [](const TreeNode& node) {
+        return std::pair{node.children.size(), node.raw ^ static_cast<std::uint32_t>(node.text.size())};
+    };
+    for (std::size_t i = 0; i < old_children.size(); ++i)
+        if (match_of_old[i] < 0) unmatched_old.emplace(key(old_children[i]), i);
+    for (std::size_t j = 0; j < new_children.size(); ++j) {
+        if (match_of_new[j] >= 0) continue;
+        auto [first, last] = unmatched_old.equal_range(key(new_children[j]));
+        // The earliest equal old child.
+        auto best = last;
+        for (auto it = first; it != last; ++it)
+            if (old_children[it->second] == new_children[j] && (best == last || it->second < best->second)) best = it;
+        if (best == last) continue;
+        match_of_new[j] = static_cast<std::ptrdiff_t>(best->second);
+        match_of_old[best->second] = static_cast<std::ptrdiff_t>(j);
+        unmatched_old.erase(best);
+    }
+    std::vector<std::size_t> added;
+    for (std::size_t j = 0; j < new_children.size(); ++j)
+        if (match_of_new[j] < 0) added.push_back(j);
+    std::vector<std::size_t> order;  // indices into new_children
+    std::size_t next_added = 0;
+    std::optional<std::size_t> after_last_place;
+    for (std::size_t i = 0; i < old_children.size(); ++i) {
+        if (match_of_old[i] >= 0) {
+            order.push_back(static_cast<std::size_t>(match_of_old[i]));
+        } else if (next_added < added.size()) {
+            order.push_back(added[next_added++]);
+            after_last_place = order.size();
+        } else {
+            after_last_place = order.size();
+        }
+    }
+    if (next_added < added.size()) {
+        if (after_last_place) {
+            order.insert(order.begin() + static_cast<std::ptrdiff_t>(*after_last_place),
+                         added.begin() + static_cast<std::ptrdiff_t>(next_added), added.end());
+        } else {
+            // Nothing was deleted: each added child follows the child it follows now.
+            for (; next_added < added.size(); ++next_added) {
+                const auto j = added[next_added];
+                auto at = order.begin();
+                for (auto k = j; k-- > 0;)
+                    if (const auto found = std::ranges::find(order, k); found != order.end()) {
+                        at = found + 1;
+                        break;
+                    }
+                order.insert(at, j);
+            }
+        }
+    }
+    std::vector<TreeNode> sorted;
+    sorted.reserve(order.size());
+    for (const auto j : order) sorted.push_back(std::move(new_children[j]));
+    new_children = std::move(sorted);
+}
+
+const TreeNode* list_of(const Tree& tree, const std::vector<std::string_view>& path) {
+    const TreeNode* node = &root_of(tree);
+    for (const auto label : path) {
+        node = node->child(label);
+        if (!node) return nullptr;
+    }
+    return node;
+}
+
+} // namespace
+
+EditResult MissionEditor::replace_in_place(std::string label, const std::function<EditResult()>& body) {
+    std::map<std::size_t, Tree> before;
+    for (std::size_t i = 0; i < files_.size(); ++i)
+        if (files_[i].present && files_[i].tree &&
+            (files_[i].kind == MissionFileKind::scene || is_program(files_[i].kind)))
+            before.emplace(i, *files_[i].tree);
+    return batch(label, [&] {
+        auto result = body();
+        if (!result.applied) return result;
+        (void)run(*this, label, [&](MissionTransaction& t) {
+            for (const auto& [index, tree] : before) {
+                if (!files_[index].present || !files_[index].tree || *files_[index].tree == tree) continue;
+                auto& target = t.tree(index);
+                for (std::size_t r = 0; r < target.roots.size() && r < tree.roots.size(); ++r)
+                    keep_places(tree.roots[r], target.roots[r]);
+            }
+            return t.commit("Kept the records in place");  // "No change" when nothing moved
+        });
+        return result;
+    });
+}
+
+std::vector<MissionRecordId> MissionEditor::record_ids() const {
+    using Type = MissionRecordId::Type;
+    std::vector<MissionRecordId> ids;
+    const auto& scene_tree = *files_[scene_file_].tree;
+    const auto collect = [&](const TreeNode* list, const Type type) {
+        if (!list) return;
+        for (const auto& record : list->children)
+            if (const auto id = record_id(record)) ids.push_back({type, *id});
+    };
+    collect(list_of(scene_tree, {".BICHOS"}), Type::actor);
+    collect(list_of(scene_tree, {".MALLA_NAVEGACION", ".GRUPOS"}), Type::navigation_group);
+    collect(list_of(scene_tree, {".MALLA_DUMMIES", ".DUMMIES"}), Type::dummy);
+    collect(list_of(scene_tree, {".MALLA_AREAS", ".AREAS"}), Type::area);
+    for (const auto kind : {MissionFileKind::mission_script, MissionFileKind::cutscene_script})
+        if (const auto file = file_of_kind(kind); file && files_[*file].tree)
+            collect(list_of(*files_[*file].tree, {".SCRIPTS"}),
+                    kind == MissionFileKind::mission_script ? Type::script : Type::cutscene_script);
+    std::ranges::sort(ids);
+    return ids;
+}
+
+std::optional<std::string> MissionEditor::record_text(const MissionRecordId record) const {
+    using Type = MissionRecordId::Type;
+    const Tree* tree = files_[scene_file_].tree ? &*files_[scene_file_].tree : nullptr;
+    std::vector<std::string_view> path{".BICHOS"};
+    switch (record.type) {
+    case Type::actor: break;
+    case Type::navigation_group: path = {".MALLA_NAVEGACION", ".GRUPOS"}; break;
+    case Type::dummy: path = {".MALLA_DUMMIES", ".DUMMIES"}; break;
+    case Type::area: path = {".MALLA_AREAS", ".AREAS"}; break;
+    case Type::script:
+    case Type::cutscene_script: {
+        const auto file = file_of_kind(record.type == Type::script ? MissionFileKind::mission_script
+                                                                   : MissionFileKind::cutscene_script);
+        tree = file && files_[*file].tree ? &*files_[*file].tree : nullptr;
+        path = {".SCRIPTS"};
+        break;
+    }
+    }
+    if (!tree) return std::nullopt;
+    const auto* list = list_of(*tree, path);
+    if (!list) return std::nullopt;
+    const auto found = std::ranges::find_if(list->children, [&](const TreeNode& value) {
+        return record_id(value) == record.id;
+    });
+    if (found == list->children.end()) return std::nullopt;
+    std::string text;
+    dump_node(*found, text);
+    return text;
+}
+
+EditResult MissionEditor::delete_record(const MissionRecordId record, const bool force) {
+    using Type = MissionRecordId::Type;
+    switch (record.type) {
+    case Type::actor: return delete_actor(record.id, force);
+    case Type::navigation_group: return delete_navigation_group(record.id, force);
+    case Type::dummy: return delete_dummy(record.id, force);
+    case Type::area: return delete_area(record.id, force);
+    case Type::script:
+    case Type::cutscene_script: {
+        const auto file = file_of_kind(record.type == Type::script ? MissionFileKind::mission_script
+                                                                   : MissionFileKind::cutscene_script);
+        if (!file) return {false, "The mission has no such program", {}};
+        return delete_script(*file, record.id, force);
+    }
+    }
+    return {false, "Unknown record kind", {}};
+}
+
+std::string MissionEditor::components_text() const {
+    const auto file = file_of_kind(MissionFileKind::components);
+    if (!file) return {};
+    const auto& raw = files_[*file].raw;
+    return {reinterpret_cast<const char*>(raw.data()), raw.size()};
+}
+
+EditResult MissionEditor::set_components_text(const std::string_view text, std::string label) {
+    return run(*this, std::move(label), [&](MissionTransaction& t) {
+        auto file = file_of_kind(MissionFileKind::components);
+        if (!file) {
+            MissionFile added;
+            added.kind = MissionFileKind::components;
+            added.relative_path = components_file_name;
+            file = t.add_file(std::move(added));
+        }
+        auto& raw = t.raw(*file);
+        const auto bytes = std::as_bytes(std::span(text));
+        raw.assign(bytes.begin(), bytes.end());
+        return t.commit("Updated the component list");
+    });
+}
+
 std::optional<MissionProjectInfo> read_mission_project_info(const std::filesystem::path& workspace) {
     std::ifstream input(workspace / ".csf-mission");
     std::string magic, scene, archive;
@@ -3069,6 +3340,7 @@ const char* mission_file_kind_name(const MissionFileKind kind) noexcept {
     case MissionFileKind::visual_index: return "visual index (.vis)";
     case MissionFileKind::visual_map: return "visual map (.rws)";
     case MissionFileKind::asset: return "asset";
+    case MissionFileKind::components: return "component list";
     }
     return "file";
 }

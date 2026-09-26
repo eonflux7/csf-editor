@@ -10,7 +10,8 @@ enum class Font {
     sans,      // Menus, buttons, labels.
     sans_bold, // Headers and section titles.
     mono,      // IDs, offsets, hashes, paths, values, the script listing.
-    title,     // Start page heading.
+    title,     // Start page and Home headings.
+    caption,   // Small secondary text: counts, hints under fields, badges.
 };
 
 [[nodiscard]] ImFont* font(Font which);

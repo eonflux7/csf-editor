@@ -97,6 +97,9 @@ public:
         bool animation_loop{true};
     };
     void clear();
+    // Reloads the scene from its document at the next draw (a rebuilt map),
+    // keeping the mission markers, selection, visibility and texture catalog.
+    void reload_scene() { release_geometry(); }
     void set_mission_overlays(MissionOverlaySet overlays);
     void set_mission_actor_models(std::vector<MissionActorModel> models);
     // Replaces overlays and actor models after a mission edit without moving
@@ -106,7 +109,43 @@ public:
                         std::optional<std::uint32_t> selected);
 
     // ---- Viewport editing (geometry_preview_editing.cpp) ----
-    enum class EditTool : std::uint8_t { select, move, rotate };
+    // select, move and rotate work on the selection inside the preview. The
+    // authoring tools (place, route, zone, cover) turn left clicks into ground
+    // points for the app instead of selecting (take_viewport_clicks).
+    enum class EditTool : std::uint8_t { select, move, rotate, place, route, zone, cover };
+    [[nodiscard]] static constexpr bool authoring_tool(const EditTool tool) noexcept {
+        return tool == EditTool::place || tool == EditTool::route || tool == EditTool::zone || tool == EditTool::cover;
+    }
+    // A left click of an authoring tool: the ground under it (collision
+    // surface, else the plane at the last ground height), and the modifiers.
+    struct ViewportClick {
+        ImVec2 screen{};
+        std::optional<rws::Vec3> ground;
+        bool shift{}, ctrl{}, alt{}, double_click{};
+        bool drop{};  // an asset dropped from the Assets panel, not a click
+    };
+    [[nodiscard]] std::vector<ViewportClick> take_viewport_clicks() { return std::exchange(viewport_clicks_, {}); }
+    // The ground under the pointer while an authoring tool is active and the
+    // viewport is hovered.
+    [[nodiscard]] const std::optional<rws::Vec3>& hover_ground() const noexcept { return hover_ground_; }
+    [[nodiscard]] bool canvas_hovered() const noexcept { return canvas_hovered_; }
+    // The viewport rectangle of the last frame (min x, min y, max x, max y).
+    [[nodiscard]] ImVec4 canvas_rect() const noexcept {
+        return {canvas_x_, canvas_y_, canvas_x_ + canvas_width_, canvas_y_ + canvas_height_};
+    }
+    // A selection click (select tool) with its modifiers, for multi-selection;
+    // and the entries of a Shift+drag box, once.
+    struct PickEvent {
+        std::optional<std::uint32_t> entry;  // nothing: a click on empty space
+        bool shift{}, ctrl{};
+        std::vector<std::uint32_t> box;      // a box selection's entries
+        bool is_box{};
+    };
+    [[nodiscard]] std::optional<PickEvent> take_pick_event() { return std::exchange(pick_event_, std::nullopt); }
+    // Entries drawn as selected besides the primary selection.
+    void set_extra_selection(std::unordered_set<std::uint32_t> entries) { extra_selected_ = std::move(entries); }
+    // A line of guidance for the active tool, shown at the bottom of the viewport.
+    void set_tool_hint(std::string hint) { tool_hint_ = std::move(hint); }
     // What the gizmo manipulates: the selected record's pivot and heading.
     struct EditHandle {
         std::uint32_t source_entry{};
@@ -134,15 +173,22 @@ public:
     void place_scene_instance(std::uint64_t offset, const std::array<float, 9>& rotation,
                               rws::Vec3 position);
     void set_edit_tool(EditTool tool) noexcept { edit_tool_ = tool; }
+    // The tool strip on the viewport's left edge (Mission mode, editable).
+    void set_tool_strip(const bool shown) noexcept { tool_strip_ = shown; }
     [[nodiscard]] EditTool edit_tool() const noexcept { return edit_tool_; }
     // Set every frame by the app; nullopt hides the gizmo.
     void set_edit_handle(std::optional<EditHandle> handle);
     // The drag in progress (each frame while active), then its end once.
     [[nodiscard]] std::optional<EditDrag> take_edit_drag();
+    // A drag is in progress, or its result has not been taken yet.
+    [[nodiscard]] bool edit_drag_pending() const noexcept { return edit_drag_.has_value() || edit_result_.has_value(); }
     [[nodiscard]] bool edit_drag_active() const noexcept { return edit_drag_.has_value(); }
     // Snap moves to the collision surface under the pointer.
     void set_snap_to_surface(const bool value) noexcept { snap_to_surface_ = value; }
     [[nodiscard]] bool snap_to_surface() const noexcept { return snap_to_surface_; }
+    // Screen position of a world point in the last drawn viewport, if it is in
+    // front of the camera.
+    [[nodiscard]] std::optional<ImVec2> screen_position(const rws::Vec3 point) const { return project_point(point); }
     // Collision surface point under a screen position, if any.
     [[nodiscard]] std::optional<rws::Vec3> surface_point(ImVec2 screen) const;
     // World point in front of the camera at the view center (placement target).
@@ -217,6 +263,9 @@ public:
     void look_from(rws::Vec3 eye, rws::Vec3 target);
     void set_mission_entries_visible(std::span<const std::uint32_t> entries, bool visible);
     [[nodiscard]] bool mission_entry_visible(std::uint32_t entry) const noexcept;
+    // Replaces the hidden entries, and the locked ones (drawn, never picked):
+    // the Outliner's eye and lock toggles.
+    void set_mission_entry_states(std::unordered_set<std::uint32_t> hidden, std::unordered_set<std::uint32_t> locked);
     void draw(const rws::Chunk& geometry_chunk, std::span<const std::byte> bytes,
               const std::filesystem::path& source_path);
     [[nodiscard]] bool draw_scene(const std::vector<rws::Chunk>& chunks,
@@ -400,7 +449,8 @@ private:
     void draw_layers_popup(bool has_visual, bool has_collision);
     void draw_markers_popup();
     // Handles a left click on the canvas; returns true when an overlay consumed it.
-    bool overlay_click(ImVec2 mouse);
+    // `cycle`: a click on the spot of the last one steps to the next marker under the pointer.
+    bool overlay_click(ImVec2 mouse, bool cycle = true);
     [[nodiscard]] std::vector<std::uint32_t> overlay_candidates(ImVec2 mouse) const;
     [[nodiscard]] std::optional<std::size_t> overlay_cluster_at(ImVec2 mouse) const;
     void draw_measure_panel(ImVec2 origin, ImVec2 size);
@@ -522,7 +572,7 @@ private:
     std::vector<MissionOverlayLine> mission_lines_;
     std::vector<MissionActorModel> mission_actor_models_;
     std::optional<std::uint32_t> selected_mission_entry_;
-    std::unordered_set<std::uint32_t> hidden_mission_entries_;
+    std::unordered_set<std::uint32_t> hidden_mission_entries_, locked_mission_entries_;
     std::vector<SkeletonLine> skeleton_lines_;
     bool show_skeleton_{true}, show_skeleton_labels_{};
     bool isolate_selected_actor_{}, dim_unselected_actors_{true}, outline_selected_actor_{true};
@@ -536,6 +586,16 @@ private:
     bool animated_actor_dirty_{};
 
     EditTool edit_tool_{EditTool::select};
+    bool tool_strip_{}, collision_loaded_for_measure_{};
+    std::vector<ViewportClick> viewport_clicks_;
+    std::optional<rws::Vec3> hover_ground_;
+    float last_ground_height_{};
+    std::optional<PickEvent> pick_event_;
+    std::unordered_set<std::uint32_t> extra_selected_;
+    std::string tool_hint_;
+    std::optional<ImVec2> box_start_;
+    float toolbar_bottom_{};
+    void draw_tool_strip(ImVec2 origin);
     std::optional<EditHandle> edit_handle_;
     // Per scene instance: its prototype's inverse root frame, as a draw matrix.
     std::unordered_map<std::uint64_t, std::array<float, 12>> instance_root_inverse_;

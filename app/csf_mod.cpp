@@ -1,11 +1,13 @@
 #include "csf/authoring.hpp"
 #include "csf/authoring_project.hpp"
+#include "csf/mission_components.hpp"
 #include "csf/mission_edit.hpp"
 #include "csf/mission_flow.hpp"
 #include "csf/mission_ops.hpp"
 #include "csf/mission.hpp"
 #include "csf/mod_project.hpp"
 #include "csf/object_database.hpp"
+#include "csf/project_pipeline.hpp"
 #include "csf/source_text.hpp"
 #include "csf/tree.hpp"
 #include "rws/document.hpp"
@@ -43,7 +45,16 @@ void usage() {
            "  csf-mod world-build <source.csfworld> <donor-map.rws> <new-map.rws>\n"
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod mission-ops <workspace> <scene.scn> <ops-file> [--package <root>] [--ground <source.csfworld>]\n"
+           "                      [--components]\n"
+           "  csf-mod mission-components <workspace> <scene.scn> [--package <root>] list | check\n"
+           "                      | set <id> <line> <key>=<value>... | regenerate <id> | detach <id> | delete <id>\n"
            "  csf-mod mission-flow <scene.scn> [--package <root>] [--workspace <dir>]\n"
+           "  csf-mod project-new <project-dir> --slot <mission> [--name <text>] [--corpus <root>]\n"
+           "                      [--flat <size-cm> | --no-terrain] [--projects-root <dir>] [--test-install <dir>]\n"
+           "  csf-mod project-archives <project-dir> [--original-mission <pak>] [--original-texts <pak>]\n"
+           "  csf-mod project-deploy <project-dir> <build-id> [<test-install>]\n"
+           "  csf-mod project-rollback <project-dir> <build-id>\n"
+           "  csf-mod project-playtest <project-dir> <build-id> worked|failed <note>\n"
            "  csf-mod project-build <project-dir> [--force] [--verbose]\n"
            "  csf-mod project-heights <project-dir> [--resnap]\n"
            "  csf-mod project-reference <project-dir> <out-dir>\n"
@@ -253,6 +264,86 @@ int main(int argc, char** argv) try {
             std::cout << "rebuilt\t" << to.generic_string() << '\t' << built.value->triangle_count << " triangles\t"
                       << source.world_sector_count << " -> " << built.value->world_sector_count << " sectors\n";
         }
+        return 0;
+    }
+    if (command == "project-new") {
+        // A new authoring project in a shipped mission's slot (include/csf/project_pipeline.hpp).
+        if (argc < 3) { usage(); return 1; }
+        csf::NewProjectOptions options;
+        options.directory = argv[2];
+        options.corpus = "../CSF_unpacks";
+        options.tool_version = "csf-mod";
+        for (int i = 3; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            const auto value = [&]() -> std::string {
+                if (i + 1 >= argc) throw std::runtime_error(std::string(option) + " needs a value");
+                return argv[++i];
+            };
+            if (option == "--slot") options.slot = value();
+            else if (option == "--name") options.name = value();
+            else if (option == "--corpus") options.corpus = value();
+            else if (option == "--flat") options.terrain_size = std::stof(value());
+            else if (option == "--no-terrain") options.terrain_size = 0;
+            else if (option == "--projects-root") options.projects_root = value();
+            else if (option == "--test-install") options.test_install = value();
+            else throw std::runtime_error("Unknown project-new option: " + std::string(option));
+        }
+        if (options.slot.empty()) throw std::runtime_error("project-new needs --slot <mission>");
+        if (options.name.empty()) options.name = std::filesystem::path(argv[2]).filename().string();
+        const auto created = csf::create_authoring_project(options);
+        for (const auto& line : created.lines)
+            if (!line.starts_with("note\t")) std::cout << line << '\n';
+        std::cout << "project\t" << created.project.directory.generic_string() << '\n';
+        return 0;
+    }
+    if (command == "project-archives") {
+        // Both archives of an authoring project into dist/<build-id>/.
+        if (argc < 3) { usage(); return 1; }
+        auto project = csf::AuthoringProject::load(argv[2]);
+        std::optional<std::filesystem::path> mission, texts;
+        for (int i = 3; i + 1 < argc; i += 2) {
+            const std::string_view option = argv[i];
+            if (option == "--original-mission") mission = argv[i + 1];
+            else if (option == "--original-texts") texts = argv[i + 1];
+            else throw std::runtime_error("Unknown project-archives option: " + std::string(option));
+        }
+        if (!mission) mission = csf::find_original_archive(project, project.slot.archive);
+        if (!texts && project.texts) texts = csf::find_original_archive(project, project.texts->archive);
+        if (!mission) throw std::runtime_error("Where is the untouched " + project.slot.archive.generic_string() +
+                                               "? Pass --original-mission or set the test install");
+        if (project.texts && !project.strings.empty() && !texts)
+            throw std::runtime_error("Where is the untouched " + project.texts->archive.generic_string() +
+                                     "? Pass --original-texts");
+        const auto build = csf::build_archives(project, *mission, texts.value_or(""), "csf-mod");
+        for (const auto& line : build.lines)
+            if (!line.starts_with("note\t")) std::cout << line << '\n';
+        std::cout << "build\t" << build.id << '\n';
+        return 0;
+    }
+    if (command == "project-deploy" || command == "project-rollback") {
+        if (argc < 4) { usage(); return 1; }
+        auto project = csf::AuthoringProject::load(argv[2]);
+        if (command == "project-rollback") {
+            csf::roll_back_build(project, argv[3]);
+            std::cout << "rolled back\t" << argv[3] << '\n';
+            return 0;
+        }
+        const std::filesystem::path install = argc > 4 ? std::filesystem::path(argv[4]) : project.local.test_install;
+        if (install.empty()) throw std::runtime_error("Which test install? Pass it or set test-install in local.csfproj");
+        for (const auto& deployment : csf::deploy_build(project, argv[3], install))
+            std::cout << "deployed\t" << deployment.archive.generic_string() << '\t' << deployment.manifest.generic_string()
+                      << '\n';
+        project.save();
+        return 0;
+    }
+    if (command == "project-playtest") {
+        if (argc != 6) { usage(); return 1; }
+        const std::string_view result = argv[4];
+        if (result != "worked" && result != "failed") throw std::runtime_error("The result is worked or failed");
+        auto project = csf::AuthoringProject::load(argv[2]);
+        project.playtests.push_back({argv[3], result == "worked", argv[5]});
+        project.save();
+        std::cout << "playtest\t" << argv[3] << '\t' << result << '\n';
         return 0;
     }
     if (command == "project-build") {
@@ -855,10 +946,12 @@ int main(int argc, char** argv) try {
         if (argc < 5) { usage(); return 1; }
         const std::filesystem::path workspace = argv[2], scene = argv[3], ops = argv[4];
         std::filesystem::path package, ground_source;
+        bool components = false;
         for (int i = 5; i < argc; ++i) {
             const std::string_view option = argv[i];
             if (option == "--package" && i + 1 < argc) package = argv[++i];
             else if (option == "--ground" && i + 1 < argc) ground_source = argv[++i];
+            else if (option == "--components") components = true;
             else throw std::runtime_error("Unknown mission-ops option: " + std::string(option));
         }
         if (package.empty())
@@ -890,14 +983,104 @@ int main(int argc, char** argv) try {
             };
         }
         const auto bytes = read_bytes(ops);
-        const auto outcomes = csf::run_mission_ops(editor, {reinterpret_cast<const char*>(bytes.data()), bytes.size()},
-                                                   options);
+        const std::string_view text{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+        const auto outcomes = components ? csf::run_component_ops(editor, text, options)
+                                         : csf::run_mission_ops(editor, text, options);
         for (const auto& outcome : outcomes) {
             std::cout << (outcome.result.applied ? "applied\t" : "failed\t") << ops.filename().generic_string() << ':'
                       << outcome.line << '\t' << outcome.op << '\t' << outcome.result.message << '\n';
             for (const auto& warning : outcome.result.warnings) std::cout << "warning\t" << outcome.line << '\t' << warning << '\n';
         }
         if (!outcomes.empty() && !outcomes.back().result.applied) return 2;
+        for (const auto& path : editor.save(project)) std::cout << "wrote\t" << path.generic_string() << '\n';
+        return 0;
+    }
+    if (command == "mission-components") {
+        // Lists, checks and edits the components of a workspace's mission
+        // (include/csf/mission_components.hpp); edits are saved.
+        if (argc < 5) { usage(); return 1; }
+        const std::filesystem::path workspace = argv[2], scene = argv[3];
+        int i = 4;
+        std::filesystem::path package;
+        if (i + 1 < argc && std::string_view(argv[i]) == "--package") {
+            package = argv[i + 1];
+            i += 2;
+        }
+        if (package.empty())
+            for (auto dir = std::filesystem::weakly_canonical(scene).parent_path(); !dir.empty(); dir = dir.parent_path()) {
+                if (std::filesystem::is_directory(dir / "BDD")) {
+                    package = dir;
+                    break;
+                }
+                if (dir == dir.parent_path()) break;
+            }
+        if (package.empty()) throw std::runtime_error("Cannot find the mission root; pass --package");
+        if (i >= argc) { usage(); return 1; }
+        auto project = csf::ModProject::load(workspace);
+        auto editor = csf::MissionEditor::open(scene, package, &project);
+        const std::string_view action = argv[i++];
+        std::string error;
+        const auto components = csf::mission_components(editor, &error);
+        if (!error.empty()) throw std::runtime_error("components.csfops: " + error);
+        const auto id_argument = [&] {
+            if (i >= argc) throw std::runtime_error("Missing the component ID");
+            return std::stoi(argv[i++]);
+        };
+        csf::EditResult result;
+        if (action == "list") {
+            for (const auto& component : components) {
+                std::cout << component.id << '\t' << csf::component_title(component) << '\t'
+                          << (csf::component_state(editor, component) == csf::ComponentState::clean ? "clean" : "modified");
+                for (const auto& record : component.owns)
+                    std::cout << '\t' << csf::record_type_name(record.type) << ':' << record.id;
+                std::cout << '\n';
+            }
+            return 0;
+        } else if (action == "check") {
+            int status = 0;
+            for (const auto& component : components)
+                if (csf::component_state(editor, component) != csf::ComponentState::clean) {
+                    std::cout << "modified\t" << component.id << '\t' << csf::component_title(component) << '\n';
+                    status = 3;
+                }
+            for (const auto id : csf::components_that_drift(editor)) {
+                std::cout << "drifts\t" << id << '\n';
+                status = 3;
+            }
+            if (!status) std::cout << components.size() << " components regenerate identically\n";
+            return status;
+        } else if (action == "set") {
+            const auto id = id_argument();
+            if (i >= argc) throw std::runtime_error("Missing the line number (1 = the component's first line)");
+            const auto line_number = static_cast<std::size_t>(std::stoul(argv[i++]));
+            const auto found = std::ranges::find(components, id, &csf::MissionComponent::id);
+            if (found == components.end()) throw std::runtime_error("No component " + std::to_string(id));
+            auto lines = found->lines;
+            if (line_number < 1 || line_number > lines.size()) throw std::runtime_error("No such line");
+            auto line = csf::parse_op_line(lines[line_number - 1]);
+            for (; i < argc; ++i) {
+                const std::string_view pair = argv[i];
+                const auto equals = pair.find('=');
+                if (equals == std::string_view::npos) throw std::runtime_error("Expected key=value");
+                line.set(pair.substr(0, equals), std::string(pair.substr(equals + 1)));
+            }
+            lines[line_number - 1] = csf::format_op_line(line);
+            std::string text;
+            for (const auto& value : lines) text += value + '\n';
+            result = csf::update_component(editor, id, text);
+        } else if (action == "regenerate") {
+            result = csf::regenerate_component(editor, id_argument());
+        } else if (action == "detach") {
+            result = csf::detach_component(editor, id_argument());
+        } else if (action == "delete") {
+            result = csf::delete_component(editor, id_argument());
+        } else {
+            usage();
+            return 1;
+        }
+        std::cout << (result.applied ? "applied\t" : "failed\t") << result.message << '\n';
+        for (const auto& warning : result.warnings) std::cout << "warning\t" << warning << '\n';
+        if (!result.applied) return 2;
         for (const auto& path : editor.save(project)) std::cout << "wrote\t" << path.generic_string() << '\n';
         return 0;
     }

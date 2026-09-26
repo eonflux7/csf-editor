@@ -1,14 +1,18 @@
 #include "mission_editing.hpp"
 
+#include "mission_authoring.hpp"
+
 #include "app_actions.hpp"
 #include "app_util.hpp"
 #include "authoring.hpp"
 #include "mission_loader.hpp"
 #include "mission_overlays.hpp"
+#include "viewport_tools.hpp"
 #include "navigation.hpp"
 #include "rwsman/chunk_lookup.hpp"
 
 #include <algorithm>
+#include <unordered_set>
 #include <cmath>
 #include <bit>
 #include <numbers>
@@ -56,6 +60,8 @@ std::string record_label(const MissionRecordKey& key) {
 SelectionRef remap_selection(const SelectionRef& ref, const csf::MissionScene& before,
                              const csf::MissionScene& after) {
     if (ref.kind != SelectionRef::Kind::mission_entry) return ref;
+    // Project placements keep their entries (their index in the project).
+    if (static_cast<std::uint32_t>(ref.a) >= placement_entry_base) return ref;
     const auto key = mission_record_key(before, static_cast<std::uint32_t>(ref.a));
     if (key.kind == MissionRecordKey::Kind::none) return {};
     const auto entry = mission_record_entry(after, key);
@@ -141,7 +147,13 @@ MissionRecordKey mission_record_key(const csf::MissionScene& scene, const std::u
         for (const auto& point : group.points)
             if (point.source.entry_index == entry && point.group_id && point.id)
                 return {Kind::nav_point, *point.group_id, *point.id};
+        // A link between points (a line in the viewport) stands for its route.
+        for (const auto& connection : group.connections)
+            if (connection.source.entry_index == entry && group.id) return {Kind::nav_group, *group.id, 0};
     }
+    for (const auto& connection : scene.cross_group_connections())
+        if (connection.source.entry_index == entry && connection.origin_group)
+            return {Kind::nav_group, *connection.origin_group, 0};
     return {};
 }
 
@@ -162,6 +174,9 @@ std::optional<std::uint32_t> mission_record_entry(const csf::MissionScene& scene
     case Kind::nav_point:
         if (const auto* point = scene.navigation_point(key.id, key.sub_id)) return point->source.entry_index;
         return std::nullopt;
+    case Kind::placement:
+        if (key.id < 0) return std::nullopt;
+        return placement_entry_base + static_cast<std::uint32_t>(key.id);
     case Kind::none: break;
     }
     return std::nullopt;
@@ -169,10 +184,14 @@ std::optional<std::uint32_t> mission_record_entry(const csf::MissionScene& scene
 
 MissionRecordKey selected_mission_record(const AppState& state) {
     if (!state.mission.scene) return {};
-    if (const auto entry = state.preview.selected_mission_entry())
-        return mission_record_key(*state.mission.scene, *entry);
+    const auto key = [&](const std::uint32_t entry) -> MissionRecordKey {
+        if (const auto index = placement_index(state, entry))
+            return {MissionRecordKey::Kind::placement, static_cast<std::int32_t>(*index), 0};
+        return mission_record_key(*state.mission.scene, entry);
+    };
+    if (const auto entry = state.preview.selected_mission_entry()) return key(*entry);
     if (state.selection.kind == SelectionRef::Kind::mission_entry)
-        return mission_record_key(*state.mission.scene, static_cast<std::uint32_t>(state.selection.a));
+        return key(static_cast<std::uint32_t>(state.selection.a));
     return {};
 }
 
@@ -253,9 +272,10 @@ void refresh_mission_from_editor(AppState& state) {
         auto associations = csf::associate_actors(*scene, *objects, index);
         if (!mission.model_cache) mission.model_cache = std::make_shared<ActorModelCache>();
         auto models = build_actor_models(*scene, associations, *weapons, index, *mission.model_cache);
-        auto overlays = make_mission_overlays(*scene);
+        auto overlays = make_mission_overlays(*scene, objects.get());
         append_cutscene_camera_overlays(*scene, cutscenes, overlays);
         append_actor_collision_overlays(*scene, associations, overlays);
+        append_placement_overlays(state, overlays);
 
         // Carry every entry-based selection over to the new entry numbering.
         const auto& before = *mission.scene;
@@ -308,6 +328,8 @@ void refresh_mission_from_editor(AppState& state) {
         state.error(std::string("Could not refresh the mission views: ") + error.what());
     }
     mission.applied_revision = editor.revision();
+    // Entries are renumbered: hidden and locked records map to new entries.
+    state.ui.record_states_dirty = true;
     if (const auto key = std::exchange(mission.pending_selection, std::nullopt))
         select_mission_record(state, *key);
     if (const auto script = std::exchange(mission.pending_script, std::nullopt);
@@ -319,6 +341,52 @@ void refresh_mission_from_editor(AppState& state) {
                 state.selected_program_script = i;
             }
     }
+}
+
+void update_authoring_views(AppState& state) {
+    // The Outliner's hidden and locked records, as viewport entries.
+    if (state.ui.record_states_dirty && state.mission.scene) {
+        state.ui.record_states_dirty = false;
+        const auto& scene = *state.mission.scene;
+        const auto entries_of = [&](const std::vector<MissionRecordKey>& keys) {
+            std::unordered_set<std::uint32_t> entries;
+            for (const auto& key : keys) {
+                if (const auto entry = mission_record_entry(scene, key)) entries.insert(*entry);
+                // A navigation group takes its points and links with it.
+                if (key.kind == MissionRecordKey::Kind::nav_group)
+                    for (const auto& group : scene.navigation())
+                        if (group.id == key.id) {
+                            for (const auto& point : group.points) entries.insert(point.source.entry_index);
+                            for (const auto& link : group.connections) entries.insert(link.source.entry_index);
+                        }
+            }
+            return entries;
+        };
+        state.preview.set_mission_entry_states(entries_of(state.ui.hidden_records),
+                                               entries_of(state.ui.locked_records));
+    }
+
+    // Problems: rebuilt when the mission, the flow, the height report or the
+    // project changed.
+    const auto* flow = state.mission.scene && state.mission.editor ? mission_flow(state) : nullptr;
+    std::uint64_t key = 1469598103934665603ULL;
+    const auto mix = [&key](const std::uint64_t value) { key = (key ^ value) * 1099511628211ULL; };
+    mix(state.mission.editor ? state.mission.editor->revision() : 0);
+    mix(state.mission.applied_revision);
+    mix(reinterpret_cast<std::uintptr_t>(state.mission.scene.get()));
+    mix(reinterpret_cast<std::uintptr_t>(flow));
+    mix(state.authoring.findings.size());
+    mix(reinterpret_cast<std::uintptr_t>(state.authoring.project.get()));
+    mix(state.authoring.project ? state.authoring.project->strings.size() + state.authoring.project->placements.size() : 0);
+    if (key == state.problems_key) return;
+    state.problems_key = key;
+    ProblemInputs inputs;
+    inputs.scene = state.mission.scene.get();
+    inputs.objects = state.mission.objects.get();
+    inputs.flow = flow;
+    inputs.heights = state.authoring.findings;
+    if (state.authoring.project) inputs.project_checks = state.authoring.project->check();
+    state.problems = collect_problems(inputs);
 }
 
 void mission_undo(AppState& state) {
@@ -386,6 +454,7 @@ void save_mission_project(AppState& state, const std::filesystem::path& workspac
                          mission.original_archive});
         }
         const auto written = mission.editor->save(*mission.project);
+        save_authoring_project(state);  // one save for the mission and its project (E2)
         state.notify(LogLevel::ok,
                      "Saved " + std::to_string(mission.project->files.size()) + " edited file" +
                          (mission.project->files.size() == 1 ? "" : "s") + " to project " +
@@ -470,6 +539,17 @@ void delete_selected_record(AppState& state, const bool force) {
     auto& editor = *state.mission.editor;
     const auto key = selected_mission_record(state);
     csf::EditResult result;
+    if (auto deleted = delete_component_record(state, key)) {
+        // A component's record goes with its component (a route point with its line).
+        if (apply_mission_edit(state, *deleted)) {
+            notify_undoable(state, deleted->message);
+            if (key.kind != MissionRecordKey::Kind::nav_point) {
+                state.preview.clear_mission_selection();
+                state.selection = {};
+            }
+        }
+        return;
+    }
     switch (key.kind) {
     case MissionRecordKey::Kind::actor: result = editor.delete_actor(key.id, force); break;
     case MissionRecordKey::Kind::dummy: result = editor.delete_dummy(key.id, force); break;
@@ -484,16 +564,18 @@ void delete_selected_record(AppState& state, const bool force) {
         return;
     }
     if (apply_mission_edit(state, result)) {
+        notify_undoable(state, result.message);
         state.preview.clear_mission_selection();
         state.selection = {};
-    } else if (!force) {
-        state.info("Hold Shift while deleting (Shift+Delete) to delete a referenced " + record_label(key) +
-                   " and leave its references dangling");
+    } else if (!force && result.message.find("does not exist") == std::string::npos) {
+        // Refused because something still refers to it: the dialog lists what.
+        state.ui.force_delete_reason = result.message;
     }
 }
 
 void update_mission_gizmo(AppState& state) {
     auto& preview = state.preview;
+    preview.set_tool_strip(state.workspace == Workspace::mission && mission_editable(state));
     if (!mission_editable(state) || state.workspace != Workspace::mission) {
         preview.set_edit_handle(std::nullopt);
         return;
@@ -519,6 +601,10 @@ void update_mission_gizmo(AppState& state) {
                 handle = {*entry, rws_point(*point->position), point->heading.value_or(0), true};
         }
     }
+    if (!handle && state.selection.kind == SelectionRef::Kind::mission_entry)
+        if (const auto* placement = selected_placement(state))
+            handle = GeometryPreview::EditHandle{static_cast<std::uint32_t>(state.selection.a), placement->position,
+                                                 placement->yaw_degrees * radians_per_degree, true};
     if (!handle && state.selection.kind == SelectionRef::Kind::scene_instance && map_instances_editable(state))
         if (const auto* instance = find_instance(state.document->scene_instances(), state.selection.a)) {
             handle = GeometryPreview::EditHandle{0, instance->position, map_instance_yaw(*instance), true,
@@ -533,6 +619,7 @@ void update_mission_gizmo(AppState& state) {
         return;
     }
     if (drag->phase != GeometryPreview::EditDrag::Phase::finished) return;
+    if (!drag->map_instance && apply_group_drag(state, *drag)) return;
     if (drag->map_instance) {
         const auto result = state.mission.editor->set_map_instance_transform(
             *drag->map_instance, GeometryPreview::instance_rotation_for(*drag), csf_point(drag->position));
@@ -545,7 +632,10 @@ void update_mission_gizmo(AppState& state) {
     auto& editor = *state.mission.editor;
     csf::EditResult result;
     using Kind = MissionRecordKey::Kind;
-    switch (dragged.kind) {
+    // What a component made moves through its lines, so it stays re-editable.
+    if (auto moved = move_component_record(state, dragged, position, drag->heading_radians)) {
+        result = std::move(*moved);
+    } else switch (dragged.kind) {
     case Kind::actor:
         if (const auto* actor = find_actor(scene, dragged.id))
             result = editor.set_actor_placement(

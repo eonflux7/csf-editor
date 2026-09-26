@@ -1,10 +1,14 @@
 #pragma once
 
+#include "rwsman/entity_kind.hpp"
+
 #include <imgui.h>
 
 #include <array>
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <vector>
 
 // All colors in the GUI come from this header. ImGui color literals (IM_COL32,
 // ImVec4 constructors) are only written in theme.cpp; everything else asks for a
@@ -53,6 +57,17 @@ void set_theme(std::string_view name);
 // Rebuilds ImGuiStyle from the current theme. `scale` is the combined OS and user
 // UI scale; sizes are multiplied by it.
 void apply_theme(float scale);
+
+// One colour and one icon per kind of mission content (players, zones,
+// objectives...). The Outliner, the viewport markers, the Properties header
+// and the Problems rows all use them, so a kind looks the same everywhere.
+[[nodiscard]] ImVec4 kind_color(EntityKind kind, float alpha = 1.0F);
+[[nodiscard]] ImU32 kind_color_u32(EntityKind kind, float alpha = 1.0F);
+[[nodiscard]] const char* kind_icon(EntityKind kind);
+
+// Colour pairs of the current theme below WCAG AA, as messages: text and
+// status colours need 4.5:1 on every background, kind colours (icons) 3:1.
+[[nodiscard]] std::vector<std::string> theme_contrast_problems();
 
 // Heat scale for size gradients: neutral at 0, accent at 1.
 [[nodiscard]] ImVec4 heat(float t);

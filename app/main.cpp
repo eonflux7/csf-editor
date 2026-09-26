@@ -18,6 +18,9 @@
 #include "navigation.hpp"
 #include "mission_editing.hpp"
 #include "screenshot.hpp"
+#include "state_snapshot.hpp"
+#include "ui_automation.hpp"
+#include "ui_script_runner.hpp"
 #include "ui/fonts.hpp"
 #include "ui/layout.hpp"
 #include "ui/shell.hpp"
@@ -36,6 +39,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -55,6 +60,12 @@ struct LaunchOptions {
     // buffer to a new PNG, and exit. The window stays hidden unless --show is passed.
     std::optional<std::filesystem::path> screenshot;
     std::vector<std::string> commands;
+    // A UI scenario script (docs/plans/editor-ux-redesign.md, T2) and where its
+    // screenshots, references and failure reports go.
+    std::optional<std::filesystem::path> script;
+    std::optional<std::filesystem::path> output_dir, golden_dir, dump_state;
+    bool update_goldens = false;
+    bool overwrite = false; // replace existing output files (screenshots, dumps)
     // Use this directory for settings and layouts instead of the per-user one.
     std::optional<std::filesystem::path> config_dir;
     int screenshot_frames = 12;
@@ -93,6 +104,19 @@ LaunchOptions parse_arguments(const std::vector<std::filesystem::path>& argument
             options.project = path_value();
         } else if (argument == "--config-dir") {
             options.config_dir = path_value();
+        } else if (argument == "--run-script") {
+            options.script = path_value();
+            options.maximize = false;
+        } else if (argument == "--output-dir") {
+            options.output_dir = path_value();
+        } else if (argument == "--golden-dir") {
+            options.golden_dir = path_value();
+        } else if (argument == "--update-goldens") {
+            options.update_goldens = true;
+        } else if (argument == "--overwrite") {
+            options.overwrite = true;
+        } else if (argument == "--dump-state") {
+            options.dump_state = path_value();
         } else if (argument == "--commands") {
             std::stringstream list(value());
             std::string item;
@@ -149,18 +173,26 @@ void sleep_until_precise(const std::chrono::steady_clock::time_point deadline) {
 }
 
 int run_app(const LaunchOptions& options) {
-    if (!glfwInit()) return 1;
+    const bool scripted = options.screenshot || options.script || !options.commands.empty();
+    // Scripted runs report a missing display or GL context as "skipped" (77, as
+    // ctest's SKIP_RETURN_CODE for the UI tests), not as a failure.
+    const int no_window = scripted ? 77 : 1;
+    if (!glfwInit()) {
+        std::fprintf(stderr, "cannot initialise GLFW (no display?)\n");
+        return no_window;
+    }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
     glfwWindowHint(GLFW_STENCIL_BITS, 8); // Selection outline mask.
     glfwWindowHint(GLFW_MAXIMIZED, options.maximize ? GLFW_TRUE : GLFW_FALSE);
-    if (options.screenshot && !options.show) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    if (scripted && !options.show) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     auto* window = glfwCreateWindow(options.width, options.height, "CSF RWS Tools - rws-man",
                                     nullptr, nullptr);
     if (!window) {
+        std::fprintf(stderr, "cannot create an OpenGL 3.3 window\n");
         glfwTerminate();
-        return 1;
+        return no_window;
     }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
@@ -178,6 +210,7 @@ int run_app(const LaunchOptions& options) {
 
     // ImGui keeps the pointer to the ini path until DestroyContext() writes it.
     std::string ini_path;
+    int run_exit_code = 0;
     {
         rwsman::AppState state;
         state.window = window;
@@ -193,7 +226,7 @@ int run_app(const LaunchOptions& options) {
             ini_path = (state.config_dir / "layout.ini").string();
             // Screenshot runs read the saved layouts but never write them back, like
             // settings.ini (a scripted run must not rearrange the user's panels).
-            if (options.screenshot && !options.save_settings)
+            if (scripted && !options.save_settings)
                 ImGui::LoadIniSettingsFromDisk(ini_path.c_str());
             else
                 io.IniFilename = ini_path.c_str();
@@ -216,10 +249,48 @@ int run_app(const LaunchOptions& options) {
             state.log.push(rwsman::LogLevel::warn, "Shortcut conflict: " + conflict.first + " / " +
                                                        conflict.second + " (" + conflict.shortcut + ")");
 
+        // Scripted runs: a UI script, or the older --commands list as one.
+        rwsman::UiAutomation automation;
+        std::unique_ptr<rwsman::UiScriptRunner> runner;
+        int exit_code = 0;
+        if (options.script || !options.commands.empty()) {
+            std::vector<rwsman::UiScriptStep> steps;
+            rwsman::UiScriptOptions script_options;
+            if (options.script) {
+                std::ifstream in(*options.script, std::ios::binary);
+                const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                auto parsed = rwsman::parse_ui_script(text);
+                if (!in && text.empty()) parsed.errors.push_back("cannot read the script");
+                for (const auto& error : parsed.errors)
+                    std::fprintf(stderr, "%s: %s\n", rwsman::path_utf8(*options.script).c_str(), error.c_str());
+                if (!parsed.errors.empty()) exit_code = 2;
+                steps = std::move(parsed.steps);
+                script_options.name = rwsman::path_utf8(options.script->filename());
+                script_options.base_directory = options.script->parent_path();
+            } else {
+                script_options.name = "--commands";
+            }
+            // Commands given with a script run after it.
+            for (auto& step : rwsman::ui_script_from_commands(options.commands)) steps.push_back(std::move(step));
+            script_options.output_directory =
+                options.output_dir ? *options.output_dir
+                                   : (options.screenshot ? options.screenshot->parent_path() : std::filesystem::path{});
+            script_options.golden_directory = options.golden_dir ? *options.golden_dir : script_options.base_directory;
+            script_options.update_goldens = options.update_goldens;
+            script_options.overwrite = options.overwrite;
+            runner = std::make_unique<rwsman::UiScriptRunner>(std::move(steps), std::move(script_options));
+            automation.enable();
+            state.ui.deterministic = true;
+            // Most specific first, so a fixture under the home directory keeps its name.
+            for (const char* variable : {"RWSMAN_UI_FIXTURE", "RWSMAN_UI_CONFIG", "HOME"})
+                if (const char* value = std::getenv(variable); value && *value)
+                    state.ui.path_aliases.emplace_back(value, variable[0] == 'H' ? "~" : std::string("$") + variable);
+        }
+        if (exit_code != 0) glfwSetWindowShouldClose(window, GLFW_TRUE);
+
         if (options.project) rwsman::open_mission_project(state, *options.project);
         else if (options.initial_path) rwsman::open_path(state, *options.initial_path);
-        int frame = 0, settled = 0, last_busy_frame = 0;
-        std::size_t next_command = 0;
+        int frame = 0, settled = 0;
         auto last_settings_change = std::chrono::steady_clock::now();
         bool settings_pending = false;
         // Frame pacing: the previous frame decides whether this one waits for input
@@ -227,13 +298,13 @@ int run_app(const LaunchOptions& options) {
         rwsman::FrameRateCounter frame_rate;
         rwsman::FramePacing pacing;
         auto frame_start = std::chrono::steady_clock::now();
-        // Scripted screenshot runs never wait for a save prompt.
-        bool closing_confirmed = options.screenshot.has_value();
+        // Scripted runs never wait for a save prompt.
+        bool closing_confirmed = scripted;
 
         while (true) {
             if (glfwWindowShouldClose(window)) {
                 // Unsaved mission edits: ask first; the dialog closes the window.
-                if (!state.mission.editor || !state.mission.editor->dirty() || closing_confirmed) break;
+                if (!edits_unsaved(state) || closing_confirmed) break;
                 glfwSetWindowShouldClose(window, GLFW_FALSE);
                 state.ui.pending_discard = [&closing_confirmed, window] {
                     closing_confirmed = true;
@@ -283,41 +354,14 @@ int run_app(const LaunchOptions& options) {
 
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
+            // The script's input goes after the backend's, so it wins.
+            if (runner) runner->before_frame(state, automation);
             ImGui::NewFrame();
 
-            // Scripted commands (developer aid), one per frame after the UI settled.
-            if (rwsman::mission_load_active(state) || rwsman::authoring_pending(state)) last_busy_frame = frame;
-            if (frame >= 3 && frame >= last_busy_frame + 3 && next_command < options.commands.size())
-            {
-                const auto& command = options.commands[next_command++];
-                if (command.starts_with("goto:")) {
-                    // Developer aid: select the best search match for the text.
-                    // "goto:kind:text" restricts the match to one symbol kind (for example "dummy").
-                    auto text = command.substr(5);
-                    std::string kind;
-                    if (const auto colon = text.find(':'); colon != std::string::npos) {
-                        kind = text.substr(0, colon);
-                        text = text.substr(colon + 1);
-                    }
-                    for (const auto& result : state.search_index.query(text, 100))
-                        if (kind.empty() || kind == rwsman::symbol_kind_name(result.entry->kind)) {
-                            rwsman::navigate_to(state, result.entry->target);
-                            break;
-                        }
-                } else if (command.starts_with("palette:") || command.starts_with("goto-palette:")) {
-                    // Developer aid: open the palette with a query already typed.
-                    const bool go_to = command.starts_with("goto-palette:");
-                    state.ui.palette = go_to ? rwsman::UiState::PaletteMode::go_to : rwsman::UiState::PaletteMode::commands;
-                    state.ui.palette_just_opened = true;
-                    state.ui.palette_prefilled = true;
-                    const auto text = command.substr(command.find(':') + 1);
-                    std::snprintf(state.ui.palette_query.data(), state.ui.palette_query.size(), "%s", text.c_str());
-                } else {
-                    state.commands.run(command);
-                }
-            }
-
-            state.preview.set_frame_timing(state.frame_stats.fps, state.frame_stats.cpu_ms);
+            if (state.ui.deterministic)
+                state.preview.set_frame_timing(-1.0, 0.0);
+            else
+                state.preview.set_frame_timing(state.frame_stats.fps, state.frame_stats.cpu_ms);
             rwsman::ui::draw_frame(state);
 
             ImGui::Render();
@@ -337,23 +381,41 @@ int run_app(const LaunchOptions& options) {
                 else
                     state.notify(rwsman::LogLevel::error, "Screenshot failed: " + error);
             }
-            if (options.screenshot) {
+            if (runner) {
+                runner->after_render(state, automation);
+                if (runner->failed()) {
+                    exit_code = 1;
+                    glfwSetWindowShouldClose(window, GLFW_TRUE);
+                }
+            }
+            if (runner && runner->skipped()) {
+                exit_code = 77;
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
+            const bool script_running = runner && !runner->done();
+            if (options.screenshot && exit_code == 0) {
                 const bool busy = rwsman::mission_load_active(state) || rwsman::authoring_pending(state) ||
-                                  next_command < options.commands.size();
+                                  script_running;
                 settled = busy ? 0 : settled + 1;
                 if (settled >= options.screenshot_frames) {
                     std::string error;
-                    if (!rwsman::save_screenshot(window, *options.screenshot, error))
+                    std::error_code ignored;
+                    if (options.overwrite) std::filesystem::remove(*options.screenshot, ignored);
+                    if (!rwsman::save_screenshot(window, *options.screenshot, error)) {
                         std::fprintf(stderr, "screenshot failed: %s\n", error.c_str());
+                        exit_code = 1;
+                    }
                     glfwSetWindowShouldClose(window, GLFW_TRUE);
                 }
+            } else if (runner && !script_running && exit_code == 0) {
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
             ++frame;
             state.frame_stats.cpu_ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frame_start).count();
             glfwSwapBuffers(window);
 
-            if (!options.screenshot) {
+            if (!scripted) {
                 const auto& settings = state.settings;
                 rwsman::FramePacingInput input;
                 input.now = glfwGetTime();
@@ -377,7 +439,7 @@ int run_app(const LaunchOptions& options) {
                 last_settings_change = std::chrono::steady_clock::now();
                 settings_pending = true;
             }
-            if (settings_pending && (!options.screenshot || options.save_settings) &&
+            if (settings_pending && (!scripted || options.save_settings) &&
                 std::chrono::steady_clock::now() - last_settings_change > std::chrono::milliseconds(500)) {
                 settings_pending = false;
                 state.settings.workspace = rwsman::ui::workspace_key(state.workspace);
@@ -388,7 +450,20 @@ int run_app(const LaunchOptions& options) {
         }
         state.settings.workspace = rwsman::ui::workspace_key(state.workspace);
         state.settings.theme = std::string(rwsman::ui::theme_name());
-        if (!options.screenshot || options.save_settings)
+        if (options.dump_state) {
+            std::error_code ignored;
+            if (options.overwrite) std::filesystem::remove(*options.dump_state, ignored);
+            if (std::filesystem::exists(*options.dump_state, ignored)) {
+                std::fprintf(stderr, "state not written: %s exists (use --overwrite)\n",
+                             rwsman::path_utf8(*options.dump_state).c_str());
+            } else {
+                std::ofstream out(*options.dump_state, std::ios::binary);
+                out << rwsman::state_snapshot_json(rwsman::snapshot_state(state));
+            }
+        }
+        if (runner && exit_code == 0) std::fprintf(stdout, "ui script passed\n");
+        run_exit_code = exit_code;
+        if (!scripted || options.save_settings)
             if (const auto message = rwsman::save_settings(settings_path, state.settings); !message.empty())
                 std::fprintf(stderr, "settings not saved: %s\n", message.c_str());
         state.preview.clear();
@@ -398,7 +473,7 @@ int run_app(const LaunchOptions& options) {
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
-    return 0;
+    return run_exit_code;
 }
 
 } // namespace

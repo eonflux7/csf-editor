@@ -175,6 +175,7 @@ std::string serialize_settings(const Settings& settings) {
     out << "resource_root = " << escape(path_text(settings.resource_root)) << '\n';
     out << "game_root = " << escape(path_text(settings.game_root)) << '\n';
     out << "projects_root = " << escape(path_text(settings.projects_root)) << '\n';
+    out << "blender = " << escape(path_text(settings.blender)) << '\n';
     out << "ui_scale = " << format_float(settings.ui_scale) << '\n';
     out << "theme = " << escape(settings.theme) << '\n';
     out << "workspace = " << escape(settings.workspace) << '\n';
@@ -182,6 +183,7 @@ std::string serialize_settings(const Settings& settings) {
     out << "show_inspector = " << (settings.show_inspector ? "true" : "false") << '\n';
     out << "show_bottom_dock = " << (settings.show_bottom_dock ? "true" : "false") << '\n';
     out << "show_hud = " << (settings.show_hud ? "true" : "false") << '\n';
+    out << "developer_details = " << (settings.developer_details ? "true" : "false") << '\n';
     out << "show_clump_colors = " << (settings.show_clump_colors ? "true" : "false") << '\n';
     out << "move_speed = " << format_float(settings.move_speed) << '\n';
     out << "invert_y = " << (settings.invert_y ? "true" : "false") << '\n';
@@ -278,6 +280,8 @@ SettingsLoad parse_settings(const std::string_view text) {
             s.game_root = path_from_text(unescape(value));
         } else if (key == "projects_root") {
             s.projects_root = path_from_text(unescape(value));
+        } else if (key == "blender") {
+            s.blender = path_from_text(unescape(value));
         } else if (key == "ui_scale") {
             ok = parse_float(value, s.ui_scale);
         } else if (key == "theme") {
@@ -292,6 +296,8 @@ SettingsLoad parse_settings(const std::string_view text) {
             ok = parse_bool(value, s.show_bottom_dock);
         } else if (key == "show_hud") {
             ok = parse_bool(value, s.show_hud);
+        } else if (key == "developer_details") {
+            ok = parse_bool(value, s.developer_details);
         } else if (key == "show_clump_colors") {
             ok = parse_bool(value, s.show_clump_colors);
         } else if (key == "move_speed") {

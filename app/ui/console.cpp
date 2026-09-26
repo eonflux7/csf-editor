@@ -89,7 +89,7 @@ void draw_console(AppState& state) {
                              (entry.level == LogLevel::error && show_error);
         if (!visible) continue;
         ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
-        ImGui::TextUnformatted(format_log_time(entry.time).c_str());
+        ImGui::TextUnformatted(state.ui.deterministic ? "--:--:--" : format_log_time(entry.time).c_str());
         ImGui::PopStyleColor();
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Text, color(token_for(entry.level)));
@@ -97,7 +97,7 @@ void draw_console(AppState& state) {
         level.resize(5, ' ');
         ImGui::TextUnformatted(level.c_str());
         ImGui::SameLine();
-        ImGui::TextUnformatted(entry.message.c_str());
+        ImGui::TextUnformatted(state.ui.shown(entry.message).c_str());
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
             ImGui::SetClipboardText(entry.message.c_str());

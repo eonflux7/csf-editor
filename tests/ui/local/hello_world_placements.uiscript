@@ -1,0 +1,64 @@
+# Hello world's project placements (RWSMAN_HELLO_WORLD=<authoring project>),
+# on a copy: select trees in the Outliner, move three with one drag and one
+# undo step, and the placements survive the map rebuild.
+require RWSMAN_HELLO_WORLD
+copy $RWSMAN_HELLO_WORLD hello
+open $UI_OUTPUT/hello
+wait idle
+expect project.open true
+expect count.placements 30
+remember mission.hash
+
+# A placement is a record: Properties shows it, the gizmo moves it.
+click Outliner::##outliner_search
+type tree
+click Outliner::tree-13
+expect selection.record placement
+expect selection.title tree-13
+expect selection.position "1800 9 900"
+expect item:Properties::Placement visible
+click Outliner::tree-14 Shift
+click Outliner::tree-7 Ctrl
+expect selection.count 3
+expect selection.title tree-7
+
+# Drag the primary: all three move, one project step.
+command mission.tool_move
+remember selection.position
+drag-world 4300 337 1500 4600 337 1500
+wait idle
+expect-changed selection.position
+expect project.history.size 1
+expect count.placements 30
+# Project edits wait for Save, as mission edits do (E2).
+expect project.dirty true
+undo
+wait idle
+expect-same selection.position
+expect project.history.position 0
+
+# Delete two, undo.
+click Outliner::tree-13
+click Outliner::tree-14 Shift
+command mission.delete
+wait idle
+expect count.placements 28
+undo
+wait idle
+expect count.placements 30
+expect-same mission.hash
+
+# The radio stands on another record: pick its support with the eyedropper.
+goto actor:CAMP_RADIO
+click Properties::pick_support
+expect viewport.picking true
+click Outliner::tree-2
+expect viewport.picking false
+expect selection.id 15
+expect project.history.top "Stand actor 15 on prop tree-2"
+expect project.dirty true
+command file.save
+expect project.dirty false
+undo
+wait idle
+expect project.dirty true

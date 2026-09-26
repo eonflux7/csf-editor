@@ -315,6 +315,10 @@ AuthoringProject AuthoringProject::parse(const std::string_view project_text, co
         } else if (record == "text") {
             expect(f, 3, "text <id> <string>");
             project.strings.push_back({f[1], f[2]});
+        } else if (record == "playtest") {
+            expect(f, 4, "playtest <build-id> <worked|failed> <note>");
+            if (f[2] != "worked" && f[2] != "failed") throw std::runtime_error("playtest result must be worked or failed");
+            project.playtests.push_back({f[1], f[2] == "worked", f[3]});
         } else if (record == "output") {
             expect(f, 6, "output <path> <kind> <hash> inputs <hash>");
             if (f[4] != "inputs") throw std::runtime_error("expected 'inputs' before the input hash");
@@ -331,6 +335,16 @@ AuthoringProject AuthoringProject::parse(const std::string_view project_text, co
             if (record != "csfproj-local" || f.size() != 2 || number<unsigned>(f[1]) != format_version)
                 throw std::runtime_error("expected 'csfproj-local 1'");
             local_header = true;
+            return;
+        }
+        if (record == "original") {
+            expect(f, 3, "original <archive> <path>");
+            project.local.originals[path_of(f[1])] = path_of(f[2]);
+            return;
+        }
+        if (record == "deployment") {
+            expect(f, 4, "deployment <build-id> <archive> <state file>");
+            project.local.deployments.push_back({f[1], path_of(f[2]), path_of(f[3])});
             return;
         }
         expect(f, 2, "<setting> <path>");
@@ -375,6 +389,9 @@ std::string AuthoringProject::project_text() const {
     for (const auto& lightmap : lightmaps) out += "lightmap " + field(lightmap.name) + ' ' + field(lightmap.source) + '\n';
     if (!strings.empty()) out += "\n# Mission text (GlobalEK)\n";
     for (const auto& string : strings) out += "text " + field(string.id) + ' ' + field(string.text) + '\n';
+    if (!playtests.empty()) out += "\n# Playtests of built archives\n";
+    for (const auto& playtest : playtests)
+        out += "playtest " + field(playtest.build) + (playtest.worked ? " worked " : " failed ") + field(playtest.note) + '\n';
     if (!outputs.empty()) out += "\n# Generated outputs and what they were made from\n";
     for (const auto& output : outputs)
         out += "output " + field(output.path) + ' ' + output.kind + ' ' + output.hash + " inputs " +
@@ -387,6 +404,10 @@ std::string AuthoringProject::local_text() const {
     if (!local.corpus.empty()) out += "corpus " + field(local.corpus) + '\n';
     if (!local.blender.empty()) out += "blender " + field(local.blender) + '\n';
     if (!local.test_install.empty()) out += "test-install " + field(local.test_install) + '\n';
+    for (const auto& [archive, path] : local.originals) out += "original " + field(archive) + ' ' + field(path) + '\n';
+    for (const auto& deployment : local.deployments)
+        out += "deployment " + field(deployment.build) + ' ' + field(deployment.archive) + ' ' + field(deployment.manifest) +
+               '\n';
     return out;
 }
 
@@ -460,6 +481,11 @@ std::filesystem::path AuthoringProject::package_root() const {
 ProjectBuildReport AuthoringProject::build_world(const bool force) {
     if (const auto problems = check(); !problems.empty()) throw std::runtime_error(problems.front());
     ProjectBuildReport report;
+    // Nothing of its own yet: the slot's shipped map stays.
+    if (assets.empty() && placements.empty()) {
+        report.lines.push_back("world\tno assets or placements: the slot's own map is used");
+        return report;
+    }
     const auto package = package_root();
     const auto donor_visual = read_bytes(package / donor_map.visual);
     const auto donor_collision = read_bytes(package / donor_map.collision);
@@ -553,18 +579,22 @@ void append_utf16(std::vector<char16_t>& out, const std::string_view utf8) {
 
 } // namespace
 
-std::vector<std::byte> append_fli_strings(const std::span<const std::byte> donor, const std::vector<ProjectText>& strings) {
-    if (donor.size() % 2 != 0) throw std::runtime_error("The text file is not UTF-16");
+namespace {
+
+// A .fli's text as UTF-16 code units, without its BOM, lines ending in LF.
+std::vector<char16_t> fli_text(const std::span<const std::byte> fli) {
+    if (fli.size() % 2 != 0) throw std::runtime_error("The text file is not UTF-16");
     std::vector<char16_t> text;
-    for (std::size_t i = 0; i + 1 < donor.size(); i += 2)
-        text.push_back(static_cast<char16_t>(std::to_integer<unsigned>(donor[i]) | std::to_integer<unsigned>(donor[i + 1]) << 8));
+    for (std::size_t i = 0; i + 1 < fli.size(); i += 2)
+        text.push_back(static_cast<char16_t>(std::to_integer<unsigned>(fli[i]) | std::to_integer<unsigned>(fli[i + 1]) << 8));
     if (!text.empty() && text.front() == 0xFEFF) text.erase(text.begin());
-    // CRLF to LF.
     std::vector<char16_t> lines;
     for (std::size_t i = 0; i < text.size(); ++i)
         if (!(text[i] == u'\r' && i + 1 < text.size() && text[i + 1] == u'\n')) lines.push_back(text[i]);
-    text = std::move(lines);
-    // The IDs the donor already has: lines of digits.
+    return lines;
+}
+
+std::set<std::string> fli_ids(const std::vector<char16_t>& text) {
     std::set<std::string> ids;
     for (std::size_t begin = 0; begin < text.size();) {
         auto end = begin;
@@ -578,6 +608,17 @@ std::vector<std::byte> append_fli_strings(const std::span<const std::byte> donor
         }
         begin = end + 1;
     }
+    return ids;
+}
+
+} // namespace
+
+std::set<std::string> fli_string_ids(const std::span<const std::byte> fli) { return fli_ids(fli_text(fli)); }
+
+std::vector<std::byte> append_fli_strings(const std::span<const std::byte> donor, const std::vector<ProjectText>& strings) {
+    auto text = fli_text(donor);
+    // The IDs the donor already has: lines of digits.
+    const auto ids = fli_ids(text);
     for (const auto& string : strings)
         if (ids.contains(string.id)) throw std::runtime_error("The donor text file already has string " + string.id);
     while (!text.empty() && text.back() == u'\n') text.pop_back();

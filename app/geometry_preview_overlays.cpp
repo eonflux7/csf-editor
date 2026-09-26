@@ -362,7 +362,7 @@ float GeometryPreview::overlay_occlusion_alpha(const std::uint32_t point_index) 
 }
 
 GeometryPreview::Emphasis GeometryPreview::overlay_emphasis(const std::uint32_t entry) const {
-    if (selected_mission_entry_ == entry) return Emphasis::selected;
+    if (selected_mission_entry_ == entry || extra_selected_.contains(entry)) return Emphasis::selected;
     if (hovered_mission_entry_ == entry) return Emphasis::hovered;
     if (selected_mission_entry_ && focus_entries_.contains(entry)) return Emphasis::related;
     if (focus_mode_ && selected_mission_entry_) return Emphasis::dimmed;
@@ -666,12 +666,14 @@ void GeometryPreview::prepare_overlays(const ImVec2 origin, const ImVec2 size) {
         if (!overlay_position_visible(face.a) || !overlay_position_visible(face.b) ||
             !overlay_position_visible(face.c))
             continue;
+        // Zone fills stay faint until the zone is selected or hovered, so
+        // overlapping zones do not tint the whole view.
         const auto emphasis = overlay_emphasis(face.source_entry);
         const float boost = emphasis == Emphasis::selected  ? 3.0F
                             : emphasis == Emphasis::hovered ? 2.2F
-                            : emphasis == Emphasis::related ? 1.6F
-                            : emphasis == Emphasis::dimmed  ? 0.35F
-                                                            : 1.0F;
+                            : emphasis == Emphasis::related ? 1.2F
+                            : emphasis == Emphasis::dimmed  ? 0.15F
+                                                            : 0.45F;
         const auto color = scale_alpha(face.color, boost);
         for (const auto& p : {face.a, face.b, face.c})
             push(p, p, 0, 0, 0, 0, color, Mode::face, 0, floor_for(emphasis) * 0.3F, emphasized(emphasis));
@@ -822,11 +824,12 @@ std::vector<std::uint32_t> GeometryPreview::overlay_candidates(const ImVec2 mous
     std::ranges::stable_sort(hits, {}, &std::pair<float, std::uint32_t>::first);
     std::vector<std::uint32_t> result;
     for (const auto& [distance, entry] : hits)
-        if (std::ranges::find(result, entry) == result.end()) result.push_back(entry);
+        if (!locked_mission_entries_.contains(entry) && std::ranges::find(result, entry) == result.end())
+            result.push_back(entry);
     return result;
 }
 
-bool GeometryPreview::overlay_click(const ImVec2 mouse) {
+bool GeometryPreview::overlay_click(const ImVec2 mouse, const bool cycle) {
     if (offscreen_indicator_rect_) {
         const auto& r = *offscreen_indicator_rect_;
         if (mouse.x >= r.x && mouse.x <= r.z && mouse.y >= r.y && mouse.y <= r.w) {
@@ -854,7 +857,7 @@ bool GeometryPreview::overlay_click(const ImVec2 mouse) {
     }
     // Clicking the same spot again steps to the next marker under the pointer.
     const float dx = mouse.x - last_overlay_click_.x, dy = mouse.y - last_overlay_click_.y;
-    overlay_click_cycle_ = dx * dx + dy * dy < 16.0F ? overlay_click_cycle_ + 1 : 0;
+    overlay_click_cycle_ = cycle && dx * dx + dy * dy < 16.0F ? overlay_click_cycle_ + 1 : 0;
     last_overlay_click_ = mouse;
     selected_mission_entry_ = candidates[overlay_click_cycle_ % candidates.size()];
     return true;

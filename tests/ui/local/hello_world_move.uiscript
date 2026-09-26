@@ -1,0 +1,18 @@
+# Hello world (RWSMAN_HELLO_WORLD=<authoring project>): select the officer,
+# move him with the gizmo, undo, and the mission is byte-identical again.
+require RWSMAN_HELLO_WORLD
+open $RWSMAN_HELLO_WORLD
+expect project.open true
+expect mission.editable true
+remember mission.hash
+goto actor:OFICIAL
+expect selection.id 10
+command mission.tool_move
+remember selection.position
+drag-world 500 0 -3150 800 0 -3150
+expect-changed selection.position
+expect mission.dirty true
+undo
+expect-same selection.position
+expect-same mission.hash
+expect mission.dirty false

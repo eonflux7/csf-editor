@@ -1,4 +1,7 @@
 #include "mission_overlays.hpp"
+
+#include "csf/object_database.hpp"
+#include "rwsman/entity_kind.hpp"
 #include "app_util.hpp"
 
 #include "csf/cmo.hpp"
@@ -23,7 +26,7 @@ rws::Vec3 rws_point(const csf::Vec3 value) {
     return {value.x, value.y, value.z};
 }
 
-MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
+MissionOverlays make_mission_overlays(const csf::MissionScene& scene, const csf::ObjectDatabase* objects) {
     using Kind = GeometryPreview::MissionOverlayKind;
     MissionOverlays result;
     const auto facing = [](const float heading, const float pitch) {
@@ -73,7 +76,9 @@ MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
                                                     : std::string("Unclassified");
             GeometryPreview::MissionOverlayPoint marker{
                 Kind::actor, actor.source.entry_index, rws_point(*spawn), actor.name.value_or("Actor"),
-                ui::viewport_color(ui::Viewport::actor), std::move(sublayer)};
+                objects ? ui::kind_color_u32(classify_mission_actor(scene, objects, actor))
+                        : ui::viewport_color(ui::Viewport::actor),
+                std::move(sublayer)};
             marker.heading = facing(csf::mission_actor_angle_radians(actor.heading.value_or(0)),
                                     csf::mission_actor_angle_radians(actor.pitch.value_or(0)));
             result.points.push_back(std::move(marker));
@@ -150,9 +155,31 @@ MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
         result.points.push_back(std::move(marker));
         relate(effect.source.entry_index, dummy->source.entry_index);
     }
+    // The extent of everything placed, to recognise areas that cover most of
+    // the mission (a whole-map zone): those are drawn as outlines only, so they
+    // do not tint the whole view.
+    float min_x = 0, max_x = 0, min_z = 0, max_z = 0;
+    for (std::size_t i = 0; i < placed.size(); ++i) {
+        const auto& p = placed[i].position;
+        min_x = i ? std::min(min_x, p.x) : p.x;
+        max_x = i ? std::max(max_x, p.x) : p.x;
+        min_z = i ? std::min(min_z, p.z) : p.z;
+        max_z = i ? std::max(max_z, p.z) : p.z;
+    }
+    const float mission_extent = (max_x - min_x) * (max_z - min_z);
     for (const auto& area : scene.areas()) {
         if (area.points.size() < 2) continue;
         const auto entry = area.source.entry_index;
+        float area_min_x = area.points.front().x, area_max_x = area_min_x;
+        float area_min_z = area.points.front().z, area_max_z = area_min_z;
+        for (const auto& p : area.points) {
+            area_min_x = std::min(area_min_x, p.x);
+            area_max_x = std::max(area_max_x, p.x);
+            area_min_z = std::min(area_min_z, p.z);
+            area_max_z = std::max(area_max_z, p.z);
+        }
+        const bool outline_only =
+            placed.size() > 2 && (area_max_x - area_min_x) * (area_max_z - area_min_z) >= 0.5F * mission_extent;
         const auto edge = ui::viewport_color(ui::Viewport::area);
         const bool has_height = area.height && std::isfinite(*area.height) && *area.height != 0;
         const float height = has_height ? *area.height : 0.0F;
@@ -166,6 +193,7 @@ MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
                                     ui::viewport_color(ui::Viewport::area, 0.71F)});
             result.lines.push_back({Kind::area, entry, rws_point(a), raised(a),
                                     ui::viewport_color(ui::Viewport::area, 0.52F)});
+            if (outline_only) continue;
             // Side wall.
             const auto fill = ui::viewport_color(ui::Viewport::area_fill);
             result.faces.push_back({Kind::area, entry, rws_point(a), rws_point(b), raised(b), fill});
@@ -176,7 +204,8 @@ MissionOverlays make_mission_overlays(const csf::MissionScene& scene) {
         outline.reserve(area.points.size());
         for (const auto& p : area.points) outline.push_back({p.x, p.z});
         const auto fill = ui::viewport_color(ui::Viewport::area_fill);
-        for (const auto& t : triangulate_polygon(outline)) {
+        const auto caps = outline_only ? std::vector<std::array<std::uint32_t, 3>>{} : triangulate_polygon(outline);
+        for (const auto& t : caps) {
             const auto &a = area.points[t[0]], &b = area.points[t[1]], &c = area.points[t[2]];
             result.faces.push_back({Kind::area, entry, rws_point(a), rws_point(b), rws_point(c), fill});
             if (has_height)

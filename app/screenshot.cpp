@@ -5,12 +5,13 @@
 #include <GLFW/glfw3.h>
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace rwsman {
 
-bool save_screenshot(GLFWwindow* window, const std::filesystem::path& path, std::string& error) {
-    int width = 0, height = 0;
+bool capture_back_buffer(GLFWwindow* window, int& width, int& height, std::vector<std::uint8_t>& rgba,
+                         std::string& error) {
     glfwGetFramebufferSize(window, &width, &height);
     if (width <= 0 || height <= 0) {
         error = "The framebuffer is empty";
@@ -33,7 +34,15 @@ bool save_screenshot(GLFWwindow* window, const std::filesystem::path& path, std:
             destination[i + 3] = 255;
         }
     }
-    return rws::write_png_rgba(path, width, height, flipped, error);
+    rgba = std::move(flipped);
+    return true;
+}
+
+bool save_screenshot(GLFWwindow* window, const std::filesystem::path& path, std::string& error) {
+    int width = 0, height = 0;
+    std::vector<std::uint8_t> rgba;
+    return capture_back_buffer(window, width, height, rgba, error) &&
+           rws::write_png_rgba(path, width, height, rgba, error);
 }
 
 } // namespace rwsman

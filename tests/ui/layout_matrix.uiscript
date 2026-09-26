@@ -1,0 +1,23 @@
+# Reference frames of the main layouts (docs/plans/editor-ux-redesign.md, T6):
+# Mission, Script and Inspect modes at 1280x720 and 1920x1080, the
+# high-contrast theme, and a 150% UI scale. The theme's contrast is linted too.
+lint theme
+open $RWSMAN_UI_FIXTURE/Maps/M1/M1.scn
+goto actor:GUARD_GATE
+compare mission-1280 3
+command view.workspace.script
+compare script-1280 3
+command view.mode.inspect
+compare inspect-1280 3
+command view.workspace.mission
+resize 1920x1080
+compare mission-1920 3
+command view.theme_high_contrast
+compare mission-1920-high-contrast 3
+command view.theme_dark
+command view.zoom_in
+command view.zoom_in
+command view.zoom_in
+command view.zoom_in
+command view.zoom_in
+compare mission-1920-150 3

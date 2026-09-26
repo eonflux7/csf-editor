@@ -53,6 +53,8 @@ struct Settings {
     // An empty projects_root means <config dir>/projects.
     std::filesystem::path game_root;
     std::filesystem::path projects_root;
+    // The Blender executable (empty: `blender` from PATH), for Edit in Blender.
+    std::filesystem::path blender;
     float ui_scale{1.0F}; // User override, clamped to 0.8..2.0.
     std::string theme{"dark"};
     std::string workspace{"scene"};
@@ -62,8 +64,11 @@ struct Settings {
     // Panels.
     bool show_explorer{true};
     bool show_inspector{true};
-    bool show_bottom_dock{false};
+    bool show_bottom_dock{true};
     bool show_hud{true};
+    // Show file offsets, entry numbers and provenance in Mission mode too
+    // (they are always shown in Inspect mode).
+    bool developer_details{};
     bool show_clump_colors{true};
 
     // Viewport defaults.
