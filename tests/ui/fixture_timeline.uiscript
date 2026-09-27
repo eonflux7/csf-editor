@@ -1,0 +1,67 @@
+# The intro cutscene's timeline (Phase 6, E11): capture shots from the view,
+# drag a shot's edge to change its duration, scrub the playhead, and move a
+# shot's target with the gizmo, each edit regenerating the intro component.
+open $RWSMAN_UI_FIXTURE/Maps/M1/M1.scn
+remember mission.hash
+command mission.cutscene
+expect panel.intro_cutscene true
+
+# The first shot makes the intro; the second is appended.
+goto actor:OFFICER
+click "Intro cutscene::Capture shot from view"
+expect count.components 1
+expect mission.history.top "Add Intro cutscene"
+expect timeline.durations 4
+click "Intro cutscene::Capture shot"
+expect timeline.durations 4,4
+expect timeline.shot 2
+
+# The first shot's right edge, dragged 60 px to the right: longer, one step.
+remember mission.history.size
+drag "Intro cutscene::edge-1" 60 0
+expect-not timeline.durations 4,4
+expect mission.history.top "Edit Intro cutscene"
+undo
+expect timeline.durations 4,4
+
+# Scrubbing moves the playhead; clicking a strip selects its shot.
+remember timeline.time
+click "Intro cutscene::ruler"
+expect-changed timeline.time
+click "Intro cutscene::shot-1"
+expect timeline.shot 1
+
+# The target is a record: select it and move it with the gizmo.
+click "Intro cutscene::select_target"
+expect selection.component "Intro cutscene"
+remember selection.position
+command mission.tool_move
+drag-world 1500 124 1600 1800 140 1600
+expect-changed selection.position
+expect mission.history.top "Edit Intro cutscene"
+expect selection.component_state clean
+
+# A zone cutscene: its own timeline, played when the player enters the yard;
+# selecting the intro's record switches back.
+click "Intro cutscene::Zone cutscene"
+expect count.cutscenes 2
+expect timeline.cutscene CUT_ZONA_1
+expect timeline.durations 4
+expect-not timeline.zone ""
+click "Intro cutscene::Capture shot"
+expect timeline.durations 4,4
+click "Intro cutscene::cutscene_arm"
+click new_event
+type OFFICER_ARRIVED
+key Enter
+expect-contains mission.history.top "Edit Zone cutscene CUT_ZONA_1"
+click "Intro cutscene::plays"
+click "At the start"
+expect log.last_warning "The mission already has an intro at the start"
+click "Intro cutscene::cutscene"
+click "Intro (at the start)"
+expect timeline.cutscene CUT_INICIO
+expect timeline.durations 4,4
+
+undo-all
+expect-same mission.hash

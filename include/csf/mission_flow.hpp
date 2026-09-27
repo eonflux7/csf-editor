@@ -25,6 +25,7 @@ struct FlowScript {
     std::vector<std::string> sends;   // SEND_EVENT
     std::vector<std::int32_t> defines, completes;  // objective numbers
     std::vector<std::int32_t> cutscenes;           // CUTSCENE_EXE targets
+    std::vector<std::string> texts;                // FLI string IDs it shows or labels with
     bool mission_success{}, mission_failure{};
 };
 

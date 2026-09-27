@@ -184,10 +184,31 @@ void placement_editor(AppState& state, const std::size_t index) {
                    "background; undo works as for any other edit.";
     if (begin_card("##placement", "Placement", options)) {
         if (begin_properties("##placement_rows")) {
-            property_row("Asset");
-            ImGui::TextUnformatted(placement.kind == csf::ProjectPlacement::Kind::building ? placement.asset.c_str()
-                                   : placement.kind == csf::ProjectPlacement::Kind::piece ? "donor map piece"
-                                                                                          : "donor map props");
+            if (placement.kind == csf::ProjectPlacement::Kind::piece) {
+                // What it was cut from: another mission's map (a donor), or the slot's own.
+                property_row("Cut from", "A piece of a shipped map's World: the triangles inside its box, kept "
+                                         "with their textures and baked lightmaps.");
+                const auto& donors = state.authoring.project->donors;
+                const auto donor = std::ranges::find(donors, placement.donor, &csf::ProjectDonor::key);
+                if (placement.donor.empty())
+                    ImGui::TextUnformatted("the slot's own map");
+                else if (donor == donors.end())
+                    token_text(Token::error, "donor %s is missing", placement.donor.c_str());
+                else
+                    ImGui::Text("%s's map  (%s)", donor->mission.c_str(), path_utf8(donor->visual.filename()).c_str());
+                property_row("Groups", "The lightmap groups it keeps: a building is its lightmap group "
+                                       "(EDIFICIO_5), its inside and its furniture have their own.");
+                std::string groups;
+                for (const auto& group : placement.lightmaps) groups += (groups.empty() ? "" : ", ") + group;
+                ImGui::TextWrapped("%s", groups.empty() ? "everything in the box" : groups.c_str());
+                property_row("Box", "The part of the donor map it takes (x, y, z), in the donor's coordinates.");
+                dim_text("%.0f, %.0f, %.0f  to  %.0f, %.0f, %.0f", placement.box_min.x, placement.box_min.y,
+                         placement.box_min.z, placement.box_max.x, placement.box_max.y, placement.box_max.z);
+            } else {
+                property_row("Asset");
+                ImGui::TextUnformatted(placement.kind == csf::ProjectPlacement::Kind::building ? placement.asset.c_str()
+                                                                                               : "donor map props");
+            }
             property_row("Position", "Game units (centimetres); Y is up.");
             float position[3]{placement.position.x, placement.position.y, placement.position.z};
             ImGui::SetNextItemWidth(-1.0F);
@@ -332,6 +353,12 @@ void draw_properties(AppState& state) {
         return;
     }
     const auto key = selected_mission_record(state);
+    // Another record starts at its top card (its Behaviour, its component).
+    static MissionRecordKey shown;
+    if (!(key == shown)) {
+        shown = key;
+        ImGui::SetScrollY(0.0F);
+    }
     if (key.kind == MissionRecordKey::Kind::none) {
         // Scripts, classes and resources keep their Inspector view.
         if (!state.selection.empty() && state.selection.kind != SelectionRef::Kind::mission_entry)

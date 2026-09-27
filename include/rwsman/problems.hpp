@@ -3,6 +3,7 @@
 #include "rwsman/entity_kind.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@ class MissionFlow;
 class MissionScene;
 class ObjectDatabase;
 struct HeightFinding;
+struct LightmapFinding;
 } // namespace csf
 
 // "What is wrong with my mission": one list gathered from every check the
@@ -44,7 +46,15 @@ struct ProblemInputs {
     const csf::ObjectDatabase* objects{};
     const csf::MissionFlow* flow{};
     std::span<const csf::HeightFinding> heights;
+    std::span<const csf::LightmapFinding> lightmaps;  // AuthoringProject::lightmap_brightness()
     std::vector<std::string> project_checks;  // AuthoringProject::check()
+    // An authoring project's text range and the IDs it has strings for: a
+    // script showing an ID in the range that has no string shows nothing.
+    struct ProjectTexts {
+        std::int32_t first{}, last{};
+        std::vector<std::string> ids;
+    };
+    std::optional<ProjectTexts> project_texts;
 };
 
 // Errors first, then warnings, then notes; within a severity by source.

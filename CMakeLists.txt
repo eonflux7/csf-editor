@@ -98,6 +98,8 @@ add_library(rwsman_ui_model STATIC
     src/ui_model_entity_kind.cpp
     src/ui_model_script.cpp
     src/ui_model_script_syntax.cpp
+    src/ui_model_cutscene_timeline.cpp
+    src/ui_model_animation_slots.cpp
     src/ui_model_problems.cpp
     src/ui_model_search.cpp
     src/ui_model_settings.cpp
@@ -222,6 +224,7 @@ if(RWSMAN_BUILD_GUI)
         app/viewport_tools.cpp
     app/project_actions.cpp
         app/ui/actor_animation.cpp
+        app/animation_preview.cpp
         app/ui/center.cpp
         app/ui/chunk_details.cpp
         app/ui/console.cpp
@@ -241,8 +244,10 @@ if(RWSMAN_BUILD_GUI)
         app/ui/problems.cpp
         app/ui/properties.cpp
     app/ui/component_card.cpp
+    app/ui/pickers.cpp
     app/ui/script_editor.cpp
     app/ui/flow_graph.cpp
+    app/ui/timeline.cpp
     app/ui/project_panels.cpp
         app/ui/height_report.cpp
         app/ui/palette.cpp

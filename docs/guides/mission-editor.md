@@ -1,56 +1,185 @@
 # Mission editor
 
-`rws-man` and `csf-mod` edit *Commandos: Strike Force* missions without touching
-the unpacked resources or the game installation. Edits are applied to canonical
-CSFFBS trees in memory, saved into a mod project, and exported as a complete
-replacement mission archive (`maps/<Mission>.pak`).
+`rws-man` (the CSF Mission Editor in Mission mode) and `csf-mod` make and edit
+*Commandos: Strike Force* missions without touching the unpacked resources or
+the game installation. Edits are applied to canonical CSFFBS trees in memory,
+saved into a project, and built into a complete replacement mission archive
+(`maps/<Mission>.pak`) plus `GlobalEK.pak` for the mission's texts.
 
-Nothing here has been tested in the game yet. Every format rule below is proven
-against the shipped files (byte-for-byte round trips, corpus-wide invariants);
-the runtime behaviour of edited data is marked as untested where it matters.
+Every format rule below is proven against the shipped files (byte-for-byte
+round trips, corpus-wide invariants). Hello world, built by the same recipes
+(`tools/hello_world/`), plays in the game; a mission made entirely through the
+GUI has not been playtested yet, and runtime behaviour that nobody has seen in
+the game is marked as untested where it matters.
 
-## Workflow
+## A mission from start to finish
 
-1. Open a mission (`File > Open mission...`, a `.scn` file in an unpacked mission
-   package such as `CSF_unpacks/Ransom/Maps/FR01/Ransom.scn`).
-2. Select a record in the viewport or Explorer. The Inspector's **Edit** section
-   edits it; the move (**G**) and rotate (**R**) tools drag it in the viewport.
-3. **Ctrl+S** saves the edits into a mission project (by default
-   `<config dir>/projects/<Mission>`). Only files that differ from the package are
-   written, each with a `.changes.json` manifest of the operations applied.
-4. **File > Export mission archive (.pak)...** (**Ctrl+E**) rebuilds the complete
-   mission archive from the shipped one and optionally installs it into the game,
-   backing up the original.
-5. **File > Open mission project...** (or `rws-man --project <folder>`) reopens a
-   project later; its authored files replace the package copies.
+This is the journey the editor is built around
+([the UX plan](../plans/editor-ux-redesign.md), section 2). Each step names
+where it happens; [GUI usage](gui.md) describes the panels themselves.
 
-Every operation is one undo step (**Ctrl+Z**, **Ctrl+Y** / **Ctrl+Shift+Z**). The
-**Changes** panel lists the history (click an entry to go back to it), the files
-that differ from the package, mission properties, adding actors, and importing
-from other missions. Opening another mission or quitting with unsaved edits asks
-to save or discard them.
+1. **Create.** **New project...** (Home, `File`, `Ctrl+N`) asks for a name and a
+   slot (a shipped mission the new one replaces). It creates the project in the
+   projects folder with a flat starter terrain of the slot's ground, the slot's
+   mission emptied, and a free range of text IDs, then opens it. The project's
+   format is [editor-project-format.md](../plans/editor-project-format.md).
+2. **Terrain and buildings.** **Edit in Blender** (the Map card in Properties,
+   `Build`, or the status bar's Blender item) starts Blender with the CSF
+   add-on and the project set, making `terrain.blend` from the starter terrain
+   the first time. **Send** in Blender's CSF tab rebuilds the map here, even
+   while the mission has unsaved edits; see
+   [blender-authoring.md](blender-authoring.md). Height findings (something no
+   longer standing where its height rule says) go to **Problems**, with
+   **Resnap**.
+3. **Dressing.** The **Assets** panel lists the classes of every discovered
+   mission and the project's buildings, by category, with a search. Pick one
+   and click the ground with the **Place** tool (`P`; `[`/`]` turn it, Shift
+   keeps placing, random rotation is an option), drag it onto the ground, or
+   double-click it to place it at the view centre. Placing (and moving with
+   snapping) stands things on the surface under the pointer: the ground, a
+   floor, or furniture such as a table top, also when the furniture is only
+   visible geometry without collision of its own (up to 2 m above the floor
+   under it). A class the mission lacks is
+   imported first. A prop dropped on another record stands on it. Box select
+   (Shift+drag), duplicate (`Ctrl+D`) and **Align to ground** work on the whole
+   selection.
+4. **Actors and behaviours.** Characters come from Assets too. Select a
+   guard or an animal that has no behaviour yet and its **Behaviour** card in
+   Properties offers **Guard a post** (it stands there playing idle
+   animations) or **Patrol a route** (a two-point route from where it stands;
+   an animal gets **Walk a route**). The recipe makes the actor again in its
+   place, keeping its ID, name, class, position and heading, so objectives
+   that target it still do; its other scripts and animation overrides are
+   dropped. The behaviour's card then edits it: the idle animations are picked
+   by name, each played once or a random number of times, and the play button
+   beside each previews it on the guard in the viewport. Clips made for
+   another weapon are left out of the list: `SF*` clips are rifle soldiers',
+   `SM*` submachine-gun soldiers' (from the class's first weapon), `SP*` fit
+   anyone. **Starts** says when the behaviour begins: when the mission starts
+   (INIT), or when a mission event is raised (picked from the events the
+   mission's scripts raise, or a new name), such as a vehicle's passengers
+   taking their posts once it has arrived. The **Behaviours**
+   tab makes new guards, animals, **cover groups** (points where guards take
+   cover when alerted or in combat; a guard uses the one named on its card)
+   and the experimental **walk grid** (a generated grid of linked navigation
+   points; whether guards use it off their routes is not confirmed in the
+   game). **Draw in viewport** takes a guard's post or a route's points from
+   clicks there (the Route and Cover tools). Moving a guard or its route
+   points regenerates its script.
+5. **Players.** The **Mission** tab sets the starting player, the available
+   commandos, a **starting kit** for each player (weapons picked by name, with
+   their ammunition, the weapon in hand, a disguise), the mission **tips**,
+   the score and the environment, and **Start over**.
+6. **Zones and navigation.** The **Zone** tool (`B`) draws a zone's corners
+   (polygon problems appear while drawing); the walk grid preset can be
+   previewed in the viewport before it is made, and routes join it.
+7. **Objectives and logic.** The **Objectives** tab holds the mission's one
+   objectives list. **Add objective** appends one aimed at the first zone (or
+   enemy); its card sets whether it is primary or secondary, the text the
+   player reads, what completes it (the player reaches a zone, an actor is
+   killed, the player uses an object; the target is picked from a list or
+   with the eyedropper) and its message, and below them the success message.
+   An objective completes itself: no trigger is needed for that. When every
+   primary objective is complete the mission is won. **Triggers** below are
+   everything else, without script text: *when* the player enters a zone, an
+   actor dies, an object is used, the mission starts, some seconds pass, a
+   guard is alerted (Convoy's camp alarm: any German turning alert or
+   fighting, which a guard who is shot at does too) or a guard finds a body
+   (a watched soldier sees another dead; there is no such event in the game,
+   so the trigger checks the watched soldiers once a second),
+   *if* an objective is (or is not) complete, *do* actions such as showing a
+   message, sounding the alarm, changing a guard's alert behaviour or making
+   an object usable. A trigger that completes an objective which completes
+   itself is flagged: if it runs first, the objective's own script (which
+   checks for the mission's success) never does. Events and actions not yet
+   played in a mission made here appear only with **Offer unverified events
+   and actions**. Script mode is there for everything else.
+8. **Intro.** The **Intro cutscene** panel is a timeline of travelling shots.
+   Frame a shot in the viewport and **Capture shot**: the first one creates the
+   intro. Each shot is a strip; drag its right edge to change how long it
+   lasts, drag on the ruler to move the playhead (the view follows the camera),
+   and **Play** to watch the whole intro. A shot's camera, its end and its
+   target are records in the viewport, drawn with the camera's path and sight
+   lines while the panel is shown: **Select** one and move it with the gizmo,
+   or take it **From view**. Playing approximates the game (its field of view
+   differs). A mission can have more cutscenes: **Zone cutscene** makes one
+   that plays once when the player enters a zone (Ransom's farm entrance),
+   the list at the top of the panel switches between them (selecting a
+   cutscene's record in the viewport does too), and **Plays** sets when it
+   plays: at the start, or on entering a zone, armed from the start or when a
+   mission event is raised (an officer reaching his post).
+9. **Check.** **Problems** gathers the flow's findings (an event that starts
+   scripts but that nothing raises, an objective nothing completes or more
+   than one script completes, a text the project does not have), height
+   findings, project checks, project lightmaps much brighter than the slot
+   map's own (a night map lit like day), references to missing records and polygon
+   problems. Every row links to its subject, and many have a fix. The Flow
+   panel's **Graph** shows events, scripts and objectives with what connects
+   them.
+10. **Build and play.** The **Build** panel (`Ctrl+Shift+B` builds) saves and
+    writes the mission archive and GlobalEK.pak (when the project has texts)
+    into `dist/<build>/`, starting from the untouched shipped archives (found
+    in the test install's first deployment backup, or chosen there).
+    **Deploy** copies a build into the test install after asking, keeping what
+    it replaces, and each deployment has **Roll back**. The **Playtest log**
+    records whether a build worked, with a note, in the project.
+
+Every step is undoable. Mission and project edits share one history
+(**Ctrl+Z**, **Ctrl+Y** / **Ctrl+Shift+Z**; the **History** panel goes back to
+any entry), destructive actions show a toast with **Undo**, and **Ctrl+S**
+saves the mission and the project together. Opening another mission or
+quitting with unsaved edits asks to save or discard them.
+
+### Components
+
+What the Behaviour card, the Behaviours, Objectives, Mission and Intro panels
+create (patrols, guards at a post, animals, cover groups, walk grids,
+objectives, equipment, tips, triggers, the intro cutscene) is a **component**: the operation lines that
+made its records (`csf/mission_components.hpp`), kept in the workspace's
+`components.csfops`. Selecting one of its records shows its card in
+Properties (the Objectives, Mission and Intro panels show the ones without a
+record to select). A card's **Advanced** section has its operation lines,
+**Detach** and **Delete**. Changing a value there, or moving its records in the viewport,
+makes its records again in place as one undo step. The Outliner nests a
+patrol's route under its guard and the intro's helpers under one row. When a
+component's records were edited by hand, its card says so and offers **Keep
+my edits** (it becomes ordinary records) or **Regenerate**; it never
+overwrites them on its own. A recipe's script is read-only in Script mode
+until it is detached.
+
+### Opening a shipped mission
+
+`File > Open mission...` (`Ctrl+Shift+O`) opens any `.scn` of an unpacked
+mission package (such as `CSF_unpacks/Ransom/Maps/FR01/Ransom.scn`). The same
+tools edit it; **Ctrl+S** saves the edits into a mission project (by default
+`<config dir>/projects/<Mission>`), writing only the files that differ from
+the package, each with a `.changes.json` manifest of the operations applied.
+**File > Export mission archive (.pak)...** (`Ctrl+E`) rebuilds the complete
+archive from the shipped one and optionally installs it, backing up the
+original. `rws-man --project <folder>` reopens a project.
 
 ## What can be edited
 
 | Target | Operations |
 | --- | --- |
-| Actors (`.BICHOS`) | Position, heading, pitch, name, class, model (keeping behaviour), faction, collision/flags/secondary explosion, per-actor scripts, animation overrides; duplicate, add, delete |
+| Actors (`.BICHOS`) | Position, heading, pitch, name, class, model (keeping behaviour), faction, collision/flags/secondary explosion, per-actor scripts, animation overrides (slots named in English, each clip previewable on the actor); duplicate, add, delete |
 | Dummies | Position, rotation, pitch; add, duplicate, delete |
 | Lights | Position, color, radius, modulation; duplicate, delete |
 | Navigation | Move points (with the actor standing on them), add points, link and unlink points within or across groups, delete points; add and delete groups |
 | Areas | Move, insert and remove vertices; height; add and delete zones |
-| Assets | Place any class of any discovered mission (**Changes > Assets**): imported when missing, then placed at the view centre |
-| Presets | Guard on patrol, guard idling, animal on patrol, cover group, walk grid (**Changes > Presets**): each writes the actor, its groups and its script as one undo step |
-| New mission | **Mission > Start a new mission in this slot** empties actors, navigation, zones, dummies, lights, effects and scripts, keeping the environment |
-| Objectives | **Changes > Objectives**: reach a zone, kill an actor, use an object (primary or secondary), the success check, starting equipment and mission tips |
-| Flow | **Changes > Flow**: events and the scripts they start, objectives, and findings such as a mission event nothing raises |
-| Cutscene | **Changes > Cutscene**: capture travelling shots from the viewport, preview them, and create an intro (camera helpers, paths, dummies and both programs' scripts) |
-| Text | **Changes > Texts**: the authoring project's mission strings (GlobalEK) |
-| Mission | Starting player, available commandos, maximum/minimum score, every scalar `.MUNDOVIS` environment field |
-| Scripts (`.gsc`, `.csc`) | Edit any script as text, toggle trigger/enabled, add and delete scripts |
+| Assets | Place any class of any discovered mission, or a project building: imported when missing |
+| Behaviours | A behaviour for an existing guard or animal (Properties); guard on patrol, guard at a post, animal on patrol, cover group, walk grid: each a component |
+| New mission | **Mission > Start a new mission in this slot** empties actors, navigation, zones, dummies, lights, effects and scripts, keeping the environment (a new project does this for you) |
+| Objectives | One list: reach a zone, kill an actor, use an object (primary or secondary), and the success message |
+| Triggers | When / If / Do logic as components; **Convert to script** detaches one |
+| Flow | Events and the scripts they start, objectives, and findings such as a mission event nothing raises; the graph |
+| Cutscene | The intro's travelling shots on a timeline, their cameras and targets in the viewport |
+| Text | The authoring project's mission strings (GlobalEK) |
+| Mission | Starting player, available commandos, starting kits, mission tips, maximum/minimum score, every scalar `.MUNDOVIS` environment field, start over |
+| Scripts (`.gsc`, `.csc`) | Edit any script as text (highlighting, completion, go to definition), toggle trigger/enabled, add and delete scripts |
 | Map props | Move and turn static props (CSF scene instances in the map `.rws`) |
 | Imports | Copy a class or an animation from another unpacked mission |
-| Any record | **All fields** in the Edit section edits every stored scalar, keeping its kind |
+| Any record | **All fields** edits every stored scalar, keeping its kind |
 
 Deleting refuses while scripts, the starting player, effects, or links still
 reference the record; **Shift+Delete** (or `--force`) deletes anyway and reports
@@ -78,8 +207,8 @@ class picker lists the classes of the mission's own `Objetos.bdd`; the editor
 warns when the new class has a different `TIPO`, `COMPOR` or `HOMBRE` than the old
 one, because scripts written for one family may not suit another.
 
-Classes from other missions can be imported (**Changes > Import**, or
-`--import-class`). Each mission's databases are a filtered subset of one
+Classes from other missions can be imported (**Assets > Import a class without
+placing it**, or `--import-class`). Each mission's databases are a filtered subset of one
 consistent global database, so the record is copied unchanged, together with the
 class's weapons (`Armas.bdd`), its animation records, every referenced model,
 collision and physics file the package lacks, the model's textures (found through
@@ -111,17 +240,20 @@ before `.CELDA`, using the same mechanism as class animation lists. `.TIPO` must
 be a slot name; the editor offers the 378 names of the contiguous slot table in
 `CommXPC.exe` (between `LANZAR_TERMINAR_CORTO` and `DESTRUCCION`), which contains
 every slot the shipped data uses. `.ID` is an `Anims.bdd` record; import one from
-another mission when the mission lacks it (**Changes > Import**,
-`--import-anim`). Overrides are written sorted by animation ID and their IDs are
+another mission when the mission lacks it (**Assets > Import a class without
+placing it**, `--import-anim`). Overrides are written sorted by animation ID and their IDs are
 added to the mission program's `.RECURSOS/.ANIMACIONES` preload list, as in the
 shipped missions. The Animation workspace can play the clip on the actor. Scripts
 may still play other animations on top.
 
 ### Scripts
 
-The Script workspace's **Edit script source** section shows a script in a
-recompilable text form (below). **Apply** (**Ctrl+Enter**) replaces the script and
-reports, without refusing:
+Script mode's editor shows a script in a recompilable text form (below): the
+text is coloured, a syntax error's line is marked as you type, **Tab** completes
+opcodes and operand tags (most used first), the current opcode's operands are
+shown, and **Ctrl+click** on an operand goes to the actor, zone, marker, route
+or script it names. **New script...** asks for the event it listens to.
+**Apply** (**Ctrl+Enter**) replaces the script and reports, without refusing:
 
 - opcodes, operand tags, argument counts and argument shapes that no shipped
   script uses (from a table of 557 corpus signatures plus the engine-known
@@ -218,11 +350,21 @@ findings.
 operations and presets, one per line (`new-mission`, `actor`, `prop`,
 `nav-group`, `link`, `link-nearest`, `dummy`, `area`, `look`, `script`,
 `guard-patrol`, `guard-idle`, `animal-patrol`, `cover-group`, `walk-grid`,
-`objective`/`objectives`, `kit`/`equipment`, `tips`, `shot`/`intro`; the
-full syntax is in `include/csf/mission_ops.hpp`). `--ground <source.csfworld>`
-gives walk grids their heights. Hello world is built this way by
-`tools/hello_world/ops.py`, and `tools/hello_world/parity.sh <project>` checks
-that every mission file matches the `scene.py` build byte for byte.
+`objective`/`objectives`, `kit`/`equipment`, `tips`, `shot`/`intro`,
+`trigger`; the full syntax is in `include/csf/mission_ops.hpp`).
+`--ground <source.csfworld>` gives walk grids their heights, and
+`--components` makes each recipe a component. `csf-mod mission-components
+<workspace> <scene> list|check` lists a workspace's components and checks
+that each regenerates identically. Hello world is built this way by
+`tools/hello_world/ops.py`, and `tools/hello_world/parity.sh [--components]
+<project>` checks that every mission file matches the `scene.py` build byte
+for byte.
+
+A project's lifecycle has its own commands, which the GUI's wizard and Build
+panel call: `csf-mod project-new <dir> --slot <mission>` creates one,
+`project-archives` builds both archives into `dist/`, `project-deploy` and
+`project-rollback` install a build into a test copy of the game and undo it,
+and `project-playtest` records a playtest.
 
 ## Mission archives
 
@@ -264,7 +406,7 @@ workspace in `mission/`; open the project folder itself (**File > Open mission
 project**, or `rws-man --project <folder>`). While it is open, rws-man checks
 the Blender exports every second: when one changes, it rebuilds the map in the
 background and reloads the mission (after you save, if the mission has unsaved
-edits). The **Height report** (**Mission > Authoring project**) opens by itself
+edits). Height findings appear in **Problems** (and the **Height report**)
 when something no longer stands where its height rule says; **Resnap all**
 stores the resolved heights (actor moves are ordinary undoable edits; save to
 keep them) and rebuilds the map. The same checks from the command line: After a terrain change, `csf-mod project-heights

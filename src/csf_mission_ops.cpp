@@ -105,6 +105,14 @@ ActorSpec actor_spec(const Line& line, const bool with_position = true) {
     return spec;
 }
 
+// start=<event>: a behaviour's script waits for this event instead of INIT.
+std::string start_event(const Line& line) {
+    auto event = line.text_or("start", "");
+    if (event == default_start_event) event.clear();
+    if (event.find_first_of("() \t") != std::string::npos) throw std::invalid_argument("start= is one event name");
+    return event;
+}
+
 std::string read_text(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::invalid_argument("cannot read " + path.generic_string());
@@ -182,15 +190,16 @@ EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOpt
         ScriptSpec script{optional_id(line, "script"), line.text("script-name")};
         if (op == "guard-patrol") {
             GuardPatrol recipe{actor_spec(line, false), std::move(route), number<float>(line.text_or("pause", "3")),
-                               optional_id(line, "cover"), std::move(script)};
+                               optional_id(line, "cover"), std::move(script), start_event(line)};
             return add_guard_patrol(editor, std::move(recipe));
         }
-        AnimalPatrol recipe{actor_spec(line), std::move(route), number<std::int32_t>(line.text("walk")), std::move(script)};
+        AnimalPatrol recipe{actor_spec(line), std::move(route), number<std::int32_t>(line.text("walk")), std::move(script),
+                            start_event(line)};
         return add_animal_patrol(editor, std::move(recipe));
     }
     if (op == "guard-idle") {
         GuardIdle recipe{actor_spec(line), {}, optional_id(line, "cover"),
-                         {optional_id(line, "script"), line.text("script-name")}};
+                         {optional_id(line, "script"), line.text("script-name")}, start_event(line)};
         for (const auto& step : split(line.text("loop"), ',')) {
             const auto colon = step.find(':');
             IdleStep idle{number<std::int32_t>(step.substr(0, colon)), std::nullopt};
@@ -315,6 +324,9 @@ EditResult run_line(MissionEditor& editor, const Line& line, const MissionOpsOpt
             for (std::size_t k = 0; k < 4; ++k) recipe.cutscene_ids[k] = number<std::int32_t>(ids[k]);
         }
         recipe.cutscene_name = line.text_or("cutscene-name", "CUT_INICIO");
+        recipe.zone = optional_id(line, "zone");
+        recipe.setup = {optional_id(line, "setup"), line.text_or("setup-name", "")};
+        recipe.arm_event = line.text_or("arm", "");
         return add_intro_cutscene(editor, recipe);
     }
     if (op == "trigger") {
@@ -520,6 +532,7 @@ std::string ops_text(const GuardPatrol& recipe) {
     set_id(line, "cover", recipe.cover_group);
     set_script(line, recipe.script);
     if (!recipe.route.loop) line.set("loop", "0");
+    if (recipe.start_event != default_start_event) set_text(line, "start", recipe.start_event);
     return lines({line});
 }
 
@@ -536,6 +549,7 @@ std::string ops_text(const GuardIdle& recipe) {
             loop += ':' + op_number(step.random_cycles->first) + '-' + op_number(step.random_cycles->second);
     }
     line.set("loop", loop);
+    if (recipe.start_event != default_start_event) set_text(line, "start", recipe.start_event);
     return lines({line});
 }
 
@@ -546,6 +560,7 @@ std::string ops_text(const AnimalPatrol& recipe) {
     line.set("walk", std::to_string(recipe.walk_animation));
     set_script(line, recipe.script);
     if (!recipe.route.loop) line.set("loop", "0");
+    if (recipe.start_event != default_start_event) set_text(line, "start", recipe.start_event);
     return lines({line});
 }
 
@@ -658,6 +673,10 @@ std::string ops_text(const IntroCutscene& recipe) {
         end.set("cutscene", std::to_string(*recipe.cutscene_ids[0]) + ',' + std::to_string(*recipe.cutscene_ids[1]) + ',' +
                                 std::to_string(*recipe.cutscene_ids[2]) + ',' + std::to_string(*recipe.cutscene_ids[3]));
     end.set("cutscene-name", recipe.cutscene_name);
+    set_id(end, "zone", recipe.zone);
+    set_id(end, "setup", recipe.setup.id);
+    if (!recipe.setup.name.empty()) end.set("setup-name", recipe.setup.name);
+    if (!recipe.arm_event.empty()) end.set("arm", recipe.arm_event);
     values.push_back(std::move(end));
     return lines(values);
 }
@@ -669,7 +688,8 @@ namespace {
 
 constexpr std::pair<Trigger::When, const char*> when_names[]{
     {Trigger::When::mission_start, "start"}, {Trigger::When::enter_zone, "zone"}, {Trigger::When::actor_killed, "killed"},
-    {Trigger::When::object_used, "used"},    {Trigger::When::event, "event"},     {Trigger::When::timer, "timer"}};
+    {Trigger::When::object_used, "used"},    {Trigger::When::event, "event"},     {Trigger::When::timer, "timer"},
+    {Trigger::When::alerted, "alerted"},     {Trigger::When::body_found, "body-found"}};
 
 std::int32_t integer_value(const std::string& text) {
     std::int32_t value{};
@@ -714,10 +734,12 @@ Trigger parse_trigger(const OpLine& line) {
     trigger.setup = {id("setup"), line.get("setup-name")};
     const auto when = line.get("when", "start");
     const auto found = std::ranges::find(when_names, when, [](const auto& pair) { return std::string(pair.second); });
-    if (found == std::end(when_names)) throw std::invalid_argument("when= is start, zone, killed, used, event or timer");
+    if (found == std::end(when_names))
+        throw std::invalid_argument("when= is start, zone, killed, used, event, timer, alerted or body-found");
     trigger.when = found->first;
     trigger.target = id("target").value_or(0);
     trigger.event = line.get("event");
+    for (const auto& actor : split(line.get("watch"), ',')) trigger.watch.push_back(integer_value(actor));
     if (const auto* seconds = line.find("seconds")) {
         float value{};
         const auto [end, error] = std::from_chars(seconds->data(), seconds->data() + seconds->size(), value);
@@ -767,6 +789,11 @@ std::string ops_text(const Trigger& recipe) {
         line.set("target", std::to_string(recipe.target));
     if (recipe.when == Trigger::When::event) line.set("event", recipe.event);
     if (recipe.when == Trigger::When::timer) line.set("seconds", op_number(recipe.seconds));
+    if (recipe.when == Trigger::When::body_found) {
+        std::string watch;
+        for (const auto actor : recipe.watch) watch += (watch.empty() ? "" : ",") + std::to_string(actor);
+        line.set("watch", watch);
+    }
     if (recipe.if_objective)
         line.set("if", std::to_string(recipe.if_objective->first) + (recipe.if_objective->second ? ":done" : ":open"));
     std::string actions;

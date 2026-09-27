@@ -50,6 +50,19 @@ struct ProjectPlacement {
     rws::Vec3 position;                          // the last resolved height is position.y
     float yaw_degrees{};
     HeightRule height;
+    std::string donor;                   // piece: a ProjectDonor key; empty: the donor map
+    std::vector<std::string> lightmaps;  // piece: lightmap groups to keep (EDIFICIO_3); empty: all
+};
+
+// Another mission's map that pieces are cut from (a building of Ransom's
+// village): its Worlds, package-relative within the corpus' <mission>/. The
+// build copies the textures and lightmaps of the pieces' materials into the
+// map's texture folder, prefixed with the key in upper case where the slot's
+// map has a different file of that name.
+struct ProjectDonor {
+    std::string key;
+    std::string mission;
+    std::filesystem::path visual, collision;
 };
 
 struct ProjectAnchor {
@@ -70,9 +83,19 @@ struct ProjectLightmap {
     std::filesystem::path source;
 };
 
+// A texture of the project's own (an imported model's): the PNG (or DDS)
+// source, built into <map folder>/Textures/<name>.dds like a lightmap. World
+// materials that name it copy the donor material of `like` (a donor map
+// texture: its surface flags and lightmap pass) with the texture renamed.
+struct ProjectTexture {
+    std::string name;  // e.g. SANDBAG, as the Blender material names it
+    std::filesystem::path source;
+    std::string like;  // e.g. FWAL_00A
+};
+
 struct ProjectOutput {
     std::filesystem::path path;
-    std::string kind;  // "world" or "sectors"
+    std::string kind;  // "world", "sectors", "source", "texts", "lightmap" or "texture" (a donor's)
     std::string hash, inputs_hash;
 };
 
@@ -115,6 +138,17 @@ struct HeightFinding {
 // Scene actor positions by gameplay ID (for anchors and `on actor` supports).
 using ActorPositions = std::map<std::int32_t, rws::Vec3>;
 
+// A project lightmap much brighter than the slot map's own (v1 of Country
+// read as day): shipped night maps' lightmaps are dark (the game doubles
+// them) while actors take the scene's ambient, so a bright lightmap shows a
+// lit world with dark figures in it. Means are of R, G and B, 0-255.
+struct LightmapFinding {
+    std::string name;
+    float mean{};
+    float slot_median{}, slot_max{};  // over the slot map's own lightmaps
+    std::string problem;              // set when the image could not be read
+};
+
 struct ProjectBuildReport {
     bool rebuilt{};
     std::vector<std::string> lines;  // one per output: what was built or why it was kept
@@ -139,11 +173,13 @@ public:
     struct DonorMap {
         std::filesystem::path visual, collision;  // package-relative
     } donor_map;
+    std::vector<ProjectDonor> donors;
     std::vector<ProjectAsset> assets;
     std::vector<ProjectPlacement> placements;
     std::vector<ProjectAnchor> anchors;
     std::vector<ProjectText> strings;
     std::vector<ProjectLightmap> lightmaps;
+    std::vector<ProjectTexture> textures;
     std::vector<ProjectOutput> outputs;
     std::vector<ProjectPlaytest> playtests;
     ProjectLocal local;
@@ -171,12 +207,15 @@ public:
     // donor's (GlobalEK in the corpus), into build/<archive stem>/<file>, when
     // stale. Nothing to do without a texts record and strings.
     ProjectBuildReport build_texts(bool force = false);
-    // Every lightmap's DDS, into build/<map folder>/Textures/<name>.dds, when
-    // stale. The mission must list and package them too: see
+    // Every lightmap's and texture's DDS, into build/<map folder>/Textures/<name>.dds,
+    // when stale (a DDS source is copied as it is). The mission must list and package them too: see
     // lightmap_package_path and MissionEditor::add_texture_list_entries.
     ProjectBuildReport build_lightmaps(bool force = false);
     // The package path of a lightmap's DDS (Maps/FR03/Textures/<name>.dds).
     [[nodiscard]] std::filesystem::path lightmap_package_path(const ProjectLightmap& lightmap) const;
+    // Every texture the mission must list and package from build/: the
+    // lightmaps and the donor textures build_world copied (package paths).
+    [[nodiscard]] std::vector<std::filesystem::path> packaged_textures() const;
     // The next free string ID in the reserved range, if any is left.
     [[nodiscard]] std::optional<std::string> next_text_id() const;
 
@@ -185,6 +224,10 @@ public:
     // `on` supports at their resolved heights. Returns what is off by more than
     // 1 cm or unresolved; absolute placements and unanchored actors are skipped.
     [[nodiscard]] std::vector<HeightFinding> height_report(const ActorPositions& actors = {}) const;
+    // The lightmaps brighter than both the slot map's brightest lightmap and
+    // 1.5 times its median one, or that cannot be read; nothing when the slot
+    // map has no lightmaps to compare with.
+    [[nodiscard]] std::vector<LightmapFinding> lightmap_brightness() const;
     // Stores the resolved height of each placement finding. Actor findings are
     // left to the caller, which moves the actors in the mission.
     void resnap(const std::vector<HeightFinding>& findings);
@@ -194,6 +237,9 @@ private:
 };
 
 [[nodiscard]] const char* height_mode_name(HeightRule::Mode mode) noexcept;
+// "COUNTRY_Lm averages 68 against the slot map's 25 (brightest 40): it will
+// look like day"; or why it could not be read.
+[[nodiscard]] std::string lightmap_finding_text(const LightmapFinding& finding);
 
 // A `.fli` text file: UTF-16 LE with a BOM and CRLF lines; each string is an
 // ID line, the quoted string and a blank line. Returns the donor with

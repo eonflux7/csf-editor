@@ -11,10 +11,12 @@
 #include "rwsman/entity_kind.hpp"
 #include "ui/fonts.hpp"
 #include "ui/icons.hpp"
+#include "ui/layout.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <algorithm>
 #include <cmath>
@@ -166,6 +168,15 @@ void finish_sketch(AppState& state, const Tool tool) {
     for (const auto& group : scene.navigation()) taken.insert(group.name.value_or(""));
     for (const auto& area : scene.areas()) taken.insert(area.name.value_or(""));
     std::int32_t id{};
+    // Points for the Behaviours form: they become its points, nothing else.
+    if (tools.preset_sketch && (tool == Tool::route || tool == Tool::cover)) {
+        if (points.empty()) return state.warn("Click the points first");
+        tools.points = points;
+        points.clear();
+        set_viewport_tool(state, Tool::select);
+        show_panel(state, Panel::behaviours);
+        return;
+    }
     if (tool == Tool::route || tool == Tool::cover) {
         if (points.size() < (tool == Tool::route ? 2U : 1U))
             return state.warn(tool == Tool::route ? "A route needs two points" : "Click where the cover is first");
@@ -300,8 +311,11 @@ std::string tool_hint(const AppState& state, const Tool tool) {
     case Tool::place:
         if (!tools.place_entry && tools.place_building_asset.empty())
             return "Place: pick an asset in the Assets panel (Esc: back to Select)";
-        return "Place: click on the ground  ·  Shift keeps placing  ·  [ ] turn  ·  Esc done";
+        return "Place: click on the ground, a floor or a table  ·  Shift keeps placing  ·  [ ] turn  ·  Esc done";
     case Tool::route:
+        if (tools.preset_sketch)
+            return "Behaviour: click the post or the route's points  ·  Enter uses them  ·  Esc cancels  (" +
+                   std::to_string(tools.sketch.size()) + " points)";
         return "Route: click points  ·  Enter creates it  ·  Backspace removes the last  ·  Esc cancels  (" +
                std::to_string(tools.sketch.size()) + " points)";
     case Tool::zone: {
@@ -474,7 +488,10 @@ void append_placement_overlays(const AppState& state, GeometryPreview::MissionOv
 }
 
 void set_viewport_tool(AppState& state, const Tool tool) {
-    if (state.preview.edit_tool() != tool) state.tools.sketch.clear();
+    if (state.preview.edit_tool() != tool) {
+        state.tools.sketch.clear();
+        state.tools.preset_sketch = false;
+    }
     state.preview.set_edit_tool(tool);
 }
 
@@ -551,12 +568,95 @@ void draw_walk_grid_preview(AppState& state) {
     draw_list->PopClipRect();
 }
 
+namespace {
+
+// The intro's shots while the Timeline is on screen or one of its records is
+// selected (E11): each camera's path with its direction, its target and the
+// sight lines, the selected shot brighter, and the camera at the playhead.
+void draw_intro_overlay(AppState& state) {
+    const auto* intro = intro_component(state);
+    if (!intro) return;
+    const auto* timeline = ImGui::FindWindowByName(ui::panel_window_name(state.workspace, Panel::timeline).c_str());
+    const bool timeline_shown = timeline && timeline->Active && !timeline->Hidden;
+    const auto* owner = owning_component(state, primary_key(state));
+    if (!timeline_shown && !(owner && owner->id == intro->id)) return;
+    std::vector<TimelineShot> shots;
+    try {
+        shots = timeline_shots(intro->lines);
+    } catch (const std::exception&) {
+        return;
+    }
+    auto& preview = state.preview;
+    const auto canvas = preview.canvas_rect();
+    auto* draw = ImGui::GetWindowDrawList();
+    const float scale = ui::ui_scale();
+    const auto screen = [&](const csf::Vec3 point) { return preview.screen_position(rws_point(point)); };
+    draw->PushClipRect({canvas.x, canvas.y}, {canvas.z, canvas.w}, true);
+    for (std::size_t i = 0; i < shots.size(); ++i) {
+        const auto& shot = shots[i];
+        const bool selected = i == state.tools.timeline_shot;
+        const float alpha = selected ? 1.0F : 0.45F;
+        const auto color = ui::viewport_color(ui::Viewport::cutscene_camera, alpha);
+        const auto start = screen(shot.camera), end = screen(shot.end), target = screen(shot.target);
+        // Sight lines, dashed: from both ends of the path to the target.
+        for (const auto& from : {start, end})
+            if (from && target) {
+                const ImVec2 d{target->x - from->x, target->y - from->y};
+                const float length = std::hypot(d.x, d.y);
+                const float dash = 8.0F * scale;
+                for (float t = 0.0F; t < length; t += 2.0F * dash) {
+                    const float u = std::min(t + dash, length);
+                    draw->AddLine({from->x + d.x * t / length, from->y + d.y * t / length},
+                                  {from->x + d.x * u / length, from->y + d.y * u / length},
+                                  ui::viewport_color(ui::Viewport::cutscene_camera, alpha * 0.5F), 1.0F * scale);
+                }
+            }
+        if (start && end) {
+            draw->AddLine(*start, *end, color, (selected ? 3.0F : 2.0F) * scale);
+            // An arrowhead at the end: the way the camera travels.
+            const ImVec2 d{end->x - start->x, end->y - start->y};
+            if (const float length = std::hypot(d.x, d.y); length > 12.0F * scale) {
+                const ImVec2 u{d.x / length, d.y / length};
+                const float size = 9.0F * scale;
+                draw->AddTriangleFilled(*end, {end->x - u.x * size - u.y * size * 0.6F, end->y - u.y * size + u.x * size * 0.6F},
+                                        {end->x - u.x * size + u.y * size * 0.6F, end->y - u.y * size - u.x * size * 0.6F},
+                                        color);
+            }
+        }
+        if (start) {
+            draw->AddCircleFilled(*start, 5.0F * scale, color);
+            char label[24];
+            std::snprintf(label, sizeof(label), "Shot %zu", i + 1);
+            draw->AddText({start->x + 8.0F * scale, start->y - 18.0F * scale}, color, label);
+        }
+        if (end) draw->AddCircle(*end, 5.0F * scale, color, 12, 1.5F * scale);
+        if (target) {
+            const float r = 6.0F * scale;
+            draw->AddQuad({target->x, target->y - r}, {target->x + r, target->y}, {target->x, target->y + r},
+                          {target->x - r, target->y}, color, 1.5F * scale);
+        }
+    }
+    // The camera at the playhead.
+    if (const auto at = timeline_position(shots, state.tools.timeline_time)) {
+        const auto view = shot_view(shots[at->shot], at->fraction);
+        if (const auto eye = screen(view.eye)) {
+            const auto accent = ui::color_u32(ui::Token::accent);
+            draw->AddCircle(*eye, 8.0F * scale, accent, 16, 2.0F * scale);
+            if (const auto target = screen(view.target)) draw->AddLine(*eye, *target, accent, 1.5F * scale);
+        }
+    }
+    draw->PopClipRect();
+}
+
+} // namespace
+
 void update_viewport_tools(AppState& state) {
     auto& preview = state.preview;
     // Selection events of the last frame (Shift/Ctrl clicks, boxes).
     if (const auto event = preview.take_pick_event(); event && !state.ui.pick) apply_pick_event(state, *event);
     // A pending pick takes the next record selected, in the viewport or the
     // Outliner, and puts the selection back.
+    const bool picking = state.ui.pick.has_value();
     if (state.ui.pick) {
         const auto key = primary_key(state);
         if (key.kind != Kind::none && !(key == state.ui.pick->restore)) {
@@ -566,6 +666,8 @@ void update_viewport_tools(AppState& state) {
                 pick.done(key);
             else
                 state.warn("That is not one of the records this field takes");
+            // Putting the selection back takes a frame or two: not a new selection.
+            state.ui.selection_settle_frames = 3;
             if (pick.restore.kind != Kind::none)
                 select_mission_record(state, pick.restore, false);
             else {
@@ -582,6 +684,17 @@ void update_viewport_tools(AppState& state) {
     for (const auto& key : state.ui.selection_extra)
         if (const auto entry = entry_of(state, key)) extra_entries.insert(*entry);
     preview.set_extra_selection(std::move(extra_entries));
+    // Something newly selected shows its Properties, in front of the
+    // Objectives or Mission tab that shares its dock (focusing it is safe: the
+    // viewport's keys follow the pointer); an eyedropper pick keeps the panel
+    // that asked.
+    if (state.ui.selection_settle_frames > 0) --state.ui.selection_settle_frames;
+    else if (const auto primary = primary_key(state);
+             !picking && primary.kind != Kind::none && !(primary == state.ui.last_primary) &&
+             !state.ui.maximize_viewport && state.ui.panel_open[static_cast<std::size_t>(Panel::properties)]) {
+        state.ui.focus_panel = Panel::properties;
+        state.ui.focus_panel_frames = 2;
+    }
     state.ui.last_primary = primary_key(state);
 
     const auto tool = preview.edit_tool();
@@ -602,6 +715,7 @@ void update_viewport_tools(AppState& state) {
         return true;
     });
     draw_walk_grid_preview(state);
+    draw_intro_overlay(state);
     if (!GeometryPreview::authoring_tool(tool) || !mission_editable(state)) return;
     // Clicks of the authoring tools.
     for (const auto& click : clicks) {

@@ -23,6 +23,12 @@ struct ScriptSpec {
     std::string name;                // UTF-8
 };
 
+// What starts a behaviour's script: INIT (the intro raises it, or the
+// mission start) unless a mission event is named, such as a vehicle's
+// arrival raising OFICIAL_LLEGA. Actor scripts on custom events are the
+// shipped programs' own pattern (Convoy's lorry passengers).
+inline constexpr const char* default_start_event = "INIT";
+
 struct RouteSpec {
     std::optional<std::int32_t> id;
     std::string name;
@@ -40,6 +46,7 @@ struct GuardPatrol {
     float pause_seconds{3.0F};
     std::optional<std::int32_t> cover_group;
     ScriptSpec script;
+    std::string start_event;  // empty: INIT
 };
 
 // One animation of an idle loop; with `random_cycles` it plays a random number
@@ -55,6 +62,7 @@ struct GuardIdle {
     std::vector<IdleStep> loop;
     std::optional<std::int32_t> cover_group;
     ScriptSpec script;
+    std::string start_event;  // empty: INIT
 };
 
 // An animal walking a route with its walk animation (IR_A_PATHPOINT_ANIM).
@@ -63,6 +71,7 @@ struct AnimalPatrol {
     RouteSpec route;
     std::int32_t walk_animation{};
     ScriptSpec script;
+    std::string start_event;  // empty: INIT
 };
 
 // Cover points (.TIPO 3), each facing where the cover faces.
@@ -163,6 +172,14 @@ struct IntroCutscene {
     // Cutscene program scripts: the cutscene, its INIT and END, the camera.
     std::array<std::optional<std::int32_t>, 4> cutscene_ids{};
     std::string cutscene_name{"CUT_INICIO"};
+    // Played when the player enters this zone instead of at the start (Ransom's
+    // CUT_ENTRADA): once, after a fade out, with a START_GAME `setup` script
+    // that makes the zone report the player. Such a cutscene never sends INIT.
+    std::optional<std::int32_t> zone;
+    ScriptSpec setup;
+    // The event the setup script waits for; empty: START_GAME. A mission event
+    // (`OFICIAL_LLEGA`) arms the zone only once something has happened.
+    std::string arm_event;
 };
 
 // A trigger (docs/plans/editor-ux-redesign.md, E10): When something happens,
@@ -197,6 +214,9 @@ struct Trigger {
         object_used,    // the player uses actor `target`'s ghost
         event,          // `event` is raised (SEND_EVENT)
         timer,          // `seconds` after the mission starts
+        alerted,        // a German turns alert or fights (Convoy's SET_ALARMA: IA_CHANGE_STATE);
+                        // being shot at counts too
+        body_found,     // one of `watch` sees another of them dead (VEO_BICHO, checked every second)
     };
     When when{When::mission_start};
     std::int32_t target{};
@@ -207,6 +227,9 @@ struct Trigger {
     std::vector<TriggerAction> actions;
     ScriptSpec script;  // the trigger
     ScriptSpec setup;   // its START_GAME setup, when the event needs one
+    // body_found: the soldiers who can find each other (each pair is checked,
+    // so the script grows with the square of their number).
+    std::vector<std::int32_t> watch;
 };
 
 [[nodiscard]] bool trigger_when_proven(Trigger::When when) noexcept;
@@ -242,10 +265,24 @@ EditResult add_walk_grid(MissionEditor& editor, const WalkGrid& recipe, std::int
 // as routes join the walking grid.
 EditResult link_to_nearest(MissionEditor& editor, std::int32_t group, std::int32_t target);
 
+// A script name as one bare source token: characters other than letters,
+// digits and '_' become '_' ("officer kill" -> officer_kill), so a typed name
+// cannot split the .NOMBRE field.
+[[nodiscard]] std::string script_name_token(std::string_view name);
+// A script's local variable (.VARIABLES): IDs from 1 within the script,
+// read and written as (VAR id).
+struct ScriptVariable {
+    std::int32_t id{};
+    std::string type;   // BOOL, BICHO, NUMERO...
+    std::string name;
+    std::string value;  // FALSE, 0, 0.0...
+};
+
 // Script source text (.gsc record) in the layout hello world's scene.py writes.
 [[nodiscard]] std::string script_text(std::int32_t id, std::string_view name, std::int32_t trigger,
                                       const std::vector<std::string>& events, const std::vector<std::string>& actions,
-                                      const std::vector<std::string>& conditions = {});
+                                      const std::vector<std::string>& conditions = {},
+                                      const std::vector<ScriptVariable>& variables = {});
 // A real as script source writes it (always with a decimal point).
 [[nodiscard]] std::string script_number(float value);
 

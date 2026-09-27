@@ -578,6 +578,21 @@ void rebuild_search_index(AppState& state) {
         inputs.programs = &state.mission.programs;
         index_mission(state.search_index, inputs);
     }
+    // The project's placements (radio-house, farmhouse), selected as in the Outliner.
+    if (const auto* project = state.authoring.project.get())
+        for (std::size_t index = 0; index < project->placements.size(); ++index) {
+            const auto& placement = project->placements[index];
+            SearchEntry entry;
+            entry.kind = SymbolKind::placement;
+            entry.label = placement.id;
+            entry.detail = placement.kind == csf::ProjectPlacement::Kind::building ? "building " + placement.asset
+                           : placement.kind == csf::ProjectPlacement::Kind::piece
+                               ? "piece" + (placement.donor.empty() ? std::string() : " of " + placement.donor)
+                               : "donor props";
+            for (const auto& group : placement.lightmaps) entry.haystack += group + ' ';
+            entry.target = {SelectionRef::Kind::mission_entry, placement_entry_base + index, 0, 0};
+            state.search_index.add(std::move(entry));
+        }
 }
 
 } // namespace rwsman

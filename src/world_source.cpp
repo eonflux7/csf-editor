@@ -22,6 +22,34 @@ std::string lower(std::string_view text) {
     return result;
 }
 
+// Distance from `p` to the triangle abc (closest point, Ericson 5.1.5).
+float distance_to_triangle(const Vec3 p, const Vec3 a, const Vec3 b, const Vec3 c) {
+    const auto sub = [](const Vec3 u, const Vec3 v) { return Vec3{u.x - v.x, u.y - v.y, u.z - v.z}; };
+    const auto dot = [](const Vec3 u, const Vec3 v) { return u.x * v.x + u.y * v.y + u.z * v.z; };
+    const auto at = [](const Vec3 o, const Vec3 u, const float t) { return Vec3{o.x + u.x * t, o.y + u.y * t, o.z + u.z * t}; };
+    const auto ab = sub(b, a), ac = sub(c, a), ap = sub(p, a);
+    Vec3 q;
+    const auto d1 = dot(ab, ap), d2 = dot(ac, ap);
+    const auto bp = sub(p, b);
+    const auto d3 = dot(ab, bp), d4 = dot(ac, bp);
+    const auto cp = sub(p, c);
+    const auto d5 = dot(ab, cp), d6 = dot(ac, cp);
+    const auto vc = d1 * d4 - d3 * d2, vb = d5 * d2 - d1 * d6, va = d3 * d6 - d5 * d4;
+    if (d1 <= 0 && d2 <= 0) q = a;
+    else if (d3 >= 0 && d4 <= d3) q = b;
+    else if (vc <= 0 && d1 >= 0 && d3 <= 0) q = at(a, ab, d1 / (d1 - d3));
+    else if (d6 >= 0 && d5 <= d6) q = c;
+    else if (vb <= 0 && d2 >= 0 && d6 <= 0) q = at(a, ac, d2 / (d2 - d6));
+    else if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) q = at(b, sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    else {
+        const auto denominator = va + vb + vc;
+        if (denominator == 0.0F) q = a;  // degenerate
+        else q = at(at(a, ab, vb / denominator), ac, vc / denominator);
+    }
+    const auto d = sub(p, q);
+    return std::sqrt(dot(d, d));
+}
+
 std::vector<std::string_view> fields(std::string_view line) {
     std::vector<std::string_view> result;
     while (!line.empty()) {
@@ -102,6 +130,38 @@ std::string material_lightmap_name(const std::span<const std::byte> material) {
     return text;
 }
 
+namespace {
+
+// Renames the Texture (0x06) chunk at `texture`: its name string (after its
+// Struct) is rewritten and every chunk in `enclosing` (headers that contain
+// the string, the texture included) grows or shrinks with it.
+DecodeResult<std::vector<std::byte>> rename_texture(const std::span<const std::byte> bytes, const std::size_t texture,
+                                                    std::vector<std::size_t> enclosing, const std::string_view name) {
+    DecodeResult<std::vector<std::byte>> result;
+    const auto string = texture + 12 + 12 + u32_at(bytes, texture + 16);  // after the Struct
+    if (string + 12 > bytes.size() || u32_at(bytes, string) != 0x02U) {
+        result.error = "the texture has no name string";
+        return result;
+    }
+    const auto old_size = u32_at(bytes, string + 4);
+    // RenderWare strings: the text, a terminating zero, padded to four bytes.
+    const auto new_size = static_cast<std::uint32_t>((name.size() + 4) & ~std::size_t{3});
+    std::vector<std::byte> out(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(string + 12));
+    for (std::size_t i = 0; i < new_size; ++i)
+        out.push_back(static_cast<std::byte>(i < name.size() ? name[i] : '\0'));
+    out.insert(out.end(), bytes.begin() + static_cast<std::ptrdiff_t>(string + 12 + old_size), bytes.end());
+    const auto delta = static_cast<std::int64_t>(new_size) - static_cast<std::int64_t>(old_size);
+    enclosing.push_back(string);
+    for (const auto header : enclosing) {
+        const auto size = static_cast<std::uint32_t>(static_cast<std::int64_t>(u32_at(out, header + 4)) + delta);
+        for (int i = 0; i < 4; ++i) out[header + 4 + static_cast<std::size_t>(i)] = static_cast<std::byte>(size >> (8 * i) & 0xFFU);
+    }
+    result.value = std::move(out);
+    return result;
+}
+
+} // namespace
+
 DecodeResult<std::vector<std::byte>> replace_material_lightmap(const std::span<const std::byte> material,
                                                                const std::string_view lightmap) {
     DecodeResult<std::vector<std::byte>> result;
@@ -117,32 +177,31 @@ DecodeResult<std::vector<std::byte>> replace_material_lightmap(const std::span<c
         result.error = "the material has no lightmap (Material Effects dual pass)";
         return result;
     }
-    const auto name = *texture + 12 + 12 + u32_at(bytes, *texture + 16);
-    if (name + 12 > bytes.size() || u32_at(bytes, name) != 0x02U) {
-        result.error = "the material's lightmap texture has no name string";
-        return result;
-    }
-    const auto old_size = u32_at(bytes, name + 4);
-    // RenderWare strings: the text, a terminating zero, padded to four bytes.
-    const auto new_size = static_cast<std::uint32_t>((lightmap.size() + 4) & ~std::size_t{3});
-    std::vector<std::byte> out(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(name + 12));
-    for (std::size_t i = 0; i < new_size; ++i)
-        out.push_back(static_cast<std::byte>(i < lightmap.size() ? lightmap[i] : '\0'));
-    out.insert(out.end(), bytes.begin() + static_cast<std::ptrdiff_t>(name + 12 + old_size), bytes.end());
-    const auto delta = static_cast<std::int64_t>(new_size) - static_cast<std::int64_t>(old_size);
-    const auto grow = [&](const std::size_t header) {
-        const auto size = static_cast<std::uint32_t>(static_cast<std::int64_t>(u32_at(out, header + 4)) + delta);
-        for (int i = 0; i < 4; ++i) out[header + 4 + static_cast<std::size_t>(i)] = static_cast<std::byte>(size >> (8 * i) & 0xFFU);
-    };
     const auto* extension = find_child(*chunk, 0x03U);
     const auto* effects = find_child(*extension, 0x120U);
-    // Every chunk that encloses the name: the string, the texture, the
-    // effects plug-in, the extension and the material.
-    for (const auto header : {name, *texture, static_cast<std::size_t>(effects->offset),
-                              static_cast<std::size_t>(extension->offset), static_cast<std::size_t>(chunk->offset)})
-        grow(header);
-    result.value = std::move(out);
+    // Every chunk that encloses the name: the texture, the effects plug-in,
+    // the extension and the material.
+    auto renamed = rename_texture(bytes, *texture,
+                                  {*texture, static_cast<std::size_t>(effects->offset),
+                                   static_cast<std::size_t>(extension->offset), static_cast<std::size_t>(chunk->offset)},
+                                  lightmap);
+    if (!renamed) result.error = "the material's lightmap texture has no name string";
+    else result.value = std::move(renamed.value);
     return result;
+}
+
+DecodeResult<std::vector<std::byte>> replace_material_texture(const std::span<const std::byte> material,
+                                                              const std::string_view texture) {
+    DecodeResult<std::vector<std::byte>> result;
+    Document holder;
+    const auto chunk = material_chunk(material, holder);
+    const auto* found = chunk ? find_child(*chunk, 0x06U) : nullptr;
+    if (!found) {
+        result.error = chunk ? "the material has no texture" : "not a Material chunk";
+        return result;
+    }
+    return rename_texture(holder.bytes(), static_cast<std::size_t>(found->offset),
+                          {static_cast<std::size_t>(found->offset), static_cast<std::size_t>(chunk->offset)}, texture);
 }
 
 std::string material_surface_name(const std::span<const std::byte> material) {
@@ -217,17 +276,35 @@ DecodeResult<WorldSource> parse_world_source(const std::string_view text) {
             else if (parts[5] != "both") return fail("face role must be visual, collision or both");
             source.faces.push_back(face);
         } else if (parts[0] == "piece") {
-            if (parts.size() != 10 && parts.size() != 11)
-                return fail("piece <x0> <y0> <z0> <x1> <y1> <z1> <x> <y> <z> [<yaw>]");
+            // Numbers, then donor= and lightmaps= in any order.
+            auto numbers = parts.size();
+            while (numbers > 1 && parts[numbers - 1].find('=') != std::string_view::npos) --numbers;
+            if (numbers != 10 && numbers != 11)
+                return fail("piece <x0> <y0> <z0> <x1> <y1> <z1> <x> <y> <z> [<yaw>] [donor=<key>] [lightmaps=<name>,...]");
             std::array<float, 10> values{};
-            for (std::size_t i = 1; i < parts.size(); ++i)
+            for (std::size_t i = 1; i < numbers; ++i)
                 if (!number(parts[i], values[i - 1])) return fail("invalid piece numbers");
             WorldPiece piece;
             piece.inf = {std::min(values[0], values[3]), std::min(values[1], values[4]), std::min(values[2], values[5])};
             piece.sup = {std::max(values[0], values[3]), std::max(values[1], values[4]), std::max(values[2], values[5])};
             piece.position = {values[6], values[7], values[8]};
             piece.yaw_degrees = values[9];
-            source.pieces.push_back(piece);
+            for (auto i = numbers; i < parts.size(); ++i) {
+                const auto equals = parts[i].find('=');
+                const auto key = parts[i].substr(0, equals), value = parts[i].substr(equals + 1);
+                if (key == "donor" && !value.empty()) {
+                    piece.donor = std::string(value);
+                } else if (key == "lightmaps" && !value.empty()) {
+                    for (auto names = value; !names.empty();) {
+                        const auto comma = names.find(',');
+                        if (const auto name = names.substr(0, comma); !name.empty()) piece.lightmaps.emplace_back(name);
+                        names = comma == std::string_view::npos ? std::string_view{} : names.substr(comma + 1);
+                    }
+                } else {
+                    return fail("unknown piece option '" + std::string(parts[i]) + "'");
+                }
+            }
+            source.pieces.push_back(std::move(piece));
         } else if (parts[0] == "prop") {
             if (parts.size() != 5 && parts.size() != 6)
                 return fail("prop <donor-instance-id>[,<id>...] <x> <y> <z> [<yaw>]");
@@ -260,7 +337,8 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
                                                   const WorldModel& donor_visual,
                                                   const WorldModel& donor_collision,
                                                   const WorldCompileOptions& options,
-                                                  const std::span<const WorldBuildTriangle> extra_collision) {
+                                                  const std::span<const WorldBuildTriangle> extra_collision,
+                                                  const std::span<const DonorWorlds> donors) {
     DecodeResult<CompiledWorlds> result;
     const auto visual_materials = split_material_list(donor_visual.material_list, donor_visual.library_id);
     const auto collision_materials =
@@ -292,21 +370,34 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
             const auto key = lower(material.texture) + '|' + lower(material.lightmap);
             auto slot = visual_slot.find(key);
             if (slot == visual_slot.end()) {
+                // A texture of the World's own copies its template's material.
+                const auto own = options.new_textures.find(lower(material.texture));
+                const auto donor_texture = own == options.new_textures.end() ? material.texture : own->second;
                 const auto found = std::ranges::find_if(*visual_materials.value, [&](const auto& chunk) {
-                    return lower(material_texture_name(chunk)) == lower(material.texture);
+                    return lower(material_texture_name(chunk)) == lower(donor_texture);
                 });
                 if (found == visual_materials.value->end()) {
-                    result.error = "no donor visual material uses texture '" + material.texture + "'";
+                    result.error = "no donor visual material uses texture '" + donor_texture + "'";
                     return result;
                 }
                 compiled.notes.push_back("visual material " + std::to_string(visual_list.size()) + " = donor " +
                                          std::to_string(found - visual_materials.value->begin()) +
                                          " (texture " + material.texture + ")");
                 slot = visual_slot.emplace(key, static_cast<std::uint16_t>(visual_list.size())).first;
+                auto chosen = *found;
+                if (own != options.new_textures.end()) {
+                    auto renamed = replace_material_texture(chosen, material.texture);
+                    if (!renamed) {
+                        result.error = "texture '" + material.texture + "': " + renamed.error;
+                        return result;
+                    }
+                    chosen = std::move(*renamed.value);
+                    compiled.notes.back() += ", renamed";
+                }
                 if (material.lightmap.empty()) {
-                    visual_list.push_back(*found);
+                    visual_list.push_back(std::move(chosen));
                 } else {
-                    auto lit = replace_material_lightmap(*found, material.lightmap);
+                    auto lit = replace_material_lightmap(chosen, material.lightmap);
                     if (!lit) {
                         result.error = "texture '" + material.texture + "': " + lit.error;
                         return result;
@@ -329,13 +420,86 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
             collision.push_back(triangle);
         }
     }
-    // Pieces: donor World triangles inside a box, moved like props.
-    std::map<std::uint16_t, std::uint16_t> donor_visual_slot;
-    const auto donor_visual_triangles = source.pieces.empty() ? std::vector<WorldBuildTriangle>{}
-                                                              : world_build_triangles(donor_visual);
-    const auto donor_collision_triangles = source.pieces.empty() ? std::vector<WorldBuildTriangle>{}
-                                                                 : world_build_triangles(donor_collision);
+    // Pieces: donor World triangles inside a box, moved like props. Each
+    // donor's triangles and material slots are set up on first use.
+    struct PieceDonor {
+        const DonorWorlds* other{};  // null: the map's own donor
+        std::vector<std::vector<std::byte>> visual_materials, collision_materials;
+        std::vector<std::string> lightmap_names;  // per visual material, lower case
+        std::vector<WorldBuildTriangle> visual, collision;
+        std::map<std::uint16_t, std::uint16_t> visual_slot, collision_slot;
+    };
+    std::map<std::string, PieceDonor> piece_donors;
+    auto collision_list = *collision_materials.value;
+    bool collision_list_grew = false;
+    std::set<DonorTexture> donor_textures;
+    const auto piece_donor = [&](const std::string& key) -> PieceDonor* {
+        if (const auto found = piece_donors.find(key); found != piece_donors.end()) return &found->second;
+        PieceDonor donor;
+        const WorldModel* visual_world = &donor_visual;
+        const WorldModel* collision_world = &donor_collision;
+        if (!key.empty()) {
+            const auto other = std::ranges::find(donors, key, &DonorWorlds::key);
+            if (other == donors.end()) {
+                result.error = "a piece names an unknown donor '" + key + "'";
+                return nullptr;
+            }
+            donor.other = &*other;
+            visual_world = &other->visual;
+            collision_world = &other->collision;
+            auto visual_list = split_material_list(visual_world->material_list, visual_world->library_id);
+            auto collision_list_of = split_material_list(collision_world->material_list, collision_world->library_id);
+            if (!visual_list || !collision_list_of) {
+                result.error = "donor " + key + " Material List: " + (visual_list ? collision_list_of.error : visual_list.error);
+                return nullptr;
+            }
+            donor.visual_materials = std::move(*visual_list.value);
+            donor.collision_materials = std::move(*collision_list_of.value);
+        } else {
+            donor.visual_materials = *visual_materials.value;
+            donor.collision_materials = *collision_materials.value;
+        }
+        for (const auto& material : donor.visual_materials) donor.lightmap_names.push_back(lower(material_lightmap_name(material)));
+        donor.visual = world_build_triangles(*visual_world);
+        donor.collision = world_build_triangles(*collision_world);
+        return &piece_donors.emplace(key, std::move(donor)).first->second;
+    };
+    // A copied material of another donor, its textures renamed as the donor says.
+    const auto foreign_material = [&](const PieceDonor& donor, const std::uint16_t index) -> std::optional<std::vector<std::byte>> {
+        auto material = donor.visual_materials[index];
+        const auto rename = [&](const std::string& name) {
+            const auto found = donor.other->renamed.find(lower(name));
+            return found == donor.other->renamed.end() ? name : found->second;
+        };
+        if (const auto texture = material_texture_name(material); !texture.empty()) {
+            const auto name = rename(texture);
+            if (name != texture) {
+                auto renamed = replace_material_texture(material, name);
+                if (!renamed) {
+                    result.error = "donor " + donor.other->key + " texture " + texture + ": " + renamed.error;
+                    return std::nullopt;
+                }
+                material = std::move(*renamed.value);
+            }
+            donor_textures.insert({donor.other->key, texture, name});
+        }
+        if (const auto lightmap = material_lightmap_name(material); !lightmap.empty()) {
+            const auto name = rename(lightmap);
+            if (name != lightmap) {
+                auto renamed = replace_material_lightmap(material, name);
+                if (!renamed) {
+                    result.error = "donor " + donor.other->key + " lightmap " + lightmap + ": " + renamed.error;
+                    return std::nullopt;
+                }
+                material = std::move(*renamed.value);
+            }
+            donor_textures.insert({donor.other->key, lightmap, name});
+        }
+        return material;
+    };
     for (const auto& piece : source.pieces) {
+        auto* donor = piece_donor(piece.donor);
+        if (!donor) return result;
         const auto angle = piece.yaw_degrees * 3.14159265358979F / 180.0F;
         const auto c = std::cos(angle), s = std::sin(angle);
         const auto yaw = [&](const Vec3 v) { return Vec3{c * v.x + s * v.z, v.y, -s * v.x + c * v.z}; };
@@ -347,6 +511,11 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
                        p.z >= piece.inf.z && p.z <= piece.sup.z;
             });
         };
+        std::set<std::string> groups;
+        for (const auto& name : piece.lightmaps) groups.insert(lower(name) + "_lm");
+        const auto kept = [&](const WorldBuildTriangle& t) {
+            return groups.empty() || (t.material < donor->lightmap_names.size() && groups.contains(donor->lightmap_names[t.material]));
+        };
         const auto move = [&](WorldBuildTriangle t) {
             for (auto& v : t.vertices) {
                 const auto turned = yaw({v.position.x - anchor.x, v.position.y - anchor.y, v.position.z - anchor.z});
@@ -356,30 +525,95 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
             return t;
         };
         std::size_t visual_count = 0, collision_count = 0;
-        for (const auto& triangle : donor_visual_triangles) {
-            if (!inside(triangle)) continue;
+        std::vector<const WorldBuildTriangle*> kept_visual;
+        for (const auto& triangle : donor->visual) {
+            if (!inside(triangle) || !kept(triangle)) continue;
+            kept_visual.push_back(&triangle);
             auto moved = move(triangle);
-            auto slot = donor_visual_slot.find(triangle.material);
-            if (slot == donor_visual_slot.end()) {
-                if (triangle.material >= visual_materials.value->size()) {
+            auto slot = donor->visual_slot.find(triangle.material);
+            if (slot == donor->visual_slot.end()) {
+                if (triangle.material >= donor->visual_materials.size()) {
                     result.error = "donor visual triangle names a missing material";
                     return result;
                 }
-                slot = donor_visual_slot.emplace(triangle.material, static_cast<std::uint16_t>(visual_list.size())).first;
-                visual_list.push_back((*visual_materials.value)[triangle.material]);
+                if (donor->other) {
+                    auto material = foreign_material(*donor, triangle.material);
+                    if (!material) return result;
+                    visual_list.push_back(std::move(*material));
+                } else {
+                    visual_list.push_back(donor->visual_materials[triangle.material]);
+                }
+                slot = donor->visual_slot.emplace(triangle.material, static_cast<std::uint16_t>(visual_list.size() - 1)).first;
             }
             moved.material = slot->second;
             visual.push_back(moved);
             ++visual_count;
         }
-        for (const auto& triangle : donor_collision_triangles)
-            if (inside(triangle)) {
-                collision.push_back(move(triangle));
-                ++collision_count;
+        // With lightmap groups, the collision triangles lying on the kept
+        // visual ones (their centre within 30 cm), found through a 2 m grid.
+        constexpr float near = 30.0F, cell = 200.0F;
+        std::map<std::array<int, 3>, std::vector<const WorldBuildTriangle*>> grid;
+        const auto cell_of = [&](const float x, const float y, const float z) {
+            return std::array{static_cast<int>(std::floor(x / cell)), static_cast<int>(std::floor(y / cell)),
+                              static_cast<int>(std::floor(z / cell))};
+        };
+        if (!groups.empty())
+            for (const auto* triangle : kept_visual) {
+                Vec3 lo = triangle->vertices[0].position, hi = lo;
+                for (const auto& v : triangle->vertices) {
+                    lo = {std::min(lo.x, v.position.x), std::min(lo.y, v.position.y), std::min(lo.z, v.position.z)};
+                    hi = {std::max(hi.x, v.position.x), std::max(hi.y, v.position.y), std::max(hi.z, v.position.z)};
+                }
+                const auto a = cell_of(lo.x - near, lo.y - near, lo.z - near), b = cell_of(hi.x + near, hi.y + near, hi.z + near);
+                for (int x = a[0]; x <= b[0]; ++x)
+                    for (int y = a[1]; y <= b[1]; ++y)
+                        for (int z = a[2]; z <= b[2]; ++z) grid[{x, y, z}].push_back(triangle);
             }
-        compiled.notes.push_back("piece: " + std::to_string(visual_count) + " visual and " +
-                                 std::to_string(collision_count) + " collision triangles");
+        const auto on_kept = [&](const WorldBuildTriangle& t) {
+            if (groups.empty()) return true;
+            Vec3 centre{};
+            for (const auto& v : t.vertices)
+                centre = {centre.x + v.position.x / 3.0F, centre.y + v.position.y / 3.0F, centre.z + v.position.z / 3.0F};
+            const auto found = grid.find(cell_of(centre.x, centre.y, centre.z));
+            if (found == grid.end()) return false;
+            return std::ranges::any_of(found->second, [&](const WorldBuildTriangle* visual_triangle) {
+                return distance_to_triangle(centre, visual_triangle->vertices[0].position, visual_triangle->vertices[1].position,
+                                            visual_triangle->vertices[2].position) <= near;
+            });
+        };
+        for (const auto& triangle : donor->collision) {
+            if (!inside(triangle) || !on_kept(triangle)) continue;
+            auto moved = move(triangle);
+            if (donor->other) {
+                // The map's collision material of the same surface, else the donor's own, appended.
+                auto slot = donor->collision_slot.find(triangle.material);
+                if (slot == donor->collision_slot.end()) {
+                    if (triangle.material >= donor->collision_materials.size()) {
+                        result.error = "donor collision triangle names a missing material";
+                        return result;
+                    }
+                    const auto& material = donor->collision_materials[triangle.material];
+                    const auto surface = lower(material_surface_name(material));
+                    auto target = surface_slot.find(surface);
+                    if (target == surface_slot.end()) {
+                        collision_list.push_back(material);
+                        collision_list_grew = true;
+                        target = surface_slot.emplace(surface, static_cast<std::uint16_t>(collision_list.size() - 1)).first;
+                        compiled.notes.push_back("collision surface " + surface + " = donor " + donor->other->key +
+                                                 " material, appended as " + std::to_string(target->second));
+                    }
+                    slot = donor->collision_slot.emplace(triangle.material, target->second).first;
+                }
+                moved.material = slot->second;
+            }
+            collision.push_back(moved);
+            ++collision_count;
+        }
+        compiled.notes.push_back("piece" + (piece.donor.empty() ? std::string{} : " from " + piece.donor) + ": " +
+                                 std::to_string(visual_count) + " visual and " + std::to_string(collision_count) +
+                                 " collision triangles");
     }
+    compiled.textures.assign(donor_textures.begin(), donor_textures.end());
     collision.insert(collision.end(), extra_collision.begin(), extra_collision.end());
     if (visual.empty() || collision.empty()) {
         result.error = "the source needs visual and collision faces";
@@ -398,7 +632,8 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
     WorldBuildOptions collision_options;
     collision_options.library_id = donor_collision.library_id;
     collision_options.format = donor_collision.format;
-    collision_options.material_list = donor_collision.material_list;
+    collision_options.material_list = collision_list_grew ? compose_material_list(collision_list, donor_collision.library_id)
+                                                          : donor_collision.material_list;
     collision_options.max_sector_triangles = options.max_sector_triangles;
     auto built_collision = build_world(collision, collision_options);
     if (!built_visual || !built_collision) {
@@ -413,7 +648,8 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
 
 DecodeResult<BuiltMap> build_map_files(const WorldSource& source, const std::span<const std::byte> donor_map,
                                        const std::span<const std::byte> donor_collision,
-                                       const WorldCompileOptions& options, const bool keep_donor_props) {
+                                       const WorldCompileOptions& options, const bool keep_donor_props,
+                                       const std::span<const WorldDonor> donors) {
     DecodeResult<BuiltMap> result;
     const auto load_world = [&](const std::span<const std::byte> bytes, const char* what,
                                 std::uint64_t& begin) -> std::optional<WorldModel> {
@@ -435,6 +671,17 @@ DecodeResult<BuiltMap> build_map_files(const WorldSource& source, const std::spa
     if (!donor_visual) return result;
     const auto donor_col = load_world(donor_collision, "collision map", collision_begin);
     if (!donor_col) return result;
+    std::vector<DonorWorlds> other_donors;
+    for (const auto& donor : donors) {
+        std::uint64_t ignored{};
+        const auto name = "map of donor " + donor.key;
+        auto visual = load_world(donor.map, name.c_str(), ignored);
+        if (!visual) return result;
+        const auto collision_name = "collision map of donor " + donor.key;
+        auto collision = load_world(donor.collision, collision_name.c_str(), ignored);
+        if (!collision) return result;
+        other_donors.push_back({donor.key, std::move(*visual), std::move(*collision), donor.renamed});
+    }
     BuiltMap built;
     // Props: donor Clumps and instance records, collision cut from the donor.
     std::optional<AssembledProps> props;
@@ -454,7 +701,8 @@ DecodeResult<BuiltMap> build_map_files(const WorldSource& source, const std::spa
     }
     const auto compiled = compile_world_source(source, *donor_visual, *donor_col, options,
                                                props ? std::span<const WorldBuildTriangle>(props->collision)
-                                                     : std::span<const WorldBuildTriangle>{});
+                                                     : std::span<const WorldBuildTriangle>{},
+                                               other_donors);
     if (!compiled) {
         result.error = compiled.error;
         return result;
@@ -480,6 +728,7 @@ DecodeResult<BuiltMap> build_map_files(const WorldSource& source, const std::spa
         }
     }
     built.notes.insert(built.notes.end(), compiled.value->notes.begin(), compiled.value->notes.end());
+    built.textures = compiled.value->textures;
     built.visual_triangles = compiled.value->visual.triangle_count;
     built.visual_sectors = compiled.value->visual.world_sector_count;
     built.collision_triangles = compiled.value->collision.triangle_count;
@@ -535,6 +784,8 @@ std::string write_world_source(const WorldSource& source) {
         for (const auto c : {piece.inf.x, piece.inf.y, piece.inf.z, piece.sup.x, piece.sup.y, piece.sup.z,
                              piece.position.x, piece.position.y, piece.position.z, piece.yaw_degrees})
             put(out, c);
+        if (!piece.donor.empty()) out += " donor=" + piece.donor;
+        for (std::size_t i = 0; i < piece.lightmaps.size(); ++i) out += (i ? "," : " lightmaps=") + piece.lightmaps[i];
         out += '\n';
     }
     for (const auto& prop : source.props) {

@@ -39,7 +39,7 @@ constexpr std::array<const char*, kind_count> layer_icons{
     ui::icons::LC_CUBOID, ui::icons::LC_PACKAGE};
 
 // Marker shapes understood by the overlay fragment shader.
-enum Shape : int { circle, diamond, square, triangle, ring, merged, halo };
+enum Shape : int { circle, diamond, square, triangle, ring, merged, halo, glow };
 // Vertex modes understood by the overlay vertex shader.
 enum Mode : int { point, segment, heading, arrow, world_ring, face };
 
@@ -222,7 +222,10 @@ float sdShape(vec2 p, float r, float s) {
 }
 void main() {
     vec4 color=vColor;
-    if (vMode < 0.5) {
+    if (vMode < 0.5 && vShape > 6.5) {
+        float t=clamp(1.0-length(vLocal)/vRadius,0.0,1.0);  // a soft glow, no rim
+        color.a*=t;
+    } else if (vMode < 0.5) {
         float d=sdShape(vLocal, vRadius, vShape);
         float fill=clamp(0.5-d,0.0,1.0);
         float rim=clamp(0.5-(d-1.25),0.0,1.0);
@@ -754,6 +757,33 @@ void GeometryPreview::prepare_overlays(const ImVec2 origin, const ImVec2 size) {
                   static_cast<float>(Shape::halo), floor, false);
     }
     std::ranges::stable_sort(marker_order, {}, &std::pair<Emphasis, std::uint32_t>::first);
+    // Contact disks (V7): a shadow on the ground under each actor, so a marker
+    // reads as standing somewhere; drawn before every marker. On the ground
+    // plane, but as wide as the marker on screen at any distance.
+    for (const auto& [emphasis, index] : marker_order) {
+        const auto& point = mission_points_[index];
+        if (point.kind != Kind::actor || emphasis == Emphasis::dimmed) continue;
+        constexpr int segments = 20;
+        // Centimetres per pixel here: a metre either way on the ground, projected.
+        const auto at = project_point(point.position);
+        const auto east = project_point({point.position.x + 100.0F, point.position.y, point.position.z});
+        const auto north = project_point({point.position.x, point.position.y, point.position.z + 100.0F});
+        if (!at || !east || !north) continue;
+        const float span = std::max(std::hypot(east->x - at->x, east->y - at->y), std::hypot(north->x - at->x, north->y - at->y));
+        if (span < 0.5F) continue;
+        const float pixel = 100.0F / span;
+        const float disk_radius = (kind_radius[index_of(point.kind)] + 16.0F) * scale * pixel;
+        const rws::Vec3 centre{point.position.x, point.position.y + 2.0F * pixel, point.position.z};
+        const auto shadow = ui::viewport_color(ui::Viewport::marker_outline, 0.6F);
+        for (int k = 0; k < segments; ++k) {
+            const float a0 = 6.2831853F * static_cast<float>(k) / segments;
+            const float a1 = 6.2831853F * static_cast<float>(k + 1) / segments;
+            for (const auto& p : {centre,
+                                  rws::Vec3{centre.x + disk_radius * std::cos(a0), centre.y, centre.z + disk_radius * std::sin(a0)},
+                                  rws::Vec3{centre.x + disk_radius * std::cos(a1), centre.y, centre.z + disk_radius * std::sin(a1)}})
+                push(p, p, 0, 0, 0, 0, shadow, Mode::face, 0, 0.8F, false);  // ground may rise past the feet
+        }
+    }
     for (const auto& [emphasis, index] : marker_order) {
         const auto& point = mission_points_[index];
         const auto kind = index_of(point.kind);
@@ -765,6 +795,11 @@ void GeometryPreview::prepare_overlays(const ImVec2 origin, const ImVec2 size) {
             alpha = std::max(rwsman::marker_wall_fade(*walls, overlay_options_.occluded_opacity), floor);
             floor = 1.0F;
         }
+        // The selection's soft glow (V7), behind the marker.
+        if (emphasis == Emphasis::selected)
+            push_quad(point.position, point.position, radius + 18.0F * scale, 0,
+                      ui::viewport_color(ui::Viewport::selection, 0.6F * alpha), Mode::point,
+                      static_cast<float>(Shape::glow), floor, true);
         push_quad(point.position, point.position, radius, 0, scale_alpha(styled(point.color, emphasis), alpha),
                   Mode::point, static_cast<float>(kind_shapes[kind]), floor, emphasized(emphasis));
         if (emphasis == Emphasis::selected || emphasis == Emphasis::hovered || emphasis == Emphasis::related) {
@@ -773,6 +808,10 @@ void GeometryPreview::prepare_overlays(const ImVec2 origin, const ImVec2 size) {
                                                               : ui::viewport_color(ui::Viewport::related);
             push_quad(point.position, point.position, radius + (emphasis == Emphasis::related ? 3.0F : 4.5F) * scale,
                       0, scale_alpha(ring, alpha), Mode::point, static_cast<float>(Shape::halo), floor, true);
+            // A thicker outline for the selection: a second ring just outside.
+            if (emphasis == Emphasis::selected)
+                push_quad(point.position, point.position, radius + 6.0F * scale, 0, scale_alpha(ring, alpha),
+                          Mode::point, static_cast<float>(Shape::halo), floor, true);
         }
     }
 }

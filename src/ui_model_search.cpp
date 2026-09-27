@@ -40,6 +40,7 @@ int kind_weight(const SymbolKind kind) {
     switch (kind) {
     case SymbolKind::actor:
     case SymbolKind::script:
+    case SymbolKind::placement:
         return 3;
     case SymbolKind::class_record:
     case SymbolKind::navigation_group:
@@ -66,6 +67,7 @@ int gameplay_weight(const SymbolKind kind) {
     case SymbolKind::script:
     case SymbolKind::dummy:
     case SymbolKind::class_record:
+    case SymbolKind::placement:
         return 60;
     case SymbolKind::navigation_point:
     case SymbolKind::light:
@@ -98,6 +100,8 @@ std::optional<std::vector<SymbolKind>> prefix_kinds(const std::string_view prefi
         {"light", {K::light}},
         {"effect", {K::effect}},
         {"script", {K::script}},
+        {"placement", {K::placement}},
+        {"building", {K::placement}},
         {"variable", {K::variable}},
         {"class", {K::class_record}},
         {"animation", {K::animation}},
@@ -130,6 +134,8 @@ const char* symbol_kind_name(const SymbolKind kind) noexcept {
         return "effect";
     case SymbolKind::scene_object:
         return "scene object";
+    case SymbolKind::placement:
+        return "placement";
     case SymbolKind::script:
         return "script";
     case SymbolKind::variable:

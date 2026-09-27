@@ -413,6 +413,7 @@ int run_app(const LaunchOptions& options) {
             ++frame;
             state.frame_stats.cpu_ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - frame_start).count();
+            state.frame_stats.record_frame(state.frame_stats.cpu_ms);
             glfwSwapBuffers(window);
 
             if (!scripted) {

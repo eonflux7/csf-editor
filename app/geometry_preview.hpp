@@ -191,6 +191,11 @@ public:
     [[nodiscard]] std::optional<ImVec2> screen_position(const rws::Vec3 point) const { return project_point(point); }
     // Collision surface point under a screen position, if any.
     [[nodiscard]] std::optional<rws::Vec3> surface_point(ImVec2 screen) const;
+    // Where something placed under a screen position stands: a visible level
+    // surface of the map (a table top, a bench, a crate in the World) when it
+    // is in front of the collision surface and at most 2 m above it, since
+    // furniture often has no collision of its own; else the collision surface.
+    [[nodiscard]] std::optional<rws::Vec3> placement_point(ImVec2 screen) const;
     // World point in front of the camera at the view center (placement target).
     [[nodiscard]] rws::Vec3 view_target() const;
     void set_texture_catalog(csf::TextureCatalog catalog);

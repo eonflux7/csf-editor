@@ -1,6 +1,7 @@
 #include "app_state.hpp"
 #include "ui/ui.hpp"
 
+#include "animation_preview.hpp"
 #include "app_util.hpp"
 
 #include <imgui.h>
@@ -60,87 +61,12 @@ void draw_actor_animation(AppState& state, const csf::ActorAssociation& associat
         ImGui::TextWrapped("Actor scripts: %s", ids.c_str());
     }
     const auto assign_animation = [&](const csf::AnimationRecord& animation) {
-        try {
-            const auto variant = std::ranges::find_if(animation.variants, [](const auto& value) {
-                return value.resolution && value.resolution->candidate_indices.size() == 1 &&
-                       value.resolution->status != csf::ResolutionStatus::ambiguous;
-            });
-            if (variant == animation.variants.end())
-                throw std::runtime_error("Animation has no uniquely resolved ANM variant");
-            const auto& resource =
-                mission.resources.resources()[variant->resolution->candidate_indices.front()];
-            const auto animation_document = rws::Document::load(resource.path);
-            if (animation_document.chunks().empty() ||
-                animation_document.chunks().front().type != 0x1B)
-                throw std::runtime_error("Resolved variant is not an ANM root");
-            auto clip = std::make_shared<rws::AnimationClip>(rws::decode_animation(
-                animation_document.chunks().front(), animation_document.bytes()));
-            if (!clip->valid())
-                throw std::runtime_error("Clip is unsupported or failed validation");
-            if (association.visual_models.size() != 1 ||
-                !association.visual_models.front().resolved_path)
-                throw std::runtime_error("Selected actor has no "
-                                         "uniquely resolved RPC model");
-            const auto model_document =
-                rws::Document::load(*association.visual_models.front().resolved_path);
-            const auto* frame_chunk = find_first_chunk(model_document.chunks(), 0x0E);
-            if (!frame_chunk)
-                throw std::runtime_error("Selected actor model has no "
-                                         "Frame List/HAnim hierarchy");
-            const auto frames = rws::decode_frame_list(*frame_chunk, model_document.bytes());
-            const auto binding = rws::decode_hanim_binding(*frame_chunk, model_document.bytes());
-            if (!frames || !binding)
-                throw std::runtime_error("Selected actor model hierarchy could not be "
-                                         "decoded");
-            const auto compatibility =
-                rws::map_animation_tracks(*clip, *binding.value, frames.value->frames.size());
-            if (!compatibility.compatible) {
-                std::string message = "Clip is incompatible with the "
-                                      "selected actor hierarchy";
-                if (!compatibility.diagnostics.empty())
-                    message += ": " + compatibility.diagnostics.front();
-                throw std::runtime_error(message);
-            }
-            if (!geometry_preview.set_mission_actor_animation(entry, clip, 0,
-                                                              mission.animation_loop))
-                throw std::runtime_error("Selected actor has no loaded RPC model");
-            mission.active_clip = std::move(clip);
-            mission.animated_actor = entry;
-            mission.active_animation = animation.logical_name;
-            mission.animation_time = 0;
-            mission.animation_playing = false;
-            state.ok("Assigned " + animation.logical_name +
-                     " to selected actor (AI remains disabled)");
-        } catch (const std::exception& error) {
-            state.error(std::string("Animation unchanged: ") + error.what());
-        }
+        if (const auto error = preview_actor_animation(state, entry, animation))
+            return state.error("Animation unchanged: " + *error);
+        mission.animation_playing = false;
+        state.ok("Assigned " + animation.logical_name + " to selected actor (AI remains disabled)");
     };
     if (mission.active_clip && mission.animated_actor == entry) {
-        if (mission.animation_playing) {
-            state.ui.animating = true;
-            mission.animation_accumulator += ImGui::GetIO().DeltaTime;
-            mission.animation_time += ImGui::GetIO().DeltaTime * mission.animation_speed;
-            if (mission.animation_loop && mission.active_clip->duration > 0) {
-                mission.animation_time =
-                    std::fmod(mission.animation_time, mission.active_clip->duration);
-                if (mission.animation_time < 0)
-                    mission.animation_time += mission.active_clip->duration;
-            } else {
-                if (mission.animation_time >= mission.active_clip->duration) {
-                    mission.animation_time = mission.active_clip->duration;
-                    mission.animation_playing = false;
-                } else if (mission.animation_time <= 0) {
-                    mission.animation_time = 0;
-                    mission.animation_playing = false;
-                }
-            }
-            if (mission.animation_accumulator >= 1.0F / static_cast<float>(mission.animation_fps)) {
-                static_cast<void>(geometry_preview.set_mission_actor_animation(
-                    *mission.animated_actor, mission.active_clip, mission.animation_time,
-                    mission.animation_loop));
-                mission.animation_accumulator = 0;
-            }
-        }
         ImGui::TextWrapped("Clip: %s", mission.active_animation.c_str());
         ImGui::Text("%.3f / %.3f s", mission.animation_time, mission.active_clip->duration);
         if (ImGui::Button(mission.animation_playing ? "Pause##actor_anim" : "Play##actor_anim"))

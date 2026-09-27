@@ -3,14 +3,16 @@
 #include "app_util.hpp"
 #include "authoring.hpp"
 #include "mission_editing.hpp"
+#include "rwsman/entity_kind.hpp"
 
 #include "csf/mission_components.hpp"
 #include "csf/mission_recipes.hpp"
 #include "rws/world_model.hpp"
 
+#include <imgui.h>
+
 #include <algorithm>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -127,6 +129,22 @@ std::optional<csf::EditResult> move_component_record(AppState& state, const Miss
     // Edited by hand: the move goes to the record, never over those edits.
     if (csf::component_state(*state.mission.editor, *owner) != csf::ComponentState::clean) return std::nullopt;
     auto lines = owner->lines;
+    // The intro's cameras, targets and paths are its shots' parts.
+    if (owner->op() == "shot") {
+        const auto record = record_id_of(key);
+        if (!record) return std::nullopt;
+        const auto role = shot_record_role(lines, record->type, record->id,
+                                           key.kind == MissionRecordKey::Kind::nav_point ? key.sub_id : 0);
+        if (!role) return std::nullopt;
+        try {
+            auto shots = timeline_shots(lines);
+            set_shot_part(shots[role->shot], role->part, position);
+            lines = lines_with_shots(lines, shots);
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+        return csf::update_component(*state.mission.editor, owner->id, join_lines(lines), component_options(state));
+    }
     try {
         if (key.kind == MissionRecordKey::Kind::actor) {
             auto line = csf::parse_op_line(lines.front());
@@ -310,7 +328,7 @@ void open_flow_script(AppState& state, const std::string_view program, const std
 std::string text_label(const AppState& state, const std::string_view id) {
     if (const auto* project = state.authoring.project.get())
         for (const auto& string : project->strings)
-            if (string.id == id) return std::string(id) + "  \"" + string.text + "\"";
+            if (string.id == id) return string.text;
     return std::string(id);
 }
 
@@ -365,33 +383,6 @@ bool store_texts(AppState& state, const std::vector<csf::ProjectText>& added) {
 
 } // namespace
 
-void create_objectives(AppState& state) {
-    if (!mission_editable(state)) return;
-    auto& tools = state.tools;
-    if (tools.objectives.empty()) return state.warn("Add an objective first");
-    std::vector<csf::ProjectText> added;
-    csf::Objectives recipe;
-    recipe.success_message = buffer_text(tools.success_message);
-    std::int32_t number = 1;
-    for (const auto& form : tools.objectives) {
-        csf::Objective objective;
-        objective.number = number++;
-        objective.secondary = form.secondary;
-        objective.kind = static_cast<csf::Objective::Kind>(form.kind);
-        objective.target = form.target;
-        const auto label = text_id(state, form.label, added), done = text_id(state, form.done, added),
-                   prompt = text_id(state, form.prompt, added);
-        if (!label || !done || !prompt) return state.warn("The project's text ID range is full");
-        if (label->empty() || done->empty()) return state.warn("Every objective needs its text and its done message");
-        objective.label = *label;
-        objective.done = *done;
-        objective.prompt = *prompt;
-        recipe.objectives.push_back(std::move(objective));
-    }
-    if (!store_texts(state, added)) return;
-    if (add_recipe(state, csf::ops_text(recipe))) tools.objectives.clear();
-}
-
 std::optional<std::string> game_text_id(AppState& state, const std::string& text) {
     if (text.empty() || !state.authoring.project) return text;
     std::vector<csf::ProjectText> added;
@@ -418,116 +409,398 @@ void create_trigger(AppState& state) {
     }
 }
 
-void create_equipment(AppState& state) {
-    if (!mission_editable(state)) return;
-    csf::Equipment recipe;
-    for (const auto& form : state.tools.kits) {
-        csf::Kit kit;
-        kit.actor = form.actor;
-        std::string_view list(form.weapons.data(), strnlen(form.weapons.data(), form.weapons.size()));
-        while (!list.empty()) {
-            const auto comma = list.find(',');
-            const auto item = list.substr(0, comma);
-            list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
-            const auto at = item.find('@');
-            const auto weapon = parse_int(item.substr(0, at));
-            if (!weapon) return state.warn("Weapons: <class>[@<ammo>/<ammo>], e.g. 102@100/100");
-            csf::Kit::Weapon entry{*weapon, std::nullopt};
-            if (at != std::string_view::npos) {
-                const auto ammo = item.substr(at + 1);
-                const auto slash = ammo.find('/');
-                const auto first = parse_float(ammo.substr(0, slash));
-                const auto second = slash == std::string_view::npos ? std::nullopt : parse_float(ammo.substr(slash + 1));
-                if (!first || !second) return state.warn("Ammunition is <loaded>/<carried>, e.g. 102@100/100");
-                entry.ammunition = std::pair{*first, *second};
-            }
-            kit.weapons.push_back(entry);
-        }
-        if (form.selected) kit.selected = form.selected;
-        if (form.disguise) kit.disguise = form.disguise;
-        recipe.kits.push_back(std::move(kit));
-    }
-    if (add_recipe(state, csf::ops_text(recipe))) state.tools.kits.clear();
+namespace {
+
+// The first component whose first line is one of `ops`.
+const csf::MissionComponent* component_with(AppState& state, std::initializer_list<std::string_view> ops) {
+    for (const auto& component : mission_component_list(state))
+        if (std::ranges::find(ops, component.op()) != ops.end()) return &component;
+    return nullptr;
 }
 
-void create_tips(AppState& state) {
-    if (!mission_editable(state)) return;
-    csf::Tips recipe;
-    std::string_view list(state.tools.tips.data(), strnlen(state.tools.tips.data(), state.tools.tips.size()));
-    while (!list.empty()) {
-        const auto comma = list.find(',');
-        if (const auto tip = list.substr(0, comma); !tip.empty()) recipe.tips.emplace_back(tip);
-        list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
+// Inserts `line` before the component's line `op` (its closing line) and
+// regenerates it; one undo step. Refused while its records carry hand edits.
+bool insert_component_line(AppState& state, const csf::MissionComponent& component, const std::string_view op,
+                           const std::string& line) {
+    if (csf::component_state(*state.mission.editor, component) != csf::ComponentState::clean) {
+        state.warn(csf::component_title(component) + " was edited by hand: keep those edits or regenerate it first");
+        return false;
     }
-    if (add_recipe(state, csf::ops_text(recipe))) state.tools.tips[0] = '\0';
+    auto lines = component.lines;
+    auto at = std::ranges::find_if(lines, [&](const std::string& value) {
+        try {
+            return csf::parse_op_line(value).op == op;
+        } catch (const std::exception&) {
+            return false;
+        }
+    });
+    lines.insert(at, line);
+    return edit_component(state, component.id, lines);
+}
+
+std::optional<std::int32_t> first_actor_of(AppState& state, std::initializer_list<EntityKind> kinds) {
+    const auto& scene = *state.mission.scene;
+    for (const auto& actor : scene.actors())
+        if (actor.id && std::ranges::find(kinds, classify_mission_actor(scene, state.mission.objects.get(), actor)) !=
+                            kinds.end())
+            return actor.id;
+    return std::nullopt;
+}
+
+} // namespace
+
+const csf::MissionComponent* objectives_component(AppState& state) {
+    return component_with(state, {"objective", "objectives"});
+}
+
+std::optional<std::int32_t> default_objective_target(AppState& state, const std::string_view kind) {
+    if (!state.mission.scene) return std::nullopt;
+    if (kind == "zone") {
+        for (const auto& area : state.mission.scene->areas())
+            if (area.id) return area.id;
+        return std::nullopt;
+    }
+    if (kind == "use") return first_actor_of(state, {EntityKind::usable, EntityKind::prop});
+    return first_actor_of(state, {EntityKind::enemy, EntityKind::animal});
+}
+
+void add_objective(AppState& state) {
+    if (!mission_editable(state)) return;
+    const auto* existing = objectives_component(state);
+    std::int32_t number = 1;
+    if (existing)
+        for (const auto& value : existing->lines) try {
+                if (const auto line = csf::parse_op_line(value); line.op == "objective")
+                    number = std::max(number, std::stoi(line.get("n", "0")) + 1);
+            } catch (const std::exception&) {
+            }
+    // Aimed at the first zone, or the first enemy when there is no zone.
+    std::string kind = "zone";
+    auto target = default_objective_target(state, kind);
+    if (!target) target = default_objective_target(state, kind = "kill");
+    if (!target) return state.warn("Draw a zone or place an enemy first: an objective needs a target");
+    const auto label = game_text_id(state, state.authoring.project ? "Objective " + std::to_string(number) : "g014");
+    const auto done = game_text_id(state, state.authoring.project ? "Objective " + std::to_string(number) + " complete"
+                                                                  : "g014");
+    if (!label || !done) return state.warn("The project's text ID range is full");
+    csf::OpLine line{"objective", {}};
+    line.set("n", std::to_string(number));
+    line.set("kind", kind);
+    line.set("target", std::to_string(*target));
+    line.set("label", *label);
+    line.set("done", *done);
+    if (existing) {
+        (void)insert_component_line(state, *existing, "objectives", csf::format_op_line(line));
+        return;
+    }
+    (void)add_recipe(state, csf::format_op_line(line) + "\nobjectives success=g014\n");
+}
+
+const csf::MissionComponent* equipment_component(AppState& state) { return component_with(state, {"kit", "equipment"}); }
+
+void add_kit(AppState& state, const std::int32_t actor) {
+    if (!mission_editable(state)) return;
+    // A pistol to start with: the Luger when the mission has it.
+    std::int32_t weapon = 0;
+    if (state.mission.weapons) {
+        for (const auto& definition : state.mission.weapons->definitions())
+            if (definition.id && (weapon == 0 || *definition.id == 102)) weapon = *definition.id;
+    }
+    if (weapon == 0) return state.warn("The mission's Armas.bdd has no weapons");
+    const auto line = "kit actor=" + std::to_string(actor) + " weapons=" + std::to_string(weapon);
+    if (const auto* existing = equipment_component(state)) {
+        (void)insert_component_line(state, *existing, "equipment", line);
+        return;
+    }
+    (void)add_recipe(state, line + "\nequipment\n");
+}
+
+const csf::MissionComponent* tips_component(AppState& state) { return component_with(state, {"tips"}); }
+
+void add_tip(AppState& state) {
+    if (!mission_editable(state)) return;
+    const auto id = game_text_id(state, state.authoring.project ? "A tip for the player" : "g200");
+    if (!id) return state.warn("The project's text ID range is full");
+    const auto* existing = tips_component(state);
+    if (!existing) {
+        (void)add_recipe(state, "tips tips=" + *id + "\n");
+        return;
+    }
+    if (csf::component_state(*state.mission.editor, *existing) != csf::ComponentState::clean)
+        return state.warn("The tips were edited by hand: keep those edits or regenerate them first");
+    try {
+        auto line = csf::parse_op_line(existing->lines.front());
+        const auto tips = line.get("tips");
+        line.set("tips", tips.empty() ? *id : tips + "," + *id);
+        (void)edit_component(state, existing->id, {csf::format_op_line(line)});
+    } catch (const std::exception& error) {
+        state.warn(std::string("The tips do not parse: ") + error.what());
+    }
+}
+
+std::int32_t default_idle_animation(AppState& state, const std::optional<std::int32_t> class_id) {
+    // A looping idle of the actor's model, else hello world's standing idle.
+    const auto* animations = state.mission.animations.get();
+    if (animations) {
+        const auto facts = class_facts(state.mission.objects.get(), class_id);
+        const auto model = std::filesystem::path(facts.model).filename().string();
+        for (const auto* record : animations->compatible(model))
+            if (record->id && record->loop.value_or(false) && !record->model_context.empty() &&
+                lower_ascii(record->logical_name).find("idle") != std::string::npos)
+                return *record->id;
+        if (animations->find_id(1385)) return 1385;
+        for (const auto& record : animations->records())
+            if (record.id && record.loop.value_or(false)) return *record.id;
+        for (const auto& record : animations->records())
+            if (record.id) return *record.id;
+    }
+    return 1385;
+}
+
+void give_behaviour(AppState& state, const std::int32_t actor_id, const BehaviourKind kind) {
+    if (!mission_editable(state)) return;
+    auto& editor = *state.mission.editor;
+    const auto& actors = state.mission.scene->actors();
+    const auto actor = std::ranges::find(actors, std::optional(actor_id), &csf::MissionActor::id);
+    if (actor == actors.end() || !actor->class_id) return state.warn("Actor " + std::to_string(actor_id) + " is not in the mission");
+    if (owning_component(state, {MissionRecordKey::Kind::actor, actor_id, 0}))
+        return state.warn("The actor already has a behaviour: change it on its card");
+    const auto name = actor->name.value_or("GUARD_" + std::to_string(actor_id));
+    const auto position = actor->position.value_or(csf::Vec3{});
+    const float heading = actor->heading.value_or(0);
+    csf::OpLine line{kind == BehaviourKind::idle     ? "guard-idle"
+                     : kind == BehaviourKind::patrol ? "guard-patrol"
+                                                     : "animal-patrol",
+                     {}};
+    line.set("id", std::to_string(actor_id));
+    line.set("name", name);
+    line.set("class", std::to_string(*actor->class_id));
+    line.set("heading", csf::op_number(std::round(heading * 100.0F) / 100.0F));
+    if (actor->pitch && *actor->pitch != 0) line.set("pitch", csf::op_number(*actor->pitch));
+    if (actor->portrait) line.set("portrait", *actor->portrait);
+    if (kind == BehaviourKind::idle) {
+        line.set("pos", csf::op_vec3(position));
+        line.set("loop", std::to_string(default_idle_animation(state, actor->class_id)));
+        line.set("script-name", "IDLE_" + name);
+    } else {
+        // A two-point route from where it stands, 5 m ahead of it.
+        const float radians = heading * 0.0174532925F;
+        csf::Vec3 end{position.x + 500.0F * std::sin(radians), position.y, position.z + 500.0F * std::cos(radians)};
+        if (const auto ground = mission_ground(state, end.x, end.z)) end.y = *ground;
+        if (kind == BehaviourKind::animal) line.set("pos", csf::op_vec3(position));
+        line.set("route-name", "RUTA_" + name);
+        line.set("points", csf::op_points({{position, 0, 0}, {end, 0, 0}}));
+        if (kind == BehaviourKind::patrol) {
+            line.set("pause", "3");
+            line.set("script-name", "PATRULLA_" + name);
+        } else {
+            // A looping walk of the animal's model.
+            std::int32_t walk = 0;
+            if (const auto* animations = state.mission.animations.get()) {
+                const auto facts = class_facts(state.mission.objects.get(), actor->class_id);
+                for (const auto* record : animations->compatible(std::filesystem::path(facts.model).filename().string()))
+                    if (record->id && !record->model_context.empty() &&
+                        lower_ascii(record->logical_name).find("andar") != std::string::npos) {
+                        walk = *record->id;
+                        break;
+                    }
+            }
+            if (walk == 0) return state.warn("No walk animation fits this animal's model: pick one on its card later");
+            line.set("walk", std::to_string(walk));
+            line.set("script-name", "RUTA_" + name);
+        }
+    }
+    const auto options = component_options(state);
+    const auto text = csf::format_op_line(line) + "\n";
+    // Made again by the recipe, in its place, keeping its ID: scripts that
+    // name it (an objective's target) still do.
+    const auto result = editor.replace_in_place("Give " + name + " a behaviour", [&] {
+        if (auto deleted = editor.delete_record({csf::MissionRecordId::Type::actor, actor_id}, true); !deleted.applied)
+            return deleted;
+        return csf::add_component(editor, text, options);
+    });
+    if (apply_mission_edit(state, result)) select_after_refresh(state, {MissionRecordKey::Kind::actor, actor_id, 0});
 }
 
 namespace {
 
-double now_seconds() {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
+// ImGui's clock: UI scripts run it on a fixed step, so playback is repeatable.
+double now_seconds() { return ImGui::GetTime(); }
 
 rws::Vec3 rws_vec(const csf::Vec3 v) { return {v.x, v.y, v.z}; }
 
 } // namespace
 
-void capture_shot(AppState& state) {
-    const auto eye = state.preview.eye_position(), target = state.preview.orbit_target();
-    AuthoringTools::ShotForm shot;
-    shot.camera = {eye.x, eye.y, eye.z};
-    shot.target = {target.x, target.y, target.z};
-    state.tools.shots.push_back(shot);
-}
-
-void view_shot(AppState& state, const std::size_t index, const float t) {
-    if (index >= state.tools.shots.size()) return;
-    const auto& shot = state.tools.shots[index];
-    state.preview.look_from({shot.camera.x + t * shot.travel_x, shot.camera.y, shot.camera.z + t * shot.travel_z},
-                            rws_vec(shot.target));
-}
-
-void play_shots(AppState& state) {
-    if (state.tools.shots.empty()) return;
-    state.tools.preview_started = now_seconds();
-    update_shot_preview(state);
-}
-
-void stop_shots(AppState& state) { state.tools.preview_started.reset(); }
-
-void update_shot_preview(AppState& state) {
-    auto& tools = state.tools;
-    if (!tools.preview_started) return;
-    auto elapsed = static_cast<float>(now_seconds() - *tools.preview_started);
-    for (std::size_t i = 0; i < tools.shots.size(); ++i) {
-        const auto seconds = std::max(tools.shots[i].seconds, 0.01F);
-        if (elapsed <= seconds) {
-            view_shot(state, i, elapsed / seconds);
-            state.ui.animating = true;
-            return;
-        }
-        elapsed -= seconds;
+CutsceneWhen cutscene_when(const csf::MissionComponent& component) {
+    CutsceneWhen when;
+    if (component.lines.empty()) return when;
+    try {
+        const auto line = csf::parse_op_line(component.lines.back());
+        if (const auto* zone = line.find("zone")) when.zone = std::stoi(*zone);
+        when.arm = line.get("arm");
+        when.name = line.get("cutscene-name", "CUT_INICIO");
+    } catch (const std::exception&) {
     }
-    view_shot(state, tools.shots.size() - 1, 1.0F);
-    tools.preview_started.reset();
+    return when;
 }
 
-void create_intro(AppState& state) {
+std::vector<const csf::MissionComponent*> cutscene_components(AppState& state) {
+    std::vector<const csf::MissionComponent*> list;
+    for (const auto& component : mission_component_list(state))
+        if (component.op() == "shot") list.push_back(&component);
+    std::ranges::stable_partition(list, [](const auto* component) { return !cutscene_when(*component).zone; });
+    return list;
+}
+
+const csf::MissionComponent* intro_component(AppState& state) {
+    const auto list = cutscene_components(state);
+    for (const auto* component : list)
+        if (component->id == state.tools.timeline_component) return component;
+    return list.empty() ? nullptr : list.front();
+}
+
+std::string cutscene_title(AppState& state, const csf::MissionComponent& component) {
+    const auto when = cutscene_when(component);
+    if (!when.zone) return "Intro (at the start)";
+    std::string zone = "zone " + std::to_string(*when.zone);
+    if (state.mission.scene)
+        for (const auto& area : state.mission.scene->areas())
+            if (area.id == when.zone && area.name) zone = *area.name + " (" + zone + ")";
+    return when.name + ": entering " + zone + (when.arm.empty() ? "" : ", after " + when.arm);
+}
+
+void set_cutscene_when(AppState& state, const CutsceneWhen& when) {
+    const auto* cutscene = intro_component(state);
+    if (!cutscene || cutscene->lines.empty() || !mission_editable(state)) return;
+    auto lines = cutscene->lines;
+    try {
+        auto line = csf::parse_op_line(lines.back());
+        if (when.zone) {
+            line.set("zone", std::to_string(*when.zone));
+            // The zone's setup script takes a free ID now: regenerating would
+            // otherwise give it one the cutscene program's scripts keep.
+            if (!line.find("setup")) line.set("setup", std::to_string(state.mission.editor->next_script_id(0)));
+            if (when.arm.empty()) line.erase("arm");
+            else line.set("arm", when.arm);
+        } else {
+            for (const auto* key : {"zone", "arm", "setup", "setup-name"}) line.erase(key);
+        }
+        lines.back() = csf::format_op_line(line);
+    } catch (const std::exception& error) {
+        return state.warn(std::string("The cutscene's lines do not parse: ") + error.what());
+    }
+    edit_component(state, cutscene->id, lines);
+}
+
+std::vector<TimelineShot> intro_shots(AppState& state) {
+    const auto* intro = intro_component(state);
+    if (!intro) return {};
+    try {
+        return timeline_shots(intro->lines);
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
+bool edit_intro_shots(AppState& state, const std::vector<TimelineShot>& shots) {
+    const auto* intro = intro_component(state);
+    if (!intro || !mission_editable(state)) return false;
+    if (shots.empty()) return apply_mission_edit(state, csf::delete_component(*state.mission.editor, intro->id));
+    std::vector<std::string> lines;
+    try {
+        lines = lines_with_shots(intro->lines, shots);
+    } catch (const std::exception& error) {
+        state.warn(std::string("The intro's lines do not parse: ") + error.what());
+        return false;
+    }
+    // Each shot takes the next dummy, group and two actors from the intro's
+    // first IDs: with more shots, a record outside the intro may hold the next
+    // ones, and then the intro takes free IDs instead.
+    if (shots.size() > timeline_shots(intro->lines).size()) try {
+            auto& back = lines.back();
+            auto line = csf::parse_op_line(back);
+            const auto records = state.mission.editor->record_ids();
+            const auto taken = [&](const csf::MissionRecordId::Type type, const std::string_view key, const int per_shot) {
+                const auto* value = line.find(key);
+                if (!value) return false;
+                const auto first = std::stoi(*value);
+                for (int id = first; id < first + per_shot * static_cast<int>(shots.size()); ++id) {
+                    const csf::MissionRecordId record{type, id};
+                    if (std::ranges::find(records, record) != records.end() &&
+                        std::ranges::find(intro->owns, record) == intro->owns.end())
+                        return true;
+                }
+                return false;
+            };
+            using Type = csf::MissionRecordId::Type;
+            if (taken(Type::dummy, "dummy", 1) || taken(Type::actor, "actor", 2) ||
+                taken(Type::navigation_group, "group", 1)) {
+                for (const auto* key : {"dummy", "actor", "group"}) line.erase(key);
+                back = csf::format_op_line(line);
+            }
+        } catch (const std::exception&) {
+        }
+    return edit_component(state, intro->id, lines);
+}
+
+bool intro_sends_init(AppState& state) {
+    const auto* intro = intro_component(state);
+    if (!intro || intro->lines.empty()) return true;
+    try {
+        return csf::parse_op_line(intro->lines.back()).get("send-init", "1") != "0";
+    } catch (const std::exception&) {
+        return true;
+    }
+}
+
+void set_intro_sends_init(AppState& state, const bool send) {
+    const auto* intro = intro_component(state);
+    if (!intro || intro->lines.empty()) return;
+    auto lines = intro->lines;
+    try {
+        auto line = csf::parse_op_line(lines.back());
+        if (send) line.erase("send-init");
+        else line.set("send-init", "0");
+        lines.back() = csf::format_op_line(line);
+    } catch (const std::exception&) {
+        return;
+    }
+    edit_component(state, intro->id, lines);
+}
+
+namespace {
+
+TimelineShot shot_from_view(AppState& state) {
+    const auto eye = state.preview.eye_position(), target = state.preview.orbit_target();
+    TimelineShot shot;
+    shot.camera = {eye.x, eye.y, eye.z};
+    // Two metres sideways at constant height, as hello world's shots travel;
+    // drag the end in the viewport or capture it.
+    const float yaw = std::atan2(target.x - eye.x, target.z - eye.z);
+    shot.end = {eye.x + 200.0F * std::cos(yaw), eye.y, eye.z - 200.0F * std::sin(yaw)};
+    shot.target = {target.x, target.y, target.z};
+    return shot;
+}
+
+} // namespace
+
+void capture_shot(AppState& state) {
     if (!mission_editable(state)) return;
-    auto& tools = state.tools;
-    if (tools.shots.empty()) return state.warn("Capture a shot first");
+    auto shots = intro_shots(state);
+    shots.push_back(shot_from_view(state));
+    if (intro_component(state)) {
+        if (edit_intro_shots(state, shots)) state.tools.timeline_shot = shots.size() - 1;
+        return;
+    }
+    // The first shot makes the intro.
     auto& editor = *state.mission.editor;
     csf::IntroCutscene recipe;
-    recipe.send_init = tools.send_init;
-    for (const auto& form : tools.shots) {
-        csf::CameraShot shot;
-        shot.camera = form.camera;
-        // Constant height, as hello world's shots: the path keeps the camera's height.
-        shot.camera_end = {form.camera.x + form.travel_x, form.camera.y, form.camera.z + form.travel_z};
-        shot.target = form.target;
-        shot.seconds = form.seconds;
-        recipe.shots.push_back(shot);
-    }
+    csf::CameraShot shot;
+    shot.camera = shots.back().camera;
+    shot.camera_end = shots.back().end;
+    shot.target = shots.back().target;
+    shot.seconds = shots.back().seconds;
+    recipe.shots.push_back(shot);
     // The invisible camera actor: Ambush's class 197, imported when missing.
     const auto ambush = state.settings.resource_root / "Ambush";
     const bool have_class = !editor.objects().find_class(recipe.camera_class).empty();
@@ -539,7 +812,89 @@ void create_intro(AppState& state) {
             if (auto imported = editor.import_class(ambush, recipe.camera_class); !imported.applied) return imported;
         return csf::add_component(editor, csf::ops_text(recipe), component_options(state));
     });
-    if (apply_mission_edit(state, result)) tools.shots.clear();
+    if (apply_mission_edit(state, result)) state.tools.timeline_shot = 0;
+}
+
+void add_zone_cutscene(AppState& state) {
+    if (!mission_editable(state)) return;
+    auto& editor = *state.mission.editor;
+    const auto& areas = state.mission.scene->areas();
+    const auto zone = std::ranges::find_if(areas, [](const auto& area) { return area.id.has_value(); });
+    if (zone == areas.end()) return state.warn("A zone cutscene needs a zone: draw one with the Zone tool first");
+    if (editor.objects().find_class(197).empty())
+        return state.warn("Add an intro first: it brings the invisible camera actor (class 197) cutscenes need");
+    const auto shot = shot_from_view(state);
+    csf::IntroCutscene recipe;
+    recipe.shots.push_back({shot.camera, shot.end, shot.target, shot.seconds, {}, {}, {}});
+    recipe.zone = *zone->id;
+    // Names are unique per mission, and the cutscene names its helpers after itself.
+    std::set<std::string> taken;
+    for (const auto* cutscene : cutscene_components(state)) taken.insert(cutscene_when(*cutscene).name);
+    for (int n = 1;; ++n) {
+        recipe.cutscene_name = "CUT_ZONA_" + std::to_string(n);
+        if (!taken.contains(recipe.cutscene_name)) break;
+    }
+    recipe.intro.name = "CUTSCENE_ZONA_" + recipe.cutscene_name.substr(9);
+    std::int32_t id{};
+    if (apply_mission_edit(state, csf::add_component(editor, csf::ops_text(recipe), component_options(state), &id))) {
+        state.tools.timeline_component = id;
+        state.tools.timeline_shot = 0;
+    }
+}
+
+void recapture_shot(AppState& state, const std::size_t index, const ShotPart part) {
+    auto shots = intro_shots(state);
+    if (index >= shots.size()) return;
+    const auto eye = state.preview.eye_position(), target = state.preview.orbit_target();
+    if (part == ShotPart::target) {
+        shots[index].target = {target.x, target.y, target.z};
+    } else {
+        set_shot_part(shots[index], part, {eye.x, eye.y, eye.z});
+        // The view looks at the target it captures along with the camera.
+        shots[index].target = {target.x, target.y, target.z};
+    }
+    edit_intro_shots(state, shots);
+}
+
+void view_shot(AppState& state, const std::size_t index, const float t) {
+    const auto shots = intro_shots(state);
+    if (index >= shots.size()) return;
+    auto& tools = state.tools;
+    tools.timeline_shot = index;
+    tools.timeline_time = shot_start(shots, index) + std::clamp(t, 0.0F, 1.0F) * shots[index].seconds;
+    const auto view = shot_view(shots[index], t);
+    state.preview.look_from(rws_vec(view.eye), rws_vec(view.target));
+}
+
+void scrub_timeline(AppState& state, const float seconds) {
+    const auto shots = intro_shots(state);
+    if (const auto at = timeline_position(shots, seconds)) {
+        view_shot(state, at->shot, at->fraction);
+        state.tools.timeline_time = std::clamp(seconds, 0.0F, timeline_length(shots));
+    }
+}
+
+void play_shots(AppState& state) {
+    const auto shots = intro_shots(state);
+    if (shots.empty()) return;
+    auto& tools = state.tools;
+    // From the playhead, or from the start when it is at the end.
+    if (tools.timeline_time >= timeline_length(shots) - 0.01F) tools.timeline_time = 0.0F;
+    tools.preview_started = now_seconds() - tools.timeline_time;
+    update_shot_preview(state);
+}
+
+void stop_shots(AppState& state) { state.tools.preview_started.reset(); }
+
+void update_shot_preview(AppState& state) {
+    auto& tools = state.tools;
+    if (!tools.preview_started) return;
+    const auto shots = intro_shots(state);
+    const auto elapsed = static_cast<float>(now_seconds() - *tools.preview_started);
+    const auto length = timeline_length(shots);
+    scrub_timeline(state, std::min(elapsed, length));
+    if (elapsed >= length) tools.preview_started.reset();
+    else state.ui.animating = true;
 }
 
 void place_building(AppState& state, const std::string& asset, const std::optional<csf::Vec3> where,
@@ -595,7 +950,7 @@ void apply_preset(AppState& state) {
         break;
     }
     case Preset::guard_idle: {
-        csf::GuardIdle recipe{actor(view_ground_point(state)), {}, cover,
+        csf::GuardIdle recipe{actor(tools.points.empty() ? view_ground_point(state) : tools.points.front()), {}, cover,
                               {std::nullopt, script_name.empty() ? "IDLE_" + name : script_name}};
         // "anim[:min-max],anim": a random number of cycles for the first form.
         std::string_view loop(tools.idle_loop.data(), strnlen(tools.idle_loop.data(), tools.idle_loop.size()));

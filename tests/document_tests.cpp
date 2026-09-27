@@ -46,6 +46,8 @@
 #include "rwsman/problems.hpp"
 #include "rwsman/ui_script.hpp"
 #include "rwsman/script_syntax.hpp"
+#include "rwsman/cutscene_timeline.hpp"
+#include "rwsman/animation_slots.hpp"
 #include "rwsman/viewport_overlays.hpp"
 
 #include <algorithm>
@@ -735,6 +737,10 @@ void test_search_index() {
     add(SymbolKind::area, "GeoZone", "area 3", 3, 0x2100);
     CHECK(index.query("geo", 10)[0].entry->label == "Geo");
     CHECK(index.query("geo", 10, true)[0].entry->label == "GeoZone");
+    // Project placements (Country's radio-house) are found by name and kind.
+    add(SymbolKind::placement, "radio-house", "piece of FR01", 0xF0000001, 0);
+    CHECK(index.query("building:radio", 10).size() == 1 && index.query("placement:", 10).size() == 1);
+    CHECK(std::string(symbol_kind_name(SymbolKind::placement)) == "placement");
 }
 
 void test_mission_index() {
@@ -1569,6 +1575,37 @@ void test_mission_editor() {
                        f.message.find("ACT_BICHO_EVENT_ZONA") != std::string::npos ||
                        f.message.find("HABILITAR_GHOST") != std::string::npos;
             }));
+            // A trigger that also completes objective 2 (Checkpoint, 2026-09-27): if it runs
+            // first, KILL's success check never runs. Its name has a space, which
+            // the script name turns into '_' instead of splitting the field.
+            {
+                auto& doubled = fresh;
+                csf::Trigger trigger;
+                trigger.script.name = "officer kill";
+                trigger.when = csf::Trigger::When::actor_killed;
+                trigger.target = 5;
+                trigger.actions = {{csf::TriggerAction::Kind::complete_objective, 2, {}},
+                                   {csf::TriggerAction::Kind::message, 0, "0950"}};
+                trigger.script.id = 9105;
+                CHECK(csf::add_trigger(doubled, trigger).applied);
+                CHECK(doubled.script_text(program, 9105)->find(".NOMBRE officer_kill\n") != std::string::npos);
+                CHECK(csf::script_name_token("a b-c") == "a_b_c" && csf::script_name_token("7up") == "S_7up");
+                const auto document = csf::ProgramDocument::project(doubled.document(program));
+                const auto flow = csf::MissionFlow::build(&document, nullptr);
+                CHECK(std::ranges::any_of(flow.findings(), [](const csf::FlowFinding& f) {
+                    return f.severity == csf::FlowFinding::Severity::warning && f.script == 9102 &&
+                           f.message.starts_with("Objective 2 is completed by 2 scripts (KILL, officer_kill)");
+                }));
+                rwsman::ProblemInputs inputs;
+                inputs.flow = &flow;
+                inputs.project_texts = rwsman::ProblemInputs::ProjectTexts{900, 999, {"0900", "0901", "0902", "0903",
+                                                                                         "0904", "0905", "0906"}};
+                const auto problems = rwsman::collect_problems(inputs);
+                const auto texts = std::ranges::count(problems, std::string("Texts"), &rwsman::Problem::source);
+                CHECK(texts == 1 && std::ranges::find(problems, std::string("Texts"), &rwsman::Problem::source)
+                                            ->message.find("text 0950") != std::string::npos);
+                doubled.undo();
+            }
             csf::Equipment equipment{{{1, {{16, std::nullopt}, {102, std::pair{100.0F, 50.0F}}}, 102, 23}}, {9104, "KIT"}};
             CHECK(csf::add_equipment(fresh, equipment).applied);
             CHECK(fresh.script_text(program, 9104)->find(
@@ -1586,6 +1623,13 @@ void test_mission_editor() {
             intro.shots.push_back({{0, 100, 0}, {100, 100, 0}, {0, 0, 100}, 3.0F, {}, {}, {}});
             const auto refused = csf::add_intro_cutscene(fresh, intro);
             CHECK(!refused.applied && refused.message.find("cutscene program") != std::string::npos);
+            // A zone's cutscene keeps its zone and setup script through the operation lines.
+            intro.zone = 5;
+            intro.setup = {7, "SEEN_INI"};
+            const auto text = csf::ops_text(intro);
+            CHECK(text.find(" zone=5 setup=7 setup-name=SEEN_INI\n") != std::string::npos);
+            intro.arm_event = "ARRIVED";
+            CHECK(csf::ops_text(intro).find(" setup-name=SEEN_INI arm=ARRIVED\n") != std::string::npos);
         }
 
         // Components (E1): a recipe edited later regenerates in place, as a
@@ -1712,9 +1756,10 @@ void test_mission_editor() {
   .EVENTOS ( (BICHO_ENT_ZONA) )
   .CONDICIONES { AND (CMP_OP_ZONA (EVT_ZONA) (OP_BOOLEAN 0) (ZONA 1)) (NOT (OBJETIVO_COMPLETADO (NUMERO 1.0))) }
   .ACCIONES {
-    ACT_BICHO_EVENT_ZONA (PLAYER) (ZONA 1) (BOOL FALSE)
+    DEACT_BICHO_EVENT_ZONA (PLAYER) (ZONA 1) (BOOL TRUE)
     SET_OBJETIVO_SUCCESS (NUMERO 1.0) (BOOL TRUE)
     TIMED_STRING_V2 (FLI "0902") (NUMERO 5.0) (NUMERO 4.0)
+    TRIGGER_OFF (TRIGGER 10)
   } ])"})
                 CHECK(by_hand.add_script(program_of(by_hand), text).applied);
             CHECK(made.files()[program_of(made)].bytes() == by_hand.files()[program_of(by_hand)].bytes());
@@ -1732,6 +1777,70 @@ void test_mission_editor() {
                   csf::trigger_action_proven(csf::TriggerAction::Kind::complete_objective) &&
                   !csf::trigger_when_proven(csf::Trigger::When::event));
             CHECK(!csf::add_component(made, "trigger name=NOTHING when=start do=\n").applied);
+
+            // A guard alerted: Convoy's SET_ALARMA as its program has it.
+            csf::Trigger alerted;
+            alerted.when = csf::Trigger::When::alerted;
+            alerted.script.name = "SET_ALARMA";
+            alerted.actions = {{csf::TriggerAction::Kind::alarm, 60, {}}};
+            CHECK(csf::trigger_script_texts(alerted, 25, 0) ==
+                  std::vector{csf::script_text(
+                      25, "SET_ALARMA", 1, {"IA_CHANGE_STATE"},
+                      {"CREA_ESTIMULO_ACUSTICO (REACTIVIDAD AMENAZA_DIRECTA) (GET_PATHPOINT (EVT_BICHO1)) (NUMERO "
+                       "20000.0) (NUMERO 5.0)",
+                       "ACTIVAR_ALARMA (NUMERO 60.0)", "TRIGGER_OFF (TRIGGER 25)"},
+                      {"CMP_OP_BANDO (GET_BANDO (EVT_BICHO1)) (OP_BOOLEAN 0) (BANDO ALEMAN)",
+                       "OR (CMP_OP_ACTITUD (EVT_ACTITUD) (OP_BOOLEAN 0) (ACTITUD ALERTA)) (CMP_OP_ACTITUD "
+                       "(EVT_ACTITUD) (OP_BOOLEAN 0) (ACTITUD COMBATIENDO))"})});
+            CHECK(csf::trigger_when_proven(csf::Trigger::When::alerted));
+
+            // A body found: a watcher with two local variables; the finder is where the alarm is heard.
+            csf::Trigger found;
+            found.when = csf::Trigger::When::body_found;
+            found.script.name = "CADAVER";
+            found.watch = {5, 6};
+            found.if_objective = std::pair{1, false};
+            found.actions = {{csf::TriggerAction::Kind::alarm, 60, {}}};
+            const auto watcher = csf::trigger_script_texts(found, 30, 0);
+            CHECK(watcher.size() == 1 && !csf::trigger_when_proven(csf::Trigger::When::body_found));
+            for (const auto* part :
+                 {"  .EVENTOS (\n    (START_GAME)\n  )\n  .VARIABLES (\n    [\n      .ID 1\n      .TYPE BOOL\n"
+                  "      .NOMBRE Encontrado\n      .VALOR FALSE\n    ]\n",
+                  "    WHILE (NOT (VAR 1))\n      PAUSE (NUMERO 1.0)\n      IF (NOT (ESTA_VIVO (BICHO 5)))\n"
+                  "        IF (AND (ESTA_VIVO (BICHO 6)) (VEO_BICHO (BICHO 6) (BICHO 5)))\n",
+                  "VEO_BICHO (BICHO 5) (BICHO 6)", "          SET (VAR 2) (BICHO 6)\n",
+                  "    WEND\n    IF (NOT (OBJETIVO_COMPLETADO (NUMERO 1.0)))\n      CREA_ESTIMULO_ACUSTICO "
+                  "(REACTIVIDAD AMENAZA_DIRECTA) (GET_PATHPOINT (VAR 2))",
+                  "      ACTIVAR_ALARMA (NUMERO 60.0)\n    ENDIF\n  }"})
+                CHECK(watcher[0].find(part) != std::string::npos);
+            CHECK(watcher[0].find("CONDICIONES") == std::string::npos && watcher[0].find("TRIGGER_OFF") == std::string::npos);
+            const auto found_line = csf::parse_op_line(csf::ops_text(found));
+            CHECK(found_line.get("when") == "body-found" && found_line.get("watch") == "5,6");
+            CHECK(csf::parse_trigger(found_line).watch == found.watch);
+            // The program compiles it, and a lone watched soldier finds nobody.
+            CHECK(csf::add_component(made, csf::format_op_line(found_line) + "\n").applied);
+            CHECK(csf::components_that_drift(made).empty());
+            found.watch = {5};
+            CHECK(!csf::add_trigger(made, found).applied);
+        }
+
+        // A behaviour that starts on a mission event instead of INIT (an arrival).
+        {
+            auto edited = csf::MissionEditor::open(map / "M1.scn", package);
+            CHECK(csf::add_component(edited, "guard-idle name=LATE class=10 pos=5,0,5 script-name=LATE loop=100 "
+                                             "start=OFICIAL_LLEGA\n").applied);
+            const auto late = csf::mission_components(edited).back();
+            CHECK(late.lines[0].find(" start=OFICIAL_LLEGA") != std::string::npos);
+            const auto program = *edited.file_of_kind(csf::MissionFileKind::mission_script);
+            const auto script = std::stoi(csf::parse_op_line(late.lines[0]).get("script"));
+            CHECK(edited.script_text(program, script)->find("(OFICIAL_LLEGA)") != std::string::npos);
+            // INIT is the default, and is left out of the line.
+            csf::GuardIdle idle{{}, {{100, std::nullopt}}, std::nullopt, {1, "X"}, "INIT"};
+            CHECK(csf::ops_text(idle).find("start=") == std::string::npos);
+            idle.start_event = "ALARM";
+            CHECK(csf::parse_op_line(csf::ops_text(idle)).get("start") == "ALARM");
+            CHECK(!csf::add_component(edited, "guard-idle name=BAD class=10 pos=5,0,5 script-name=B loop=100 "
+                                              "start=\"TWO WORDS\"\n").applied);
         }
 
         // A new mission keeps the environment and empties the rest.
@@ -2026,6 +2135,84 @@ void test_script_syntax() {
     CHECK(!rwsman::operand_at(call, 3));
 }
 
+void test_animation_slot_labels() {
+    CHECK(rwsman::animation_slot_label("DISTRAIDO_IDLE_ARMA1") == "Unaware \u00b7 standing idle \u00b7 weapon 1");
+    CHECK(rwsman::animation_slot_label("ALERTA_ANDAR_DEL") == "Alert \u00b7 walk forwards");
+    CHECK(rwsman::animation_slot_label("GIRO_90_DER") == "Turn 90\u00b0 right");
+    CHECK(rwsman::animation_slot_label("OCIO") == "Fidgeting");
+    CHECK(rwsman::animation_slot_label("DUAL") == "Two pistols");  // a state word alone is the action
+    CHECK(rwsman::animation_slot_label("XYZ_IDLE") == "Xyz standing idle");
+    // Every slot the game has gets a label.
+    for (const auto slot : csf::animation_slot_names()) CHECK(!rwsman::animation_slot_label(slot).empty());
+    // Weapon stances: a rifle soldier plays SF* and SP* clips, never SM*.
+    using rwsman::WeaponStance;
+    CHECK(rwsman::weapon_stance("Mauser") == WeaponStance::rifle && rwsman::weapon_stance("Mp40") == WeaponStance::smg &&
+          rwsman::weapon_stance("Luger_NPC") == WeaponStance::pistol &&
+          rwsman::weapon_stance("Prismaticos") == WeaponStance::unknown);
+    CHECK(rwsman::animation_fits(WeaponStance::rifle, "SFTalk") && !rwsman::animation_fits(WeaponStance::rifle, "SMHablaPieCiclo"));
+    CHECK(rwsman::animation_fits(WeaponStance::smg, "SPRadio01") && !rwsman::animation_fits(WeaponStance::pistol, "SFTalk"));
+    CHECK(rwsman::animation_fits(WeaponStance::unknown, "SMHablaPieCiclo") && rwsman::animation_fits(WeaponStance::rifle, "LUGERidle"));
+}
+
+void test_cutscene_timeline() {
+    const std::vector<std::string> lines{
+        "shot camera=0,100,0 end=400,100,0 target=0,0,500 seconds=4 aim=0.5,-0.25 heading=1.5 speed=100",
+        "shot camera=1000,200,0 target=1000,0,500 seconds=2", "intro dummy=10 actor=20 group=30 script=40"};
+    auto shots = rwsman::timeline_shots(lines);
+    CHECK(shots.size() == 2);
+    CHECK(shots[1].end.x == 1000.0F && shots[1].seconds == 2.0F);  // no end: the camera stands still
+    CHECK(rwsman::timeline_length(shots) == 6.0F && rwsman::shot_start(shots, 1) == 4.0F);
+    const auto middle = rwsman::timeline_position(shots, 2.0F);
+    CHECK(middle && middle->shot == 0 && middle->fraction == 0.5F);
+    const auto cut = rwsman::timeline_position(shots, 4.0F);
+    CHECK(cut && cut->shot == 1 && cut->fraction == 0.0F);  // at a cut, the later shot
+    const auto past = rwsman::timeline_position(shots, 99.0F);
+    CHECK(past && past->shot == 1 && past->fraction == 1.0F);
+    CHECK(!rwsman::timeline_position({}, 1.0F));
+    CHECK(rwsman::shot_view(shots[0], 0.5F).eye.x == 200.0F);
+    CHECK(rwsman::snap_shot_seconds(2.345F) == 2.3F && rwsman::snap_shot_seconds(0.1F) == rwsman::min_shot_seconds);
+
+    // Unchanged shots are kept verbatim; a longer shot loses only its speed,
+    // a moved one its aim and heading too.
+    CHECK(rwsman::lines_with_shots(lines, shots) == lines);
+    auto longer = shots;
+    longer[0].seconds = 5.0F;
+    auto written = rwsman::lines_with_shots(lines, longer);
+    CHECK(written[0].find("speed") == std::string::npos && written[0].find("aim=0.5,-0.25") != std::string::npos);
+    CHECK(written[1] == lines[1] && written[2] == lines[2]);
+    auto moved = shots;
+    moved[0].target.x = 50.0F;
+    written = rwsman::lines_with_shots(lines, moved);
+    CHECK(written[0].find("aim") == std::string::npos && written[0].find("target=50,0,500") != std::string::npos);
+    // Added, removed and reordered shots.
+    auto added = shots;
+    added.push_back({{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, 1.5F, {}});
+    written = rwsman::lines_with_shots(lines, added);
+    CHECK(written.size() == 4 && written[2] == "shot camera=1,2,3 end=4,5,6 target=7,8,9 seconds=1.5" &&
+          written[3] == lines[2]);
+    std::vector<rwsman::TimelineShot> swapped{shots[1], shots[0]};
+    written = rwsman::lines_with_shots(lines, swapped);
+    CHECK(written[0] == lines[1] && written[1] == lines[0]);
+    CHECK(rwsman::timeline_shots(rwsman::lines_with_shots(lines, added)).size() == 3);
+
+    // Records of the intro: two actors per shot, one dummy and one group.
+    using Type = csf::MissionRecordId::Type;
+    const auto role = [&](const Type type, const std::int32_t id, const std::int32_t point = 0) {
+        return rwsman::shot_record_role(lines, type, id, point);
+    };
+    CHECK(role(Type::actor, 23) && role(Type::actor, 23)->shot == 1 &&
+          role(Type::actor, 23)->part == rwsman::ShotPart::target);
+    CHECK(role(Type::actor, 22)->part == rwsman::ShotPart::camera && !role(Type::actor, 24) && !role(Type::actor, 19));
+    CHECK(role(Type::dummy, 11)->shot == 1 && role(Type::navigation_group, 30, 2)->part == rwsman::ShotPart::end);
+    CHECK(!role(Type::navigation_group, 30, 3) && !role(Type::area, 10));
+    const auto end = rwsman::shot_record(lines, 1, rwsman::ShotPart::end);
+    CHECK(end && end->type == Type::navigation_group && end->id == 31 && end->point == 2);
+    CHECK(rwsman::shot_record(lines, 1, rwsman::ShotPart::target)->id == 23 && !rwsman::shot_record(lines, 2, {}));
+    auto shot = shots[0];
+    rwsman::set_shot_part(shot, rwsman::ShotPart::end, {9, 9, 9});
+    CHECK(rwsman::shot_part_position(shot, rwsman::ShotPart::end).x == 9.0F);
+}
+
 void test_image_comparison() {
     const std::vector<std::uint8_t> a{10, 20, 30, 255, 0, 0, 0, 255, 200, 200, 200, 255, 5, 5, 5, 0};
     auto b = a;
@@ -2117,6 +2304,8 @@ int main() {
     test_ui_script();
     test_image_comparison();
     test_script_syntax();
+    test_cutscene_timeline();
+    test_animation_slot_labels();
     test_authoring_ui_models();
     test_navigation_history();
     test_settings_model();
@@ -4335,6 +4524,96 @@ int main() {
         const auto& uv1 = visual.sectors[0].texcoords[1];
         CHECK(std::ranges::count(uv1, std::array<float, 2>{0.25F, 0.25F}) == 1);
         CHECK(std::ranges::count(uv1, std::array<float, 2>{0.5F, 0.5F}) == 3);
+        {
+            // A piece of another donor's map: its material is copied with the
+            // texture renamed as the donor says, and its collision surface,
+            // which the map lacks, is appended to the collision materials.
+            rws::WorldModel other_visual = donor_visual, other_collision = donor_collision;
+            other_visual.material_list = rws::compose_material_list(std::vector<std::vector<std::byte>>{visual_material("ROOF")}, 0x1C020037);
+            other_collision.material_list =
+                rws::compose_material_list(std::vector<std::vector<std::byte>>{surface_material("Piedra")}, 0x1C020037);
+            const auto roof = rws::parse_world_source("csfworld 1\nmaterial ROOF Piedra\n"
+                                                      "v 0 0 0 0 1 0 0 0\nv 0 0 100 0 1 0 0 1\nv 100 0 100 0 1 0 1 1\n"
+                                                      "f 0 1 2 0 both\n");
+            const auto other = rws::compile_world_source(*roof.value, other_visual, other_collision);
+            CHECK(other);
+            auto with_piece = *source.value;
+            const auto piece_line = rws::parse_world_source(
+                "csfworld 1\npiece -1 -1 -1 101 1 101 5000 0 0 donor=d2 lightmaps=EDIFICIO_3,MURO\n");
+            CHECK(piece_line && piece_line.value->pieces[0].donor == "d2" &&
+                  (piece_line.value->pieces[0].lightmaps == std::vector<std::string>{"EDIFICIO_3", "MURO"}));
+            CHECK(rws::write_world_source(*piece_line.value).ends_with(" donor=d2 lightmaps=EDIFICIO_3,MURO\n"));
+            CHECK(!rws::parse_world_source("csfworld 1\npiece 0 0 0 1 1 1 0 0 0 colour=red\n"));
+            with_piece.pieces.push_back({{-1, -1, -1}, {101, 1, 101}, {5000, 0, 0}, 0, "d2", {}});
+            const std::vector<rws::DonorWorlds> donors{
+                {"d2", other.value->visual, other.value->collision, {{"roof", "D2_ROOF"}}}};
+            const auto combined = rws::compile_world_source(with_piece, donor_visual, donor_collision, {}, {}, donors);
+            CHECK(combined);
+            const auto combined_visual = *rws::split_material_list(combined.value->visual.material_list, 0x1C020037).value;
+            CHECK(combined_visual.size() == 2 && rws::material_texture_name(combined_visual[1]) == "D2_ROOF");
+            CHECK((combined.value->textures == std::vector<rws::DonorTexture>{{"d2", "ROOF", "D2_ROOF"}}));
+            const auto combined_surfaces =
+                *rws::split_material_list(combined.value->collision.material_list, 0x1C020037).value;
+            CHECK(combined_surfaces.size() == 4 && rws::material_surface_name(combined_surfaces[3]) == "Piedra");
+            CHECK(combined.value->visual.triangle_count == 3 && combined.value->collision.triangle_count == 3);
+            // Lightmap groups keep only the triangles they light (none here) and
+            // the collision lying on those.
+            with_piece.pieces.back().lightmaps = {"EDIFICIO_3"};
+            const auto filtered = rws::compile_world_source(with_piece, donor_visual, donor_collision, {}, {}, donors);
+            CHECK(filtered && filtered.value->visual.triangle_count == 2 && filtered.value->collision.triangle_count == 2);
+            // A texture of the World's own copies its template's donor material.
+            auto own = *source.value;
+            own.materials[0].texture = "SANDBAG";
+            CHECK(!rws::compile_world_source(own, donor_visual, donor_collision));
+            rws::WorldCompileOptions own_options;
+            own_options.new_textures = {{"sandbag", "ground"}};
+            const auto owned = rws::compile_world_source(own, donor_visual, donor_collision, own_options);
+            CHECK(owned && rws::material_texture_name(
+                               rws::split_material_list(owned.value->visual.material_list, 0x1C020037).value->at(0)) ==
+                               "SANDBAG");
+            with_piece.pieces.back().donor = "missing";
+            CHECK(rws::compile_world_source(with_piece, donor_visual, donor_collision, {}, {}, donors)
+                      .error.find("missing") != std::string::npos);
+
+            // In a project: the donor's texture of the same name as a different
+            // one of the slot's map is copied as <KEY>_<name>; one it shares is not.
+            const auto donor_root = std::filesystem::temp_directory_path() / "rwsman-donor-piece-test";
+            std::filesystem::remove_all(donor_root);
+            const auto slot_maps = donor_root / "corpus" / "M1" / "Maps" / "X";
+            const auto other_maps = donor_root / "corpus" / "M2" / "Maps" / "Y";
+            std::filesystem::create_directories(slot_maps / "Textures");
+            std::filesystem::create_directories(other_maps / "Textures");
+            write_bytes(slot_maps / "X.rws", rws::write_world_model(visual));
+            write_bytes(slot_maps / "X_col.rws", rws::write_world_model(collision));
+            write_bytes(other_maps / "Y.rws", rws::write_world_model(other.value->visual));
+            write_bytes(other_maps / "Y_col.rws", rws::write_world_model(other.value->collision));
+            std::ofstream(slot_maps / "Textures" / "ROOF.dds") << "slot roof";
+            std::ofstream(other_maps / "Textures" / "roof.dds") << "donor roof";
+            const auto donor_project = donor_root / "project";
+            std::filesystem::create_directories(donor_project / "sources");
+            std::ofstream(donor_project / "sources" / "ground.csfworld", std::ios::binary)
+                << rws::write_world_source(*source.value);
+            auto pieces = csf::AuthoringProject::parse(
+                "csfproj 1\nname P\nslot M1 Maps/X/M1.scn maps/M1.pak\ndonor-map Maps/X/X.rws Maps/X/X_col.rws\n"
+                "donor d2 M2 Maps/Y/Y.rws Maps/Y/Y_col.rws\n"
+                "asset ground terrain sources/ground.blend sources/ground.csfworld\n"
+                "piece barn donor=d2 -1 -1 -1 101 1 101 5000 0 0 0 absolute\n",
+                "csfproj-local 1\ncorpus \"" + (donor_root / "corpus").generic_string() + "\"\n");
+            pieces.directory = donor_project;
+            CHECK(pieces.donors.size() == 1 && pieces.donors[0].mission == "M2" && pieces.placements[0].donor == "d2");
+            CHECK(csf::AuthoringProject::parse(pieces.project_text()).project_text() == pieces.project_text());
+            CHECK(pieces.check().empty());
+            auto unknown_donor = pieces;
+            unknown_donor.placements[0].donor = "d3";
+            CHECK(unknown_donor.check().size() == 1);
+            const auto report = pieces.build_world();
+            CHECK(report.rebuilt);
+            CHECK((pieces.packaged_textures() == std::vector<std::filesystem::path>{"Maps/X/Textures/D2_roof.dds"}));
+            std::ifstream copied(donor_project / "build" / "Maps" / "X" / "Textures" / "D2_roof.dds", std::ios::binary);
+            CHECK(std::string(std::istreambuf_iterator<char>(copied), {}) == "donor roof");
+            CHECK(!pieces.build_world().rebuilt);
+            std::filesystem::remove_all(donor_root);
+        }
 
         // An authoring project builds the same source into build/, incrementally.
         const auto root = std::filesystem::temp_directory_path() / "rwsman-authoring-project-test";
@@ -4367,6 +4646,30 @@ int main() {
         CHECK(project.placements.size() == 2 && project.placements[1].height.support_id == "hut-1");
         CHECK(project.anchors.size() == 1 && project.anchors[0].height.offset == 90.5F);
         CHECK(project.check().empty());
+        {
+            // Lightmaps: one far brighter than the slot map's own is reported (Country v1 read as day).
+            std::filesystem::create_directories(maps / "Textures");
+            const auto flat = [](const std::uint8_t value) {
+                std::vector<std::uint8_t> rgba(4 * 4 * 4, value);
+                for (std::size_t i = 3; i < rgba.size(); i += 4) rgba[i] = 255;
+                return rgba;
+            };
+            std::string error;
+            CHECK(project.lightmap_brightness().empty());  // no lightmaps yet
+            CHECK(rws::write_png_rgba(maps / "Textures" / "SUELO_Lm.png", 4, 4, flat(25), error));
+            CHECK(rws::write_png_rgba(maps / "Textures" / "EDIFICIO_1_Lm.png", 4, 4, flat(40), error));
+            CHECK(rws::write_png_rgba(project_dir / "sources" / "DARK_Lm.png", 4, 4, flat(30), error));
+            CHECK(rws::write_png_rgba(project_dir / "sources" / "BRIGHT_Lm.png", 4, 4, flat(70), error));
+            auto lit = project;
+            lit.lightmaps = {{"DARK_Lm", "sources/DARK_Lm.png"}, {"BRIGHT_Lm", "sources/BRIGHT_Lm.png"},
+                             {"GONE_Lm", "sources/GONE_Lm.png"}};
+            const auto findings = lit.lightmap_brightness();
+            CHECK(findings.size() == 2 && findings[0].name == "BRIGHT_Lm" && std::abs(findings[0].mean - 70.0F) < 0.5F &&
+                  findings[0].slot_max == 40.0F && findings[1].name == "GONE_Lm" && !findings[1].problem.empty());
+            CHECK(csf::lightmap_finding_text(findings[0]).starts_with("Lightmap BRIGHT_Lm averages 70, the slot map's own "
+                                                                      "lightmaps 40 (brightest 40)"));
+            std::filesystem::remove_all(maps / "Textures");
+        }
         // Text round-trips; errors name the file and line.
         CHECK(csf::AuthoringProject::parse(project.project_text()).project_text() == project.project_text());
         {

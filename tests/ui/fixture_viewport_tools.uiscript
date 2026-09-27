@@ -99,14 +99,25 @@ undo
 expect count.actors 4
 expect-same mission.hash
 
-# An eyedropper fills a form field from the Outliner and keeps the selection.
+# Add objective appends one aimed at the first zone; a kill objective aims
+# at the first enemy. An eyedropper then fills its target from the Outliner
+# and keeps the selection (and the Objectives tab: Properties comes forward
+# only when a click selects something).
 goto actor:GUARD_GATE
 command mission.objectives
 click "Objectives::Add objective"
-expect form.objective_targets 0
-click Objectives::pick_target
+expect objectives.targets 1
+expect count.components 1
+click Objectives::kind_1
+click "An actor is killed"
+expect objectives.targets 5
+click Objectives::pick_target_1
 expect viewport.picking true
-click Outliner::YARD
+click Outliner::OFFICER
 expect viewport.picking false
-expect form.objective_targets 1
+expect objectives.targets 7
 expect selection.title GUARD_GATE
+# A second objective joins the same list, numbered 2.
+click "Objectives::Add objective"
+expect count.components 1
+expect objectives.targets 7,1

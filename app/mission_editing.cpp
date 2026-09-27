@@ -12,6 +12,7 @@
 #include "rwsman/chunk_lookup.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <unordered_set>
 #include <cmath>
 #include <bit>
@@ -376,6 +377,7 @@ void update_authoring_views(AppState& state) {
     mix(reinterpret_cast<std::uintptr_t>(state.mission.scene.get()));
     mix(reinterpret_cast<std::uintptr_t>(flow));
     mix(state.authoring.findings.size());
+    mix(state.authoring.lightmap_findings.size());
     mix(reinterpret_cast<std::uintptr_t>(state.authoring.project.get()));
     mix(state.authoring.project ? state.authoring.project->strings.size() + state.authoring.project->placements.size() : 0);
     if (key == state.problems_key) return;
@@ -385,8 +387,19 @@ void update_authoring_views(AppState& state) {
     inputs.objects = state.mission.objects.get();
     inputs.flow = flow;
     inputs.heights = state.authoring.findings;
-    if (state.authoring.project) inputs.project_checks = state.authoring.project->check();
+    inputs.lightmaps = state.authoring.lightmap_findings;
+    if (const auto* project = state.authoring.project.get()) {
+        inputs.project_checks = project->check();
+        if (project->texts) {
+            ProblemInputs::ProjectTexts texts{project->texts->first, project->texts->last, {}};
+            for (const auto& string : project->strings) texts.ids.push_back(string.id);
+            inputs.project_texts = std::move(texts);
+        }
+    }
+    const auto started = std::chrono::steady_clock::now();
     state.problems = collect_problems(inputs);
+    state.frame_stats.problems_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 
 void mission_undo(AppState& state) {

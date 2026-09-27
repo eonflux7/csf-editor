@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cstdio>
 #include <cmath>
@@ -25,6 +26,16 @@ namespace {
 
 constexpr const char* project_file = "project.csfproj";
 constexpr const char* local_file = "local.csfproj";
+
+std::string lower_ascii(std::string text) {
+    std::ranges::transform(text, text.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+std::string path_utf8(const std::filesystem::path& path) {
+    const auto text = path.u8string();
+    return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
 
 std::vector<std::byte> read_bytes(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -178,7 +189,10 @@ std::string placement_text(const ProjectPlacement& placement) {
         line = "building " + field(placement.id) + ' ' + field(placement.asset);
         break;
     case ProjectPlacement::Kind::piece:
-        line = "piece " + field(placement.id) + ' ' + text_of(placement.box_min) + ' ' + text_of(placement.box_max);
+        line = "piece " + field(placement.id);
+        if (!placement.donor.empty()) line += " donor=" + placement.donor;
+        for (std::size_t i = 0; i < placement.lightmaps.size(); ++i) line += (i ? "," : " lightmaps=") + placement.lightmaps[i];
+        line += ' ' + text_of(placement.box_min) + ' ' + text_of(placement.box_max);
         break;
     case ProjectPlacement::Kind::prop: {
         line = "prop " + field(placement.id) + ' ';
@@ -260,6 +274,9 @@ AuthoringProject AuthoringProject::parse(const std::string_view project_text, co
         } else if (record == "donor-map") {
             expect(f, 3, "donor-map <visual> <collision>");
             project.donor_map = {path_of(f[1]), path_of(f[2])};
+        } else if (record == "donor") {
+            expect(f, 5, "donor <key> <mission> <visual> <collision>");
+            project.donors.push_back({f[1], f[2], path_of(f[3]), path_of(f[4])});
         } else if (record == "asset") {
             expect(f, 5, "asset <id> <terrain|building> <blend> <export>");
             ProjectAsset asset;
@@ -288,10 +305,26 @@ AuthoringProject AuthoringProject::parse(const std::string_view project_text, co
                 placement.asset = f[at++];
             } else if (record == "piece") {
                 placement.kind = ProjectPlacement::Kind::piece;
-                if (f.size() < 8) throw std::runtime_error("piece <id> <box> <x y z> <yaw> <height>");
-                placement.box_min = {number<float>(f[2]), number<float>(f[3]), number<float>(f[4])};
-                placement.box_max = {number<float>(f[5]), number<float>(f[6]), number<float>(f[7])};
-                at = 8;
+                for (; at < f.size() && f[at].find('=') != std::string::npos; ++at) {
+                    const auto equals = f[at].find('=');
+                    const auto key = f[at].substr(0, equals), value = f[at].substr(equals + 1);
+                    if (key == "donor") {
+                        placement.donor = value;
+                    } else if (key == "lightmaps") {
+                        for (std::string_view names = value; !names.empty();) {
+                            const auto comma = names.find(',');
+                            if (comma != 0) placement.lightmaps.emplace_back(names.substr(0, comma));
+                            names = comma == std::string_view::npos ? std::string_view{} : names.substr(comma + 1);
+                        }
+                    } else {
+                        throw std::runtime_error("unknown piece option '" + f[at] + "'");
+                    }
+                }
+                if (f.size() < at + 6)
+                    throw std::runtime_error("piece <id> [donor=<key>] [lightmaps=<name>,...] <box> <x y z> <yaw> <height>");
+                placement.box_min = {number<float>(f[at]), number<float>(f[at + 1]), number<float>(f[at + 2])};
+                placement.box_max = {number<float>(f[at + 3]), number<float>(f[at + 4]), number<float>(f[at + 5])};
+                at += 6;
             } else {
                 placement.kind = ProjectPlacement::Kind::prop;
                 if (f.size() < 3) throw std::runtime_error("prop <id> <donor-instances> <x y z> <yaw> <height>");
@@ -312,6 +345,9 @@ AuthoringProject AuthoringProject::parse(const std::string_view project_text, co
         } else if (record == "lightmap") {
             expect(f, 3, "lightmap <name> <source.png>");
             project.lightmaps.push_back({f[1], path_of(f[2])});
+        } else if (record == "texture") {
+            expect(f, 4, "texture <name> <source.png> <like-donor-texture>");
+            project.textures.push_back({f[1], path_of(f[2]), f[3]});
         } else if (record == "text") {
             expect(f, 3, "text <id> <string>");
             project.strings.push_back({f[1], f[2]});
@@ -372,6 +408,9 @@ std::string AuthoringProject::project_text() const {
         out += "texts " + field(texts->archive) + ' ' + field(texts->file) + ' ' + std::to_string(texts->first) +
                ' ' + std::to_string(texts->last) + '\n';
     out += "donor-map " + field(donor_map.visual) + ' ' + field(donor_map.collision) + '\n';
+    for (const auto& donor : donors)
+        out += "donor " + field(donor.key) + ' ' + field(donor.mission) + ' ' + field(donor.visual) + ' ' +
+               field(donor.collision) + '\n';
     if (!assets.empty()) out += "\n# World geometry from Blender\n";
     for (const auto& asset : assets) {
         out += "asset " + field(asset.id) + (asset.kind == ProjectAsset::Kind::terrain ? " terrain " : " building ") +
@@ -387,6 +426,9 @@ std::string AuthoringProject::project_text() const {
         out += "anchor actor " + std::to_string(anchor.actor_id) + ' ' + text_of(anchor.height) + '\n';
     if (!lightmaps.empty()) out += "\n# Baked lightmaps\n";
     for (const auto& lightmap : lightmaps) out += "lightmap " + field(lightmap.name) + ' ' + field(lightmap.source) + '\n';
+    if (!textures.empty()) out += "\n# Textures of imported models\n";
+    for (const auto& texture : textures)
+        out += "texture " + field(texture.name) + ' ' + field(texture.source) + ' ' + field(texture.like) + '\n';
     if (!strings.empty()) out += "\n# Mission text (GlobalEK)\n";
     for (const auto& string : strings) out += "text " + field(string.id) + ' ' + field(string.text) + '\n';
     if (!playtests.empty()) out += "\n# Playtests of built archives\n";
@@ -426,6 +468,9 @@ std::vector<std::string> AuthoringProject::check() const {
         if (!placement_ids.insert(placement.id).second)
             problems.push_back("Duplicate placement ID '" + placement.id + "'");
         by_id[placement.id] = &placement;
+        if (placement.kind == ProjectPlacement::Kind::piece && !placement.donor.empty() &&
+            std::ranges::find(donors, placement.donor, &ProjectDonor::key) == donors.end())
+            problems.push_back("Piece '" + placement.id + "' names no donor '" + placement.donor + "'");
         if (placement.kind == ProjectPlacement::Kind::building) {
             const auto asset = std::ranges::find(assets, placement.asset, &ProjectAsset::id);
             if (asset == assets.end() || asset->kind != ProjectAsset::Kind::building)
@@ -435,11 +480,24 @@ std::vector<std::string> AuthoringProject::check() const {
     const auto kind_name = [](const ProjectPlacement::Kind kind) {
         return kind == ProjectPlacement::Kind::building ? "building" : kind == ProjectPlacement::Kind::piece ? "piece" : "prop";
     };
+    std::set<std::string> donor_keys;
+    for (const auto& donor : donors) {
+        if (!donor_keys.insert(donor.key).second) problems.push_back("Duplicate donor '" + donor.key + "'");
+        if (donor.key.empty() || donor.key.find_first_not_of(
+                                     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") != std::string::npos)
+            problems.push_back("Donor key '" + donor.key + "' must be letters and digits");
+    }
     std::set<std::string> lightmap_names;
     for (const auto& lightmap : lightmaps) {
         if (!lightmap_names.insert(lightmap.name).second) problems.push_back("Duplicate lightmap " + lightmap.name);
         if (lightmap.name.empty() || lightmap.name.find_first_of(" \\/.") != std::string::npos)
             problems.push_back("Lightmap name '" + lightmap.name + "' must be a plain texture name");
+    }
+    for (const auto& texture : textures) {
+        if (!lightmap_names.insert(texture.name).second) problems.push_back("Duplicate texture " + texture.name);
+        if (texture.name.empty() || texture.name.size() > 31 || texture.name.find_first_of(" \\/.") != std::string::npos)
+            problems.push_back("Texture name '" + texture.name + "' must be a plain texture name of up to 31 characters");
+        if (texture.like.empty()) problems.push_back("Texture " + texture.name + " names no donor texture to copy");
     }
     std::set<std::string> text_ids;
     for (const auto& string : strings) {
@@ -489,9 +547,46 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
     const auto package = package_root();
     const auto donor_visual = read_bytes(package / donor_map.visual);
     const auto donor_collision = read_bytes(package / donor_map.collision);
+    // Other maps' Worlds and texture folders. A donor texture keeps its name
+    // unless the slot's map (or an earlier donor) has a different file of that
+    // name: then it becomes <KEY>_<name>.
+    const auto texture_files = [](const std::filesystem::path& folder) {
+        std::map<std::string, std::filesystem::path> files;  // lower-case stem -> file
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(folder, error))
+            if (entry.is_regular_file()) files.emplace(lower_ascii(path_utf8(entry.path().stem())), entry.path());
+        return files;
+    };
+    struct DonorFiles {
+        std::vector<std::byte> map, collision;
+        std::map<std::string, std::filesystem::path> textures;
+        std::map<std::string, std::string> renamed;
+    };
+    std::vector<DonorFiles> donor_files;
+    std::map<std::string, std::filesystem::path> claimed = texture_files(package / donor_map.visual.parent_path() / "Textures");
+    const auto slot_textures = claimed;
+    for (const auto& donor : donors) {
+        const auto root = local.corpus / donor.mission;
+        DonorFiles files{read_bytes(root / donor.visual), read_bytes(root / donor.collision),
+                         texture_files(root / donor.visual.parent_path() / "Textures"), {}};
+        std::string key_upper = donor.key;
+        std::ranges::transform(key_upper, key_upper.begin(), [](const unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        for (const auto& [stem, path] : files.textures) {
+            const auto other = claimed.find(stem);
+            if (other == claimed.end()) {
+                claimed.emplace(stem, path);
+            } else if (read_bytes(other->second) != read_bytes(path)) {
+                files.renamed.emplace(stem, key_upper + '_' + path_utf8(path.stem()));
+            }
+        }
+        donor_files.push_back(std::move(files));
+    }
 
     // Everything the World depends on, in one canonical text.
     std::string inputs = "world 1\ndonor " + hash_of(donor_visual) + ' ' + hash_of(donor_collision) + '\n';
+    for (std::size_t i = 0; i < donors.size(); ++i)
+        inputs += "donor " + donors[i].key + ' ' + donors[i].mission + ' ' + hash_of(donor_files[i].map) + ' ' +
+                  hash_of(donor_files[i].collision) + '\n';
     for (auto& asset : assets) {
         const auto bytes = read_bytes(directory / asset.export_path);
         const auto hash = hash_of(bytes);
@@ -501,6 +596,11 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
         inputs += "asset " + asset.id + ' ' + std::to_string(static_cast<int>(asset.kind)) + ' ' + hash + '\n';
     }
     for (const auto& placement : placements) inputs += placement_text(placement) + '\n';
+    rws::WorldCompileOptions compile_options;
+    for (const auto& texture : textures) {
+        inputs += "texture " + texture.name + ' ' + texture.like + '\n';
+        compile_options.new_textures.emplace(lower_ascii(texture.name), texture.like);
+    }
     const auto inputs_hash = hash_of(inputs);
 
     const auto map_path = std::filesystem::path("build") / donor_map.visual;
@@ -516,13 +616,17 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
         if (!std::filesystem::is_regular_file(directory / path, error)) return false;
         return hash_of(read_bytes(directory / path)) == record->hash;
     };
-    if (!force && std::ranges::all_of(wanted, [&](const auto& output) { return current(output.first); })) {
+    if (!force && std::ranges::all_of(wanted, [&](const auto& output) { return current(output.first); }) &&
+        std::ranges::all_of(outputs, [&](const ProjectOutput& output) { return output.kind != "texture" || current(output.path); })) {
         report.lines.push_back("world\tup to date");
         return report;
     }
 
     const auto merged = merged_source(true);
-    const auto built = rws::build_map_files(merged, donor_visual, donor_collision);
+    std::vector<rws::WorldDonor> world_donors;
+    for (std::size_t i = 0; i < donors.size(); ++i)
+        world_donors.push_back({donors[i].key, donor_files[i].map, donor_files[i].collision, donor_files[i].renamed});
+    const auto built = rws::build_map_files(merged, donor_visual, donor_collision, compile_options, false, world_donors);
     if (!built) throw std::runtime_error(built.error);
     const auto sectors = rws::build_sector_map(merged);
     const auto source_text = rws::write_world_source(merged);
@@ -537,6 +641,26 @@ ProjectBuildReport AuthoringProject::build_world(const bool force) {
     store(collision_path, "world", built.value->collision);
     store(sectors_path, "sectors", sectors.bytes);
     store(source_path, "source", std::span(reinterpret_cast<const std::byte*>(source_text.data()), source_text.size()));
+    // The donor textures the pieces' materials name, unless the slot's map
+    // already has that very file.
+    std::erase_if(outputs, [](const ProjectOutput& output) { return output.kind == "texture"; });
+    for (const auto& texture : built.value->textures) {
+        const auto donor = std::ranges::find(donors, texture.donor, &ProjectDonor::key) - donors.begin();
+        const auto& files = donor_files[static_cast<std::size_t>(donor)].textures;
+        const auto file = files.find(lower_ascii(texture.source));
+        if (file == files.end()) {
+            report.lines.push_back("texture\t" + texture.source + "\tnot in donor " + texture.donor + "'s textures");
+            continue;
+        }
+        const auto bytes = read_bytes(file->second);
+        if (const auto own = slot_textures.find(lower_ascii(texture.name));
+            own != slot_textures.end() && read_bytes(own->second) == bytes)
+            continue;
+        const auto path = std::filesystem::path("build") / donor_map.visual.parent_path() / "Textures" /
+                          (texture.name + path_utf8(file->second.extension()));
+        store(path, "texture", bytes);
+        report.lines.push_back("texture\t" + path.generic_string() + "\tfrom " + texture.donor + ' ' + texture.source);
+    }
     // The mission workspace packages these files from build/.
     refresh_workspace(directory / "mission", directory, outputs);
     report.rebuilt = true;
@@ -640,34 +764,105 @@ std::filesystem::path AuthoringProject::lightmap_package_path(const ProjectLight
     return donor_map.visual.parent_path() / "Textures" / (lightmap.name + ".dds");
 }
 
+std::vector<std::filesystem::path> AuthoringProject::packaged_textures() const {
+    std::vector<std::filesystem::path> paths;
+    for (const auto& lightmap : lightmaps) paths.push_back(lightmap_package_path(lightmap));
+    for (const auto& texture : textures) paths.push_back(lightmap_package_path({texture.name, texture.source}));
+    for (const auto& output : outputs)
+        if (output.kind == "texture") paths.push_back(output.path.lexically_relative("build"));
+    return paths;
+}
+
+namespace {
+
+// The mean of an image's R, G and B (DDS or PNG), 0-255.
+std::optional<float> image_mean(const std::filesystem::path& path, std::string& problem) {
+    int width{}, height{};
+    std::vector<std::uint8_t> rgba;
+    if (!rws::decode_texture_image(path, width, height, rgba, problem)) return std::nullopt;
+    double sum = 0;
+    for (std::size_t i = 0; i + 3 < rgba.size(); i += 4) sum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+    const auto pixels = rgba.size() / 4;
+    return pixels ? static_cast<float>(sum / (3.0 * static_cast<double>(pixels))) : 0.0F;
+}
+
+} // namespace
+
+std::vector<LightmapFinding> AuthoringProject::lightmap_brightness() const {
+    std::vector<LightmapFinding> findings;
+    if (lightmaps.empty()) return findings;
+    std::vector<float> slot;
+    std::error_code error;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(package_root() / donor_map.visual.parent_path() / "Textures", error)) {
+        const auto stem = lower_ascii(path_utf8(entry.path().stem()));
+        if (!entry.is_regular_file() || !(stem.ends_with("_lm") || stem.find("_lm_") != std::string::npos)) continue;
+        std::string problem;
+        if (const auto mean = image_mean(entry.path(), problem)) slot.push_back(*mean);
+    }
+    if (slot.empty()) return findings;
+    std::ranges::sort(slot);
+    const auto median = slot[slot.size() / 2], brightest = slot.back();
+    for (const auto& lightmap : lightmaps) {
+        LightmapFinding finding{lightmap.name, 0.0F, median, brightest, {}};
+        if (const auto mean = image_mean(directory / lightmap.source, finding.problem)) {
+            finding.mean = *mean;
+            if (*mean <= std::max(brightest, 1.5F * median)) continue;
+        }
+        findings.push_back(std::move(finding));
+    }
+    return findings;
+}
+
+std::string lightmap_finding_text(const LightmapFinding& finding) {
+    if (!finding.problem.empty()) return "Lightmap " + finding.name + " cannot be read: " + finding.problem;
+    char text[256];
+    std::snprintf(text, sizeof(text),
+                  "Lightmap %s averages %.0f, the slot map's own lightmaps %.0f (brightest %.0f): the ground will "
+                  "look lit while the actors stay dark; bake it darker",
+                  finding.name.c_str(), finding.mean, finding.slot_median, finding.slot_max);
+    return text;
+}
+
 ProjectBuildReport AuthoringProject::build_lightmaps(const bool force) {
     ProjectBuildReport report;
-    if (lightmaps.empty()) return report;
+    // Lightmaps, then the project's own textures: the same DDS build.
+    std::vector<std::pair<ProjectLightmap, const char*>> images;
+    for (const auto& lightmap : lightmaps) images.emplace_back(lightmap, "lightmap");
+    for (const auto& texture : textures) images.emplace_back(ProjectLightmap{texture.name, texture.source}, "own-texture");
+    if (images.empty()) return report;
     if (const auto problems = check(); !problems.empty()) throw std::runtime_error(problems.front());
-    for (const auto& lightmap : lightmaps) {
-        const auto source = read_bytes(directory / lightmap.source);
+    for (const auto& [image, kind] : images) {
+        const auto source = read_bytes(directory / image.source);
         const auto inputs_hash = hash_of("lightmap 1\n" + hash_of(source));
-        const auto path = std::filesystem::path("build") / lightmap_package_path(lightmap);
+        const auto path = std::filesystem::path("build") / lightmap_package_path(image);
         const auto record = std::ranges::find(outputs, path, &ProjectOutput::path);
         std::error_code error;
         if (!force && record != outputs.end() && record->inputs_hash == inputs_hash &&
             std::filesystem::is_regular_file(directory / path, error) && hash_of(read_bytes(directory / path)) == record->hash) {
-            report.lines.push_back("lightmap\t" + lightmap.name + "\tup to date");
+            report.lines.push_back(std::string(kind) + '\t' + image.name + "\tup to date");
             continue;
         }
-        int width{}, height{};
-        std::vector<std::uint8_t> rgba;
-        std::string problem;
-        if (!rws::decode_png(source, width, height, rgba, problem))
-            throw std::runtime_error(lightmap.source.generic_string() + ": " + problem);
-        const auto bytes = rws::encode_dds_dxt1(width, height, rgba);
+        std::vector<std::byte> bytes;
+        std::string size;
+        if (lower_ascii(path_utf8(image.source.extension())) == ".dds") {
+            bytes = source;  // already a game texture
+            size = "copied";
+        } else {
+            int width{}, height{};
+            std::vector<std::uint8_t> rgba;
+            std::string problem;
+            if (!rws::decode_png(source, width, height, rgba, problem))
+                throw std::runtime_error(image.source.generic_string() + ": " + problem);
+            bytes = rws::encode_dds_dxt1(width, height, rgba);
+            size = std::to_string(width) + 'x' + std::to_string(height);
+        }
         write_atomically(directory / path, bytes);
-        const ProjectOutput output{path, "lightmap", hash_of(bytes), inputs_hash};
+        const ProjectOutput output{path, kind, hash_of(bytes), inputs_hash};
         if (record == outputs.end()) outputs.push_back(output);
         else *record = output;
         report.rebuilt = true;
-        report.lines.push_back("lightmap\t" + path.generic_string() + '\t' + std::to_string(width) + 'x' +
-                               std::to_string(height));
+        report.lines.push_back(std::string(kind) + '\t' + path.generic_string() + '\t' + size);
     }
     refresh_workspace(directory / "mission", directory, outputs);
     return report;
@@ -740,7 +935,8 @@ rws::WorldSource AuthoringProject::merged_source(const bool with_donor_placement
             break;
         case ProjectPlacement::Kind::piece:
             if (with_donor_placements)
-                merged.pieces.push_back({placement.box_min, placement.box_max, placement.position, placement.yaw_degrees});
+                merged.pieces.push_back({placement.box_min, placement.box_max, placement.position, placement.yaw_degrees,
+                                         placement.donor, placement.lightmaps});
             break;
         case ProjectPlacement::Kind::prop:
             if (with_donor_placements)

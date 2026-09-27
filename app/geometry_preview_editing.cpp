@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 namespace rwsman {
@@ -86,6 +87,63 @@ std::optional<rws::Vec3> GeometryPreview::surface_point(const ImVec2 screen) con
     return std::nullopt;
 }
 
+std::optional<rws::Vec3> GeometryPreview::placement_point(const ImVec2 screen) const {
+    const auto collision = pick_collision(screen.x, screen.y);
+    if (!show_visual_) return collision ? std::optional(collision->position) : std::nullopt;
+    const auto ray = viewport_ray(screen.x, screen.y);
+    if (!ray) return collision ? std::optional(collision->position) : std::nullopt;
+    const auto o = ray->origin, d = ray->direction;
+    const auto clips = active_clip_planes();
+    // The nearest visible World triangle (Moller-Trumbore), batches outside
+    // the ray skipped by their bounding spheres.
+    float closest = collision ? collision->distance : std::numeric_limits<float>::max();
+    std::optional<rws::Vec3> best;
+    bool level = false;
+    for (std::size_t index = 0; index < draw_batches_.size(); ++index) {
+        const auto& batch = draw_batches_[index];
+        if (batch.layer != PreviewLayer::visual_world) continue;
+        if (index < batch_bounds_.size() && batch_bounds_[index].radius >= 0.0F) {
+            const auto& sphere = batch_bounds_[index];
+            const rws::Vec3 to{sphere.center.x - o.x, sphere.center.y - o.y, sphere.center.z - o.z};
+            const float along = to.x * d.x + to.y * d.y + to.z * d.z;
+            const float square = to.x * to.x + to.y * to.y + to.z * to.z - along * along;
+            if (square > sphere.radius * sphere.radius) continue;
+        }
+        const auto end = static_cast<std::size_t>(batch.first) + batch.count;
+        for (std::size_t i = batch.first; i + 2 < end; i += 3) {
+            const auto& a = gpu_vertices_[i];
+            const auto& b = gpu_vertices_[i + 1];
+            const auto& c = gpu_vertices_[i + 2];
+            const rws::Vec3 e1{b.x - a.x, b.y - a.y, b.z - a.z}, e2{c.x - a.x, c.y - a.y, c.z - a.z};
+            const rws::Vec3 p{d.y * e2.z - d.z * e2.y, d.z * e2.x - d.x * e2.z, d.x * e2.y - d.y * e2.x};
+            const float determinant = e1.x * p.x + e1.y * p.y + e1.z * p.z;
+            if (std::abs(determinant) < 1e-6F) continue;
+            const float inverse = 1.0F / determinant;
+            const rws::Vec3 s{o.x - a.x, o.y - a.y, o.z - a.z};
+            const float u = (s.x * p.x + s.y * p.y + s.z * p.z) * inverse;
+            if (u < 0.0F || u > 1.0F) continue;
+            const rws::Vec3 q{s.y * e1.z - s.z * e1.y, s.z * e1.x - s.x * e1.z, s.x * e1.y - s.y * e1.x};
+            const float v = (d.x * q.x + d.y * q.y + d.z * q.z) * inverse;
+            if (v < 0.0F || u + v > 1.0F) continue;
+            const float t = (e2.x * q.x + e2.y * q.y + e2.z * q.z) * inverse;
+            // A few centimetres short of the collision hit: the floor's own
+            // visible triangles lie on it and must not count as furniture.
+            if (t <= 0.0F || t >= closest - 2.0F) continue;
+            const rws::Vec3 hit{o.x + d.x * t, o.y + d.y * t, o.z + d.z * t};
+            if (!rws::collision_point_visible(hit, clips)) continue;
+            const rws::Vec3 n{e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z, e1.x * e2.y - e1.y * e2.x};
+            const float length = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+            closest = t;
+            best = hit;
+            level = length > 0.0F && std::abs(n.y) / length > 0.7F;
+        }
+    }
+    // A wall or a slope in front, or something far above the floor (a tree's
+    // crown, a roof): the collision surface decides.
+    if (best && level && (!collision || best->y - collision->position.y <= 200.0F)) return best;
+    return collision ? std::optional(collision->position) : std::nullopt;
+}
+
 rws::Vec3 GeometryPreview::view_target() const {
     const rws::Vec3 target{center_.x + navigation_offset_.x, center_.y + navigation_offset_.y,
                            center_.z + navigation_offset_.z};
@@ -155,7 +213,8 @@ bool GeometryPreview::update_edit_gizmo() {
         switch (drag.mode) {
         case ActiveDrag::Mode::plane: {
             const bool snap = snap_to_surface_ != io.KeyAlt;
-            const auto surface = snap ? surface_point(io.MousePos) : std::nullopt;
+            // A moved record lands on furniture as a placed one does.
+            const auto surface = snap ? placement_point(io.MousePos) : std::nullopt;
             if (surface) {
                 drag.position = *surface;
             } else if (const auto ray = viewport_ray(io.MousePos.x, io.MousePos.y)) {

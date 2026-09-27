@@ -188,6 +188,7 @@ struct AuthoringSession {
         std::optional<csf::AuthoringProject> project;
         csf::ProjectBuildReport report;
         std::vector<csf::HeightFinding> findings;
+        std::vector<csf::LightmapFinding> lightmaps;
         std::string error;
         std::string started_text;  // project.csfproj as the build started from it
     };
@@ -196,6 +197,7 @@ struct AuthoringSession {
     // report sees the actors where the mission has them.
     bool job_queued{}, job_force{};
     std::vector<csf::HeightFinding> findings;
+    std::vector<csf::LightmapFinding> lightmap_findings;  // lightmaps much brighter than the slot map's
     bool checked{};  // a check has finished since the project was opened
     bool show_heights{};
 
@@ -215,7 +217,7 @@ struct AuthoringSession {
 struct AuthoringTools {
     // The New trigger form (E10) and whether unverified events and actions are offered.
     csf::Trigger trigger_draft{csf::Trigger::When::enter_zone, 0, {}, 0.0F, std::nullopt,
-                               {{csf::TriggerAction::Kind::complete_objective, 1, {}}}, {}, {}};
+                               {{csf::TriggerAction::Kind::message, 0, {}}}, {}, {}};
     bool show_unverified{};
     // Classes of every discovered mission, for placing and importing.
     struct CatalogEntry {
@@ -239,7 +241,10 @@ struct AuthoringTools {
     Preset preset{Preset::guard_patrol};
     int class_id{};
     std::array<char, 64> name{}, route_name{}, script_name{};
-    std::vector<csf::Vec3> points;  // route or cover points, collected from the view
+    std::vector<csf::Vec3> points;  // route or cover points, a post, drawn in the viewport or at the view centre
+    // The Route or Cover tool is drawing the preset's points (J5): finishing
+    // the sketch fills `points` instead of making a plain route.
+    bool preset_sketch{};
     float heading{}, pause{3.0F}, cover_facing{90.0F};
     int cover_group{};              // 0: none
     std::array<char, 128> idle_loop{};  // "1881:2-4,1385"
@@ -266,36 +271,17 @@ struct AuthoringTools {
     // The Flow tab's view of the mission programs, rebuilt when they change.
     std::shared_ptr<const csf::MissionFlow> flow;
     std::uint64_t flow_revision{~std::uint64_t{}};
-    // The Objectives tab: forms for the objectives, the players' starting
-    // equipment and the mission tips. With an authoring project open the
-    // text fields hold the strings themselves; otherwise FLI string IDs.
-    struct ObjectiveForm {
-        int kind{};  // csf::Objective::Kind
-        int target{};
-        bool secondary{};
-        std::array<char, 160> label{}, done{}, prompt{};
-    };
-    std::vector<ObjectiveForm> objectives;
-    std::array<char, 32> success_message{"g014"};
-    struct KitForm {
-        int actor{};
-        std::array<char, 128> weapons{};  // <class>[@<ammo>/<ammo>],...
-        int selected{}, disguise{};
-    };
-    std::vector<KitForm> kits;
-    std::array<char, 128> tips{};  // FLI IDs, comma-separated
     std::array<char, 160> new_text{};
 
-    // The Cutscene tab: travelling shots captured from the viewport.
-    struct ShotForm {
-        csf::Vec3 camera, target;
-        float travel_x{-200.0F}, travel_z{};  // cm the camera moves during the shot
-        float seconds{4.0F};
-    };
-    std::vector<ShotForm> shots;
-    bool send_init{true};
-    // Playing the shots in the viewport: seconds since start, when playing.
+    // The Timeline panel (E11): the playhead in seconds from the intro's
+    // start, the shot it shows, and when playing, the wall-clock time the
+    // playhead was at zero.
+    float timeline_time{};
+    std::size_t timeline_shot{};
     std::optional<double> preview_started;
+    // The cutscene the timeline edits (a shot component's ID); 0 or a gone
+    // one: the intro at the start, else the first cutscene.
+    std::int32_t timeline_component{};
 };
 
 // Transient UI state that is not part of a document.
@@ -314,6 +300,9 @@ struct UiState {
     // was hidden restores its tabs over a frame or two.
     std::optional<Panel> focus_panel;
     int focus_panel_frames{};
+    // Frames after an eyedropper pick while the selection is put back: a
+    // change then does not bring Properties forward.
+    int selection_settle_frames{};
     bool show_shortcuts{}, show_preferences{}, show_about{};
     // The Inspect mode's workspace last used (Ctrl+3 returns to it).
     Workspace inspect_workspace{Workspace::scene};
@@ -428,6 +417,21 @@ struct FrameStats {
     double fps{};    // Average over recent frames that were drawn back to back.
     double cpu_ms{}; // CPU time of the latest frame, event handling to buffer swap.
     bool idle{};     // The loop is waiting for input between frames.
+    // The performance budget (docs/plans/editor-ux-redesign.md, T12): the
+    // last frames' CPU times, and how long the latest Outliner rows and
+    // Problems list took to build.
+    std::array<double, 120> recent_ms{};
+    std::size_t recent_count{};
+    double outliner_ms{}, problems_ms{};
+    void record_frame(const double ms) { recent_ms[recent_count++ % recent_ms.size()] = ms; }
+    [[nodiscard]] double median_ms() const {
+        const auto count = std::min(recent_count, recent_ms.size());
+        if (count == 0) return 0.0;
+        auto values = recent_ms;
+        const auto middle = values.begin() + static_cast<std::ptrdiff_t>(count / 2);
+        std::nth_element(values.begin(), middle, values.begin() + static_cast<std::ptrdiff_t>(count));
+        return *middle;
+    }
 };
 
 // A short-lived message for the result of a user-initiated action.

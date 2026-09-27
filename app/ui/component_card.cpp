@@ -11,8 +11,10 @@
 #include "mission_authoring.hpp"
 #include "mission_editing.hpp"
 #include "viewport_tools.hpp"
+#include "rwsman/entity_kind.hpp"
 #include "ui/fonts.hpp"
 #include "ui/icons.hpp"
+#include "ui/pickers.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
 
@@ -123,6 +125,98 @@ void points_row(Lines& lines, const std::size_t index, const std::size_t minimum
     ImGui::EndDisabled();
 }
 
+// A guard's idle loop, "<anim>[:<min>-<max>],...": the animations it plays
+// in turn, each once or a random number of times, picked by name and
+// previewed on the guard.
+void idle_loop_rows(AppState& state, Lines& lines) {
+    struct Step {
+        std::int32_t animation{};
+        std::string times;  // "" once, else "<min>-<max>"
+    };
+    std::vector<Step> steps;
+    const auto loop = lines.lines.front().get("loop");
+    for (std::size_t at = 0; at < loop.size();) {
+        const auto comma = std::min(loop.find(',', at), loop.size());
+        const auto item = loop.substr(at, comma - at);
+        at = comma + 1;
+        const auto colon = item.find(':');
+        try {
+            steps.push_back({std::stoi(item.substr(0, colon)), colon == std::string::npos ? "" : item.substr(colon + 1)});
+        } catch (const std::exception&) {
+        }
+    }
+    const auto write = [&](const std::vector<Step>& values) {
+        std::string text;
+        for (const auto& step : values)
+            text += (text.empty() ? "" : ",") + std::to_string(step.animation) + (step.times.empty() ? "" : ":" + step.times);
+        if (!text.empty()) lines.set(0, "loop", text);
+    };
+    const auto actor = integer_of(lines.lines.front(), "id", 0);
+    // Clips for another weapon stance are left out (a rifle's SF* for an MP40 guard).
+    const std::optional<std::int32_t> soldier = integer_of(lines.lines.front(), "class", 0);
+    for (std::size_t k = 0; k < steps.size(); ++k) {
+        ImGui::PushID(static_cast<int>(k));
+        property_row(k == 0 ? "Idle animations" : "",
+                     k == 0 ? "What the guard plays at its post, in turn, over and over. Times: 1 plays it once; "
+                              "2-4 plays it a random number of times in that range. The play button previews it "
+                              "on the guard."
+                            : nullptr);
+        const float buttons = ImGui::GetFrameHeightWithSpacing() * 2.0F + 64.0F * ui_scale();
+        ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - buttons, 80.0F));
+        const auto id = "##idle_anim_" + std::to_string(k + 1);
+        if (const auto picked = animation_combo(state, id.c_str(), steps[k].animation, true, soldier);
+            picked && *picked != steps[k].animation) {
+            auto changed = steps;
+            changed[k].animation = *picked;
+            write(changed);
+        }
+        ImGui::SameLine(0.0F, 2.0F);
+        animation_preview_button(state, ("##preview_idle_" + std::to_string(k + 1)).c_str(), actor, steps[k].animation);
+        ImGui::SameLine(0.0F, 2.0F);
+        ImGui::SetNextItemWidth(56.0F * ui_scale());
+        std::string times;
+        if (edit_text_value(("##idle_times_" + std::to_string(k + 1)).c_str(), steps[k].times.empty() ? "1" : steps[k].times,
+                            times, "1")) {
+            auto changed = steps;
+            changed[k].times = times == "1" || times.empty() ? "" : times;
+            if (!changed[k].times.empty() && changed[k].times.find('-') == std::string::npos)
+                changed[k].times += "-" + changed[k].times;  // "3" plays it three times
+            write(changed);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Times: 1, or a range such as 2-4");
+        ImGui::SameLine(0.0F, 2.0F);
+        ImGui::BeginDisabled(steps.size() <= 1);
+        if (ImGui::SmallButton(icons::LC_X)) {
+            auto changed = steps;
+            changed.erase(changed.begin() + static_cast<std::ptrdiff_t>(k));
+            write(changed);
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    property_row(steps.empty() ? "Idle animations" : "");
+    if (const auto picked = animation_combo(state, "##idle_add", 0, true, soldier)) {
+        auto changed = steps;
+        changed.push_back({*picked, ""});
+        write(changed);
+    }
+}
+
+// What starts a behaviour: INIT (the mission start, or the intro), or a
+// mission event, so a vehicle's passengers take their posts when it arrives.
+void start_row(AppState& state, Lines& lines) {
+    property_row("Starts", "When the behaviour begins: when the mission starts (the intro raises INIT for it), or "
+                           "when a mission event is raised, such as an arrival another script announces with "
+                           "SEND_EVENT. Until then the actor stands where it was placed.");
+    const auto current = lines.lines.front().get("start");
+    if (const auto picked = event_combo(state, "##start", current, "When the mission starts");
+        picked && *picked != current) {
+        if (picked->empty()) lines.lines.front().erase("start");
+        else lines.lines.front().set("start", *picked);
+        lines.apply();
+    }
+}
+
 // Idle and patrol are the same guard doing different things (E12): switching
 // keeps its ID, name, class, look, cover and script, and makes or drops its
 // route.
@@ -136,7 +230,7 @@ void behaviour_row(AppState& state, Lines& lines) {
     name_last_item("##behaviour");
     if (!changed_choice || choice == (patrol ? 1 : 0)) return;
     csf::OpLine changed{patrol ? "guard-idle" : "guard-patrol", {}};
-    for (const auto& key : {"id", "name", "class", "heading", "pitch", "portrait", "cover", "script", "script-name"})
+    for (const auto& key : {"id", "name", "class", "heading", "pitch", "portrait", "cover", "script", "script-name", "start"})
         if (const auto* value = line.find(key)) changed.set(key, *value);
     std::vector<csf::OpLine> extra;
     if (patrol) {
@@ -187,93 +281,143 @@ void guard_fields(AppState& state, Lines& lines) {
         }
         points_row(lines, 0, 1);
     } else {
-        property_row("Idle loop", "Animation IDs played in turn; <id>:<min>-<max> plays one a random number of times.");
-        std::string loop;
-        if (edit_text_value("##idle_loop", line.get("loop"), loop) && !loop.empty()) lines.set(0, "loop", loop);
+        idle_loop_rows(state, lines);
     }
     cover_row(state, lines, 0);
+    start_row(state, lines);
 }
 
-void animal_fields(Lines& lines) {
+void animal_fields(AppState& state, Lines& lines) {
     auto& line = lines.lines.front();
-    property_row("Walk animation", "The animation it walks with (IR_A_PATHPOINT_ANIM).");
-    int walk{};
-    if (edit_int_value("##walk", integer_of(line, "walk", 0), walk) && walk > 0) lines.set(0, "walk", std::to_string(walk));
+    property_row("Walk animation", "The animation it walks its route with.");
+    const auto walk = integer_of(line, "walk", 0);
+    ImGui::SetNextItemWidth(-ImGui::GetFrameHeightWithSpacing());
+    if (const auto picked = animation_combo(state, "##walk", walk, true); picked && *picked != walk)
+        lines.set(0, "walk", std::to_string(*picked));
+    ImGui::SameLine(0.0F, 2.0F);
+    animation_preview_button(state, "##preview_walk", integer_of(line, "id", 0), walk);
     points_row(lines, 0, 1);
+    start_row(state, lines);
 }
 
-// A game text: the project's string when it has one (typed here, kept under
-// its ID), otherwise the FLI string ID itself.
+// A game text of a line: the words with an authoring project (a new string
+// gets an ID the line keeps), the FLI string ID without one.
 void text_row(AppState& state, Lines& lines, const std::size_t index, const char* label, const char* key,
-              const char* help) {
+              const char* help, const std::string& suffix = {}) {
     property_row(label, help);
-    const auto id = lines.lines[index].get(key);
-    const auto* project = state.authoring.project.get();
-    const csf::ProjectText* string = nullptr;
-    if (project)
-        for (const auto& value : project->strings)
-            if (value.id == id) string = &value;
-    const auto field = std::string("##") + key;  // "Objectives::label" in UI scripts
-    std::string edited;
-    if (string) {
-        if (edit_text_value(field.c_str(), string->text, edited) && !edited.empty()) set_project_text(state, id, edited);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Text %s of the project", id.c_str());
-    } else if (edit_text_value(field.c_str(), id, edited, "FLI string ID") && !edited.empty()) {
-        lines.set(index, key, edited);
-    }
+    const auto field = std::string("##") + key + suffix;  // "Objectives::label_1" in UI scripts
+    if (auto id = game_text_field(state, field.c_str(), lines.lines[index].get(key))) lines.set(index, key, std::move(*id));
 }
 
+// The records an objective of `kind` can target, for its combo.
+std::vector<std::pair<std::int32_t, std::string>> objective_targets(AppState& state, const std::string& kind) {
+    std::vector<std::pair<std::int32_t, std::string>> items;
+    const auto& scene = *state.mission.scene;
+    if (kind == "zone") {
+        for (const auto& area : scene.areas())
+            if (area.id) items.emplace_back(*area.id, area.name.value_or("zone") + "  (zone " + std::to_string(*area.id) + ")");
+        return items;
+    }
+    for (const auto& actor : scene.actors()) {
+        if (!actor.id) continue;
+        const auto entity = classify_mission_actor(scene, state.mission.objects.get(), actor);
+        const bool fits = kind == "use" ? entity == EntityKind::usable || entity == EntityKind::prop
+                                        : entity == EntityKind::enemy || entity == EntityKind::animal ||
+                                              entity == EntityKind::vehicle;
+        if (fits)
+            items.emplace_back(*actor.id, actor.name.value_or("actor") + "  (" + entity_kind_name(entity) + " " +
+                                              std::to_string(*actor.id) + ")");
+    }
+    return items;
+}
+
+// The objectives, each with its text, what completes it and its message,
+// and the success rule (E5, Phase 7): typed text, targets picked by name.
 void objective_fields(AppState& state, Lines& lines) {
-    int number = 0;
-    for (std::size_t i = 0; i < lines.lines.size(); ++i) {
+    std::vector<std::size_t> objectives;
+    for (std::size_t i = 0; i < lines.lines.size(); ++i)
+        if (lines.lines[i].op == "objective") objectives.push_back(i);
+    for (std::size_t k = 0; k < objectives.size(); ++k) {
+        const auto i = objectives[k];
         auto& line = lines.lines[i];
-        if (line.op != "objective") continue;
         ImGui::PushID(static_cast<int>(i));
-        const auto kind = line.get("kind");
-        const bool zone = kind == "zone";
-        property_row(("Objective " + std::to_string(++number)).c_str());
-        static constexpr const char* kinds[]{"Reach a zone", "Kill an actor", "Use an object"};
-        int choice = zone ? 0 : kind == "kill" ? 1 : 2;
-        const bool kind_changed = ImGui::Combo("##kind", &choice, kinds, IM_ARRAYSIZE(kinds));
-        name_last_item("##kind");
-        if (kind_changed) {
-            line.set("kind", choice == 0 ? "zone" : choice == 1 ? "kill" : "use");
+        const auto suffix = "_" + std::to_string(k + 1);  // "Objectives::kind_2" in UI scripts
+        const auto kind = line.get("kind", "zone");
+        property_row(("Objective " + std::to_string(k + 1)).c_str());
+        int importance = line.get("secondary", "0") != "0" ? 1 : 0;
+        static constexpr const char* importances[]{"Primary: needed to win", "Secondary: optional"};
+        ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeightWithSpacing(), 80.0F));
+        if (ImGui::Combo(("##secondary" + suffix).c_str(), &importance, importances, IM_ARRAYSIZE(importances))) {
+            if (importance == 1) line.set("secondary", "1");
+            else line.erase("secondary");
             lines.apply();
         }
-        property_row(zone ? "Zone" : "Actor", "Pick it in the viewport or the Outliner.");
-        const auto target = integer_of(line, "target", 0);
-        std::string name = "(missing)";
-        if (zone) {
-            for (const auto& area : state.mission.scene->areas())
-                if (area.id == target) name = area.name.value_or("");
-        } else {
-            for (const auto& actor : state.mission.scene->actors())
-                if (actor.id == target) name = actor.name.value_or("");
+        name_last_item(("##secondary" + suffix).c_str());
+        ImGui::SameLine(0.0F, 2.0F);
+        if (ImGui::SmallButton((std::string(icons::LC_X) + "##remove" + suffix).c_str())) {
+            // The objectives after it move up a number (triggers that name
+            // objective numbers are not renumbered).
+            lines.lines.erase(lines.lines.begin() + static_cast<std::ptrdiff_t>(i));
+            int n = 0;
+            for (auto& value : lines.lines)
+                if (value.op == "objective") value.set("n", std::to_string(++n));
+            if (n > 0) lines.apply();
+            ImGui::PopID();
+            return;
         }
-        ImGui::Text("%s  %s %d", name.c_str(), zone ? "zone" : "actor", target);
-        ImGui::SameLine();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+            ImGui::SetTooltip("Remove this objective (Ctrl+Z brings it back)");
+        text_row(state, lines, i, "Shown as", "label", "The objective as the objectives screen lists it.", suffix);
+        property_row("Done when", "What completes it. It completes itself: no trigger is needed for that.");
+        static constexpr const char* kinds[]{"The player reaches a zone", "An actor is killed", "The player uses an object"};
+        int choice = kind == "zone" ? 0 : kind == "kill" ? 1 : 2;
+        const bool kind_changed = ImGui::Combo(("##kind" + suffix).c_str(), &choice, kinds, IM_ARRAYSIZE(kinds));
+        name_last_item(("##kind" + suffix).c_str());
+        if (kind_changed) {
+            const std::string wanted = choice == 0 ? "zone" : choice == 1 ? "kill" : "use";
+            line.set("kind", wanted);
+            // A zone's ID means nothing as an actor's: aim at the first fitting record.
+            if (const auto target = default_objective_target(state, wanted)) line.set("target", std::to_string(*target));
+            lines.apply();
+            ImGui::PopID();
+            return;
+        }
+        property_row(kind == "zone" ? "Zone" : kind == "kill" ? "Actor" : "Object",
+                     "Pick it from the list, or with the eyedropper in the viewport or the Outliner.");
+        const auto target = integer_of(line, "target", 0);
+        const auto items = objective_targets(state, kind);
+        std::string current = "(missing: pick one)";
+        for (const auto& [value, label] : items)
+            if (value == target) current = label;
+        ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeightWithSpacing(), 80.0F));
+        if (const auto picked = filtered_combo(("##target" + suffix).c_str(), current, items); picked && *picked != target)
+            lines.set(i, "target", std::to_string(*picked));
+        ImGui::SameLine(0.0F, 2.0F);
         const std::int32_t component = lines.id;
-        const auto line_index = i;
         auto copy = lines.lines;
-        pick_button(state, "##pick_objective_target",
-                    {zone ? MissionRecordKey::Kind::area : MissionRecordKey::Kind::actor}, "Pick the objective's target",
-                    [&state, component, line_index, copy](const MissionRecordKey& key) mutable {
-                        copy[line_index].set("target", std::to_string(key.id));
+        pick_button(state, ("##pick_target" + suffix).c_str(),
+                    {kind == "zone" ? MissionRecordKey::Kind::area : MissionRecordKey::Kind::actor},
+                    "Pick the objective's target",
+                    [&state, component, i, copy](const MissionRecordKey& key) mutable {
+                        copy[i].set("target", std::to_string(key.id));
                         std::vector<std::string> text;
                         for (const auto& value : copy) text.push_back(csf::format_op_line(value));
                         edit_component(state, component, text);
                     });
-        text_row(state, lines, i, "Text", "label", "The objective as the objectives screen shows it.");
-        text_row(state, lines, i, "Done", "done", "The message shown when it is completed.");
-        if (choice == 2) text_row(state, lines, i, "Prompt", "prompt", "The label on the object to use.");
-        property_row("Secondary", "Secondary objectives are not needed to win.");
-        bool secondary = line.get("secondary", "0") != "0";
-        if (ImGui::Checkbox("##secondary", &secondary)) {
-            if (secondary) line.set("secondary", "1");
-            else line.erase("secondary");
-            lines.apply();
-        }
+        if (kind == "use")
+            text_row(state, lines, i, "Prompt", "prompt", "The label the object shows the player (\"Sabotage\").", suffix);
+        text_row(state, lines, i, "Message", "done", "Shown on screen when it is completed.", suffix);
         ImGui::PopID();
+        ImGui::Spacing();
+    }
+    if (const auto end = lines.find("objectives")) {
+        text_row(state, lines, *end, "Success", "success",
+                 "When every primary objective is complete: this message, then the mission is won.");
+        property_row("Win after", "Seconds between the success message and the end of the mission.");
+        float pause{};
+        if (edit_float_value("##success_pause", number_of(lines.lines[*end], "pause", 4.0F), pause, 0.1F, "%.1f s") &&
+            pause >= 0.0F)
+            lines.set(*end, "pause", csf::op_number(std::round(pause * 10.0F) / 10.0F));
     }
 }
 
@@ -294,42 +438,155 @@ void intro_fields(Lines& lines) {
     }
 }
 
+// The players' starting kits: who, which weapons (with their ammunition),
+// which one is in hand and a disguise; weapons picked by name (Phase 7).
 void equipment_fields(AppState& state, Lines& lines) {
+    struct Weapon {
+        std::int32_t id{};
+        std::string ammo;  // "<loaded>/<carried>" or ""
+    };
+    const auto players = player_items(state);
+    const auto weapons = weapon_items(state);
     int number = 0;
     for (std::size_t i = 0; i < lines.lines.size(); ++i) {
         auto& line = lines.lines[i];
         if (line.op != "kit") continue;
         ImGui::PushID(static_cast<int>(i));
-        property_row(("Kit " + std::to_string(++number)).c_str(), "The player character who starts with it.");
-        ImGui::Text("actor %d", integer_of(line, "actor", 0));
-        ImGui::SameLine();
-        const std::int32_t component = lines.id;
-        auto copy = lines.lines;
-        pick_button(state, "##pick_kit_owner", {MissionRecordKey::Kind::actor}, "Pick the player character",
-                    [&state, component, i, copy](const MissionRecordKey& key) mutable {
-                        copy[i].set("actor", std::to_string(key.id));
-                        std::vector<std::string> text;
-                        for (const auto& value : copy) text.push_back(csf::format_op_line(value));
-                        edit_component(state, component, text);
-                    });
-        property_row("Weapons", "Class IDs, each with its ammunition: <class>[@<loaded>/<carried>],...");
-        std::string edited;
-        if (edit_text_value("##weapons", line.get("weapons"), edited) && !edited.empty())
-            lines.set(i, "weapons", edited);
-        property_row("In hand", "The weapon class selected at the start (empty: none).");
-        if (edit_text_value("##select", line.get("select"), edited)) {
-            if (edited.empty()) line.erase("select");
-            else line.set("select", edited);
+        const auto suffix = "_" + std::to_string(++number);
+        property_row("Player", "The commando who starts with this kit.");
+        const auto actor = integer_of(line, "actor", 0);
+        std::string current = "actor " + std::to_string(actor);
+        for (const auto& [value, label] : players)
+            if (value == actor) current = label;
+        ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeightWithSpacing(), 80.0F));
+        if (const auto picked = filtered_combo(("##kit_actor" + suffix).c_str(), current, players); picked && *picked != actor)
+            lines.set(i, "actor", std::to_string(*picked));
+        ImGui::SameLine(0.0F, 2.0F);
+        if (ImGui::SmallButton((std::string(icons::LC_X) + "##remove_kit" + suffix).c_str())) {
+            lines.lines.erase(lines.lines.begin() + static_cast<std::ptrdiff_t>(i));
+            if (lines.find("kit")) lines.apply();
+            else state.warn("A kit list needs one kit: delete the component to remove the last one");
+            ImGui::PopID();
+            return;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Remove this kit");
+        std::vector<Weapon> kit;
+        const auto list = line.get("weapons");
+        for (std::size_t at = 0; at < list.size();) {
+            const auto comma = std::min(list.find(',', at), list.size());
+            const auto item = list.substr(at, comma - at);
+            at = comma + 1;
+            const auto sign = item.find('@');
+            try {
+                kit.push_back({std::stoi(item.substr(0, sign)), sign == std::string::npos ? "" : item.substr(sign + 1)});
+            } catch (const std::exception&) {
+            }
+        }
+        const auto write = [&](const std::vector<Weapon>& values) {
+            std::string text;
+            for (const auto& weapon : values)
+                text += (text.empty() ? "" : ",") + std::to_string(weapon.id) + (weapon.ammo.empty() ? "" : "@" + weapon.ammo);
+            if (!text.empty()) lines.set(i, "weapons", text);
+        };
+        for (std::size_t w = 0; w < kit.size(); ++w) {
+            ImGui::PushID(static_cast<int>(w));
+            property_row(w == 0 ? "Weapons" : "",
+                         w == 0 ? "What the commando carries. Ammo: <in the weapon>/<carried>, empty for the "
+                                  "game's default."
+                                : nullptr);
+            ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - 80.0F * ui_scale(), 80.0F));
+            if (const auto picked = filtered_combo(("##weapon" + suffix + "_" + std::to_string(w + 1)).c_str(),
+                                                   weapon_label(state, kit[w].id), weapons);
+                picked && *picked != kit[w].id) {
+                auto changed = kit;
+                changed[w].id = *picked;
+                write(changed);
+            }
+            ImGui::SameLine(0.0F, 2.0F);
+            ImGui::SetNextItemWidth(54.0F * ui_scale());
+            std::string ammo;
+            if (edit_text_value(("##ammo" + suffix + "_" + std::to_string(w + 1)).c_str(), kit[w].ammo, ammo, "ammo")) {
+                auto changed = kit;
+                changed[w].ammo = ammo;
+                write(changed);
+            }
+            ImGui::SameLine(0.0F, 2.0F);
+            ImGui::BeginDisabled(kit.size() <= 1);
+            if (ImGui::SmallButton(icons::LC_X)) {
+                auto changed = kit;
+                changed.erase(changed.begin() + static_cast<std::ptrdiff_t>(w));
+                write(changed);
+            }
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        property_row(kit.empty() ? "Weapons" : "");
+        if (const auto picked = filtered_combo(("##add_weapon" + suffix).c_str(), std::string("Add a weapon..."), weapons)) {
+            auto changed = kit;
+            changed.push_back({*picked, ""});
+            write(changed);
+        }
+        property_row("In hand", "The weapon selected when the mission starts.");
+        std::vector<std::pair<std::int32_t, std::string>> held{{0, "(nothing)"}};
+        for (const auto& weapon : kit) held.emplace_back(weapon.id, weapon_label(state, weapon.id));
+        const auto selected = integer_of(line, "select", 0);
+        if (const auto picked = filtered_combo(("##select" + suffix).c_str(),
+                                               selected ? weapon_label(state, selected) : std::string("(nothing)"), held);
+            picked && *picked != selected) {
+            if (*picked == 0) line.erase("select");
+            else line.set("select", std::to_string(*picked));
+            lines.apply();
+        }
+        property_row("Disguise", "A uniform the commando starts wearing (the spy): the class whose look it takes.");
+        const auto disguise = integer_of(line, "disguise", 0);
+        auto uniforms = character_class_items(state);
+        uniforms.insert(uniforms.begin(), {0, "(none)"});
+        if (const auto picked = filtered_combo(("##disguise" + suffix).c_str(),
+                                               disguise ? class_label(state, disguise) : std::string("(none)"), uniforms);
+            picked && *picked != disguise) {
+            if (*picked == 0) line.erase("disguise");
+            else line.set("disguise", std::to_string(*picked));
             lines.apply();
         }
         ImGui::PopID();
+        ImGui::Spacing();
     }
 }
 
-void tips_fields(Lines& lines) {
-    property_row("Tips", "FLI string IDs of the tips, in order.");
-    std::string edited;
-    if (edit_text_value("##tips", lines.lines.front().get("tips"), edited)) lines.set(0, "tips", edited);
+// The mission tips, typed (or FLI IDs without a project), in order.
+void tips_fields(AppState& state, Lines& lines) {
+    auto& line = lines.lines.front();
+    std::vector<std::string> tips;
+    const auto list = line.get("tips");
+    for (std::size_t at = 0; at < list.size();) {
+        const auto comma = std::min(list.find(',', at), list.size());
+        if (comma > at) tips.push_back(list.substr(at, comma - at));
+        at = comma + 1;
+    }
+    const auto write = [&](const std::vector<std::string>& values) {
+        std::string text;
+        for (const auto& tip : values) text += (text.empty() ? "" : ",") + tip;
+        if (!text.empty()) lines.set(0, "tips", text);
+    };
+    for (std::size_t k = 0; k < tips.size(); ++k) {
+        ImGui::PushID(static_cast<int>(k));
+        property_row(("Tip " + std::to_string(k + 1)).c_str());
+        ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeightWithSpacing(), 80.0F));
+        if (auto id = game_text_field(state, ("##tip_" + std::to_string(k + 1)).c_str(), tips[k])) {
+            auto changed = tips;
+            changed[k] = std::move(*id);
+            write(changed);
+        }
+        ImGui::SameLine(0.0F, 2.0F);
+        ImGui::BeginDisabled(tips.size() <= 1);
+        if (ImGui::SmallButton(icons::LC_X)) {
+            auto changed = tips;
+            changed.erase(changed.begin() + static_cast<std::ptrdiff_t>(k));
+            write(changed);
+        }
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
 }
 
 // ---- Triggers (E10) ----------------------------------------------------------------
@@ -345,8 +602,24 @@ const char* when_label(const When when) {
     case When::object_used: return "The player uses an object";
     case When::event: return "An event is raised";
     case When::timer: return "Some seconds after the start";
+    case When::alerted: return "A guard is alerted";
+    case When::body_found: return "A guard finds a body";
     }
     return "?";
+}
+
+const char* when_help(const When when) {
+    switch (when) {
+    case When::alerted:
+        return "Any German soldier turning alert or starting to fight, as Convoy's camp alarm does. A guard who is "
+               "shot at counts too, so a quiet kill in his sight can still set it off.";
+    case When::body_found:
+        return "A watched soldier sees another watched soldier dead. There is no such event in the game: the "
+               "trigger checks every second whether a living one sees a dead one, so the script grows with the "
+               "square of the number watched (35 soldiers make about 1200 checks); only the dead cost anything "
+               "while playing.";
+    default: return nullptr;
+    }
 }
 
 const char* action_label(const Kind kind) {
@@ -388,12 +661,21 @@ void unverified_mark(const bool proven) {
 void trigger_fields(AppState& state, const csf::Trigger& trigger, const TriggerChange& change, const bool typed_texts) {
     const bool unverified = state.tools.show_unverified;
     property_row("When");
+    // Room after it for the "unverified" mark and the help icon.
+    if (!csf::trigger_when_proven(trigger.when) || when_help(trigger.when))
+        ImGui::SetNextItemWidth(std::max(ImGui::GetContentRegionAvail().x - 110.0F * ui_scale(), 80.0F));
     if (ImGui::BeginCombo("##trigger_when", when_label(trigger.when))) {
         for (const auto when : {When::mission_start, When::enter_zone, When::actor_killed, When::object_used, When::timer,
-                                When::event})
+                                When::alerted, When::body_found, When::event})
             if (unverified || csf::trigger_when_proven(when) || when == trigger.when) {
                 if (ImGui::Selectable(when_label(when), when == trigger.when))
-                    change([when](csf::Trigger& value) { value.when = when; });
+                    change([when, enemies = enemy_actors(state)](csf::Trigger& value) {
+                        value.when = when;
+                        // Everyone can find everyone, until the author narrows it.
+                        if (when == When::body_found && value.watch.empty()) value.watch = enemies;
+                    });
+                if (const auto* help = when_help(when); help && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                    ImGui::SetTooltip("%s", help);
                 unverified_mark(csf::trigger_when_proven(when));
             }
         ImGui::EndCombo();
@@ -401,6 +683,30 @@ void trigger_fields(AppState& state, const csf::Trigger& trigger, const TriggerC
         name_last_item("##trigger_when");
     }
     unverified_mark(csf::trigger_when_proven(trigger.when));
+    if (const auto* help = when_help(trigger.when)) help_marker(help);
+    if (trigger.when == When::body_found) {
+        // Who can find whom: every enemy by default; soldiers added later are
+        // not watched until the author says so.
+        const auto enemies = enemy_actors(state);
+        std::size_t missing = 0;
+        for (const auto enemy : enemies)
+            if (std::ranges::find(trigger.watch, enemy) == trigger.watch.end()) ++missing;
+        property_row("Watched", "The soldiers who can find a body, and whose bodies can be found.");
+        ImGui::Text("%zu soldiers", trigger.watch.size());
+        if (missing > 0) {
+            ImGui::SameLine();
+            token_text(Token::warn, "%zu not watched", missing);
+            property_row("");
+            if (ImGui::SmallButton("Watch every enemy"))
+                change([enemies](csf::Trigger& value) { value.watch = enemies; });
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                ImGui::SetTooltip("Watch all %zu enemy soldiers of the mission.", enemies.size());
+        }
+        if (trigger.watch.size() < 2) {
+            property_row("");
+            token_text(Token::warn, "Watch at least two soldiers.");
+        }
+    }
     if (trigger.when == When::enter_zone || trigger.when == When::actor_killed || trigger.when == When::object_used) {
         const bool zone = trigger.when == When::enter_zone;
         property_row(zone ? "Zone" : trigger.when == When::actor_killed ? "Actor" : "Object",
@@ -433,13 +739,19 @@ void trigger_fields(AppState& state, const csf::Trigger& trigger, const TriggerC
             else value.if_objective = std::pair{value.if_objective ? value.if_objective->first : 1, condition == 1};
         });
     name_last_item("##trigger_if");
+    const auto objectives = objective_items(state);
+    const auto objective_label = [&](const std::int32_t number) {
+        for (const auto& [value, label] : objectives)
+            if (value == number) return label;
+        return "objective " + std::to_string(number);
+    };
     if (trigger.if_objective) {
         ImGui::SameLine();
-        int number{};
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (edit_int_value("##trigger_if_number", trigger.if_objective->first, number) && number > 0)
-            change([number](csf::Trigger& value) { value.if_objective->first = number; });
+        if (const auto picked = filtered_combo("##trigger_if_number", objective_label(trigger.if_objective->first), objectives))
+            change([number = *picked](csf::Trigger& value) { value.if_objective->first = number; });
     }
+    std::optional<std::int32_t> completes_itself;
     for (std::size_t i = 0; i < trigger.actions.size(); ++i) {
         const auto& action = trigger.actions[i];
         ImGui::PushID(static_cast<int>(i));
@@ -457,9 +769,16 @@ void trigger_fields(AppState& state, const csf::Trigger& trigger, const TriggerC
         std::string edited;
         switch (action.kind) {
         case Kind::complete_objective:
+            if (const auto picked = filtered_combo("##objective", objective_label(action.number), objectives))
+                update([number = *picked](csf::TriggerAction& value) { value.number = number; });
+            if (std::ranges::find(objectives, action.number, &std::pair<std::int32_t, std::string>::first) !=
+                objectives.end())
+                completes_itself = action.number;
+            break;
         case Kind::alarm:
             if (edit_int_value("##number", action.number, number) && number >= 0)
                 update([number](csf::TriggerAction& value) { value.number = number; });
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("Seconds the alarm sounds");
             break;
         case Kind::message:
             if (edit_text_value("##text", action.text, edited, typed_texts && state.authoring.project ? "the message" : "FLI ID"))
@@ -496,10 +815,18 @@ void trigger_fields(AppState& state, const csf::Trigger& trigger, const TriggerC
             });
         ImGui::PopID();
     }
+    if (completes_itself) {
+        property_row("");
+        ImGui::PushStyleColor(ImGuiCol_Text, color(Token::warn));
+        ImGui::TextWrapped("%s Objective %d already completes itself (see Objectives). Completing it here too can "
+                           "stop the mission from being won; use this only for an objective nothing else completes.",
+                           icons::LC_TRIANGLE_ALERT, *completes_itself);
+        ImGui::PopStyleColor();
+    }
     property_row(trigger.actions.empty() ? "Do" : "");
     if (ImGui::BeginCombo("##trigger_add_action", "Add an action...", ImGuiComboFlags_HeightLargest)) {
-        for (const auto kind : {Kind::complete_objective, Kind::message, Kind::alarm, Kind::raise_event, Kind::ai_alert,
-                                Kind::ai_combat, Kind::enable_ghost, Kind::disable_ghost, Kind::mission_success})
+        for (const auto kind : {Kind::message, Kind::alarm, Kind::ai_alert, Kind::ai_combat, Kind::enable_ghost,
+                                Kind::disable_ghost, Kind::raise_event, Kind::mission_success, Kind::complete_objective})
             if (unverified || csf::trigger_action_proven(kind)) {
                 if (ImGui::Selectable(action_label(kind)))
                     change([kind](csf::Trigger& value) {
@@ -586,7 +913,7 @@ void draw_component_card(AppState& state, const std::int32_t id) {
     const bool modified = csf::component_state(editor, component) == csf::ComponentState::modified;
     CardOptions options{icons::LC_COMPONENT};
     const auto title = csf::component_title(component);
-    options.subtitle = modified ? "edited by hand" : "made by a recipe";
+    if (modified) options.subtitle = "edited by hand";
     options.help = "The recipe that made this record and the ones that go with it. Changing a value here makes "
                    "them again, in place, in one undo step; moving its points or its actor in the viewport does too.";
     if (!begin_card("##component", title.c_str(), options)) return;
@@ -619,7 +946,7 @@ void draw_component_card(AppState& state, const std::int32_t id) {
     if (!lines.lines.empty() && begin_properties("##component_rows")) {
         const auto op = component.op();
         if (op == "guard-patrol" || op == "guard-idle") guard_fields(state, lines);
-        else if (op == "animal-patrol") animal_fields(lines);
+        else if (op == "animal-patrol") animal_fields(state, lines);
         else if (op == "cover-group") points_row(lines, 0, 1);
         else if (op == "walk-grid") {
             property_row("Spacing", "Centimetres between neighbouring points.");
@@ -630,10 +957,20 @@ void draw_component_card(AppState& state, const std::int32_t id) {
         } else if (op == "objective" || op == "objectives") objective_fields(state, lines);
         else if (op == "shot" || op == "intro") intro_fields(lines);
         else if (op == "kit" || op == "equipment") equipment_fields(state, lines);
-        else if (op == "tips") tips_fields(lines);
+        else if (op == "tips") tips_fields(state, lines);
         else if (op == "trigger") trigger_card_fields(state, lines);
         end_properties();
     }
+    ImGui::EndDisabled();
+    // What most edits never need: the recipe's own lines, and turning it
+    // into ordinary records (Delete of a whole list is here too, away from
+    // its Add button).
+    if (!ImGui::TreeNodeEx("Advanced", ImGuiTreeNodeFlags_SpanAvailWidth)) {
+        ImGui::PopID();
+        end_card();
+        return;
+    }
+    ImGui::BeginDisabled(modified);
     lines_editor(state, component);
     ImGui::EndDisabled();
     if (secondary_button(component.op() == "trigger" ? "Convert to script" : "Detach"))
@@ -641,7 +978,7 @@ void draw_component_card(AppState& state, const std::int32_t id) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
         ImGui::SetTooltip("Keep the records and forget the recipe: they become ordinary records.");
     ImGui::SameLine();
-    if (danger_button("Delete")) {
+    if (danger_button(("Delete " + csf::component_kind_title(component.op())).c_str())) {
         if (const auto result = csf::delete_component(editor, component.id); apply_mission_edit(state, result)) {
             notify_undoable(state, result.message);
             state.preview.clear_mission_selection();
@@ -650,6 +987,7 @@ void draw_component_card(AppState& state, const std::int32_t id) {
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
         ImGui::SetTooltip("Delete the component and every record it made (Ctrl+Z brings them back).");
+    ImGui::TreePop();
     ImGui::PopID();
     end_card();
 }

@@ -182,6 +182,21 @@ void UiScriptRunner::run_step(AppState& state, UiAutomation& automation, const U
             std::fprintf(stderr, "%s: skipped: %s is not set\n", options_.name.c_str(), args[0].c_str());
             skipped_ = true;
         }
+    } else if (op == "require-release") {
+#ifndef NDEBUG
+        std::fprintf(stderr, "%s: skipped: a Debug build\n", options_.name.c_str());
+        skipped_ = true;
+#endif
+    } else if (op == "expect-at-most") {
+        const auto snapshot = snapshot_state(state);
+        const auto found = snapshot.find(args[0]);
+        if (found == snapshot.end()) return fail(state, "no state key '" + args[0] + "'");
+        const auto actual = parse_float(found->second), limit = parse_float(args[1]);
+        if (!limit) return fail(state, "'" + args[1] + "' is not a number");
+        if (!actual) return fail(state, args[0] + " is '" + found->second + "', not a number");
+        std::fprintf(stderr, "%s: %s = %s (at most %s)\n", options_.name.c_str(), args[0].c_str(),
+                     found->second.c_str(), args[1].c_str());
+        if (*actual > *limit) fail(state, args[0] + " is " + found->second + ", over " + args[1]);
     } else if (op == "open") {
         open_path(state, resolve(args[0]));
     } else if (op == "copy") {
@@ -236,6 +251,16 @@ void UiScriptRunner::run_step(AppState& state, UiAutomation& automation, const U
                 automation.queue_hover(item->center());
             else
                 automation.queue_click(item->center(), op == "double-click" ? 2 : 1, *held);
+        }
+    } else if (op == "drag") {
+        // A widget dragged by an offset in pixels (a timeline strip's edge).
+        const auto held = args.size() > 3 ? modifiers(args[3]) : ImGuiKeyChord{0};
+        if (!held) return fail(state, "'" + args[3] + "' is not a modifier (Shift, Ctrl, Alt)");
+        const auto dx = parse_float(args[1]), dy = parse_float(args[2]);
+        if (!dx || !dy) return fail(state, "expected drag <target> <dx> <dy>");
+        if (const auto* item = find_item(args[0])) {
+            const auto from = item->center();
+            automation.queue_drag(from, {from.x + *dx, from.y + *dy}, 8, *held);
         }
     } else if (op == "drag-to-world") {
         const auto* item = find_item(args[0]);
@@ -378,6 +403,9 @@ void UiScriptRunner::run_step(AppState& state, UiAutomation& automation, const U
             Monkey monkey;
             monkey.random.seed(static_cast<std::uint32_t>(*seed));
             monkey.remaining = static_cast<int>(*steps);
+            // A longer walk on request: RWSMAN_UI_MONKEY_STEPS replaces every count.
+            if (const char* longer = std::getenv("RWSMAN_UI_MONKEY_STEPS"))
+                if (const auto value = parse_float(longer); value && *value >= 1) monkey.remaining = static_cast<int>(*value);
             // Commands that edit or change the view, never ones that write
             // files, open dialogs or leave the mission.
             for (const auto& command : state.commands.commands()) {
@@ -385,7 +413,8 @@ void UiScriptRunner::run_step(AppState& state, UiAutomation& automation, const U
                 if (id.starts_with("mission.tool_") || id.starts_with("view.markers_") ||
                     id == "view.frame_selection" || id == "view.frame_all" || id == "mission.duplicate" ||
                     id == "mission.delete" || id == "mission.delete_force" || id == "mission.align_ground" ||
-                    id == "mission.select_none" || id == "mission.snap_surface")
+                    id == "mission.select_none" || id == "mission.snap_surface" || id == "mission.capture_shot" ||
+                    id == "mission.play_shots" || id == "mission.look_through_shot")
                     monkey.commands.emplace_back(id);
             }
             monkey_ = std::move(monkey);

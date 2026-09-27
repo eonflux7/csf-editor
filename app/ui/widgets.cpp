@@ -144,7 +144,9 @@ void highlighted_text(const std::string& text, const std::vector<std::uint32_t>&
 bool icon_row(const char* id, const char* icon, const Token icon_token, const char* label,
               const bool selected) {
     ImGui::PushID(id);
-    const bool clicked = ImGui::Selectable("##row", selected, ImGuiSelectableFlags_SpanAllColumns);
+    // Not SpanAllColumns: Home lays its lists out as columns of one table row,
+    // and a spanning row would highlight (and take clicks) across all of them.
+    const bool clicked = ImGui::Selectable("##row", selected);
     ImGui::PopID();
     ImGui::SameLine(0.0F, 0.0F);
     ImGui::PushStyleColor(ImGuiCol_Text, color(icon_token));

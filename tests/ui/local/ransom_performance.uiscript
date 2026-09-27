@@ -1,0 +1,21 @@
+# T12: the performance budget on Ransom, the largest shipped mission
+# (RWSMAN_CORPUS=<unpacked game>, Release builds only). With every marker
+# layer shown and the whole map in view, the median CPU frame time, the
+# Outliner's rows and the Problems list stay within their budgets, so the
+# aggregation added for the redesign (E7, B2) cannot slow the editor down
+# unnoticed.
+require RWSMAN_CORPUS
+require-release
+open $RWSMAN_CORPUS/Ransom/Maps/FR01/Ransom.scn
+wait idle
+command view.markers_preset.all
+command view.frame_all
+command view.markers_labels
+command view.panel.problems
+command view.panel.outliner
+wait frames 150
+# Measured 1.2, 0.14 and 0.02 ms on the reference machine (2026-09-26): the
+# budgets leave room for slower machines and catch a tenfold regression.
+expect-at-most perf.frame_ms 16
+expect-at-most perf.outliner_ms 4
+expect-at-most perf.problems_ms 20

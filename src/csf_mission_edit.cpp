@@ -2889,9 +2889,17 @@ struct ImportContext {
         std::vector<std::string> paths;
         collect_paths(*record, paths);
         for (const auto& reference : paths)
-            if (const auto relative = copy_file(reference))
-                if (lower(path_utf8(*relative)).ends_with(".anm"))
+            if (const auto relative = copy_file(reference)) {
+                const auto extension = lower(path_utf8(relative->extension()));
+                if (extension == ".anm") {
                     add_index_entry(MissionFileKind::animation_index, *relative, animation_flags(*relative));
+                } else if (extension == ".rpc") {
+                    // The model held in the hand (.MODEL3D_ITEM: binoculars, a jug), as a class's.
+                    add_index_entry(MissionFileKind::model_index, *relative,
+                                    {std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF}});
+                    add_texture_entries(*relative);
+                }
+            }
     }
 
     // The two .and flag bytes are not understood, so an imported animation keeps

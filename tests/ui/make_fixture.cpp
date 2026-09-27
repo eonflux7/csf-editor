@@ -191,7 +191,15 @@ int main(const int argc, char** argv) {
   [ .ID 11 .NOMBRE Officer .TIPO ALEMAN .COMPOR SOLDADO .HOMBRE 1 .MODELO "Models\\Char\\Officer.dff" ]
   [ .ID 12 .NOMBRE Commando .TIPO ALIADO .COMPOR COMANDO .HOMBRE 1 .MODELO "Models\\Char\\Commando.dff" ]
   [ .ID 20 .NOMBRE Crate .TIPO OBJETO .COMPOR OBJETO .HOMBRE 0 .MODELO "Models\\Props\\Crate.dff" ]
+  [ .ID 197 .NOMBRE Void .TIPO DECORATIVO .COMPOR OBJETO .HOMBRE 1 .MODELO "Models\\Weap\\TP_No_Armas.dff" ]
 ) ])";
+    // An empty cutscene program: the intro cutscene's scripts go there.
+    const std::string cutscenes = R"([
+  .RECURSOS [ .FNC ( ) .SONIDOSID ( ) .CLASSID ( ) .EFFCLASSID ( ) .ARMACLASSID ( ) .EFECTO ( ) .ANIMACIONES ( )
+              .SONIDOS ( ) .FBS ( ) ]
+  .SCRIPTS ( )
+  .POOL ( )
+])";
     const std::string animations = R"([ .VERSION 1 .LISTADATOS (
   [ .ID 100 .NOMBRE idle .FILE "Anims\\Comm\\idle.anm" ]
 ) ])";
@@ -203,6 +211,7 @@ int main(const int argc, char** argv) {
     append_string(vis, "");
 
     const bool ok = write(maps / "M1.scn", compile(scene)) && write(maps / "M1.gsc", compile(program)) &&
+                    write(maps / "M1.csc", compile(cutscenes)) &&
                     write(maps / "M1.vis", vis) && write(maps / "world.rws", build_world(true)) &&
                     write(maps / "world_col.rws", build_world(false)) &&
                     write(package / "BDD" / "Objetos.bdd", compile(objects)) &&

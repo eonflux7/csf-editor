@@ -15,10 +15,12 @@
 #include "references.hpp"
 #include "mission_editing.hpp"
 #include "navigation.hpp"
+#include "rwsman/animation_slots.hpp"
 #include "rwsman/entity_kind.hpp"
 #include "viewport_tools.hpp"
 #include "ui/fonts.hpp"
 #include "ui/icons.hpp"
+#include "ui/pickers.hpp"
 #include "ui/property_grid.hpp"
 #include "ui/theme.hpp"
 #include "ui/widgets.hpp"
@@ -133,96 +135,6 @@ bool matches(const std::string& text, const char* filter) {
     return !filter || !*filter || lower(text).find(lower(filter)) != std::string::npos;
 }
 
-// A combo with a filter box. `items` are (value, label); returns the pick.
-template <class T>
-std::optional<T> filtered_combo(const char* id, const std::string& preview,
-                                const std::vector<std::pair<T, std::string>>& items) {
-    std::optional<T> picked;
-    if (!ImGui::BeginCombo(id, preview.c_str(), ImGuiComboFlags_HeightLarge)) return picked;
-    auto& state = field_state(ImGui::GetID("filter"));
-    if (ImGui::IsWindowAppearing()) {
-        state.text[0] = '\0';
-        ImGui::SetKeyboardFocusHere();
-    }
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::InputTextWithHint("##filter", "filter", state.text.data(), state.text.size());
-    std::size_t shown = 0;
-    for (const auto& [value, label] : items) {
-        if (!matches(label, state.text.data())) continue;
-        if (++shown > 400) {
-            dim_text("Refine the filter to see more.");
-            break;
-        }
-        if (ImGui::Selectable(label.c_str(), label == preview)) picked = value;
-    }
-    ImGui::EndCombo();
-    return picked;
-}
-
-std::vector<std::pair<std::int32_t, std::string>> class_items(const AppState& state) {
-    std::vector<std::pair<std::int32_t, std::string>> items;
-    if (!state.mission.objects) return items;
-    for (const auto& definition : state.mission.objects->definitions())
-        if (definition.class_id)
-            items.emplace_back(*definition.class_id,
-                               std::to_string(*definition.class_id) + "  " + definition.name.value_or("(unnamed)"));
-    std::ranges::sort(items);
-    return items;
-}
-
-std::string class_label(const AppState& state, const std::optional<std::int32_t> id) {
-    if (!id) return "(none)";
-    if (state.mission.objects)
-        if (const auto found = state.mission.objects->find_class(*id); found.size() == 1)
-            return std::to_string(*id) + "  " + found.front()->name.value_or("(unnamed)");
-    return std::to_string(*id) + "  (not in Objetos.bdd)";
-}
-
-// The body model of a class (the character model for player classes).
-std::optional<std::string> class_model(const csf::ObjectDefinition& definition) {
-    for (const auto& reference : definition.references)
-        if (reference.kind == csf::ObjectReference::Kind::visual_model) return reference.path;
-    return std::nullopt;
-}
-
-// One entry per distinct model, naming the first class that has it.
-std::vector<std::pair<std::int32_t, std::string>> model_items(const AppState& state) {
-    std::map<std::string, std::pair<std::int32_t, std::string>> models;
-    if (!state.mission.objects) return {};
-    for (const auto& definition : state.mission.objects->definitions()) {
-        const auto model = class_model(definition);
-        if (!definition.class_id || !model) continue;
-        models.try_emplace(lower(*model), *definition.class_id,
-                           *model + "  (" + std::to_string(*definition.class_id) + " " +
-                               definition.name.value_or("") + ")");
-    }
-    std::vector<std::pair<std::int32_t, std::string>> items;
-    for (auto& [key, item] : models) items.push_back(std::move(item));
-    return items;
-}
-
-std::string model_label(const AppState& state, const std::optional<std::int32_t> class_id) {
-    if (class_id && state.mission.objects)
-        if (const auto found = state.mission.objects->find_class(*class_id); found.size() == 1)
-            if (const auto model = class_model(*found.front())) return *model;
-    return "(unknown)";
-}
-
-std::vector<std::pair<std::int32_t, std::string>> animation_items(const AppState& state) {
-    std::vector<std::pair<std::int32_t, std::string>> items;
-    if (!state.mission.animations) return items;
-    for (const auto& record : state.mission.animations->records())
-        if (record.id) items.emplace_back(*record.id, std::to_string(*record.id) + "  " + record.logical_name);
-    return items;
-}
-
-std::string animation_label(const AppState& state, const std::int32_t id) {
-    if (state.mission.animations)
-        if (const auto* record = state.mission.animations->find_id(id))
-            return std::to_string(id) + "  " + record->logical_name;
-    return std::to_string(id) + "  (not in Anims.bdd)";
-}
-
 csf::MissionEditor& editor(AppState& state) { return *state.mission.editor; }
 
 void record_buttons(AppState& state, const bool duplicable) {
@@ -234,10 +146,45 @@ void record_buttons(AppState& state, const bool duplicable) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Refuses while scripts reference the record; Shift+Delete forces");
 }
 
+// A guard or animal that no recipe made (placed from Assets, or a shipped
+// mission's): its behaviour picked here makes it a component (Phase 7).
+void behaviour_card(AppState& state, const csf::MissionActor& actor) {
+    if (owning_component(state, {MissionRecordKey::Kind::actor, *actor.id, 0})) return;
+    const auto kind = classify_mission_actor(*state.mission.scene, state.mission.objects.get(), actor);
+    if (kind != EntityKind::enemy && kind != EntityKind::animal) return;
+    CardOptions options{icons::LC_WORKFLOW};
+    options.help = "What the actor does when the mission starts. Picking a behaviour makes the actor again in its "
+                   "place from a recipe, keeping its ID, name, class, position and heading; its behaviour's "
+                   "settings (idle animations, route, cover) are then on its card here.";
+    if (!begin_card("##behaviour", "Behaviour", options)) return;
+    const bool scripted = !actor.script_ids.empty();
+    dim_text(scripted ? "Runs its own scripts (see Scripts below)." : "None: it stands still until something alerts it.");
+    const auto give = [&](const char* label, const BehaviourKind behaviour, const char* tip) {
+        if (secondary_button(label)) give_behaviour(state, *actor.id, behaviour);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tip);
+    };
+    if (kind == EntityKind::animal) {
+        give("Walk a route", BehaviourKind::animal, "It walks a route you then shape in the viewport.");
+    } else {
+        give("Guard a post", BehaviourKind::idle,
+             "It stands here playing idle animations in a loop (smoking, the radio...); pick them on its card.");
+        ImGui::SameLine();
+        give("Patrol a route", BehaviourKind::patrol,
+             "It walks a route from here, pausing at each point; drag the route's points in the viewport.");
+    }
+    if (scripted || !actor.animations.empty())
+        token_text(Token::warn, "%s Its %s replaced by the behaviour's.", icons::LC_TRIANGLE_ALERT,
+                   scripted && !actor.animations.empty() ? "scripts and animation overrides are"
+                   : scripted                             ? "scripts are"
+                                                          : "animation overrides are");
+    end_card();
+}
+
 void draw_actor_editor(AppState& state, const csf::MissionActor& actor) {
     const auto id = *actor.id;
     csf::Vec3 position = actor.position.value_or(csf::Vec3{});
     float heading = actor.heading.value_or(0);
+    behaviour_card(state, actor);
     if (begin_card("##transform", "Transform", {icons::LC_MOVE_3D})) {
         if (begin_fields("##actor_transform")) {
             if (vec3_field("position", position, position))
@@ -284,10 +231,11 @@ void draw_actor_editor(AppState& state, const csf::MissionActor& actor) {
     }
 
     // Per-actor scripts: non-trigger scripts run with THIS = this actor.
-    if (begin_card("##scripts", "Scripts", {icons::LC_SCROLL_TEXT, {}, nullptr,
-                                            "Scripts that run with THIS = this actor. Behaviours in the "
-                                            "Behaviours panel write the actor, its route and its script "
-                                            "together."})) {
+    CardOptions scripts_options{icons::LC_SCROLL_TEXT, {}, nullptr,
+                                "Scripts that run with THIS = this actor, written in Script mode. For a guard, "
+                                "the Behaviour card is the simpler way."};
+    scripts_options.default_open = !actor.script_ids.empty();
+    if (begin_card("##scripts", "Scripts", scripts_options)) {
         const auto choices = editor(state).actor_script_choices();
         auto scripts = actor.script_ids;
         if (scripts.empty()) dim_text("No scripts: the actor stands still.");
@@ -315,45 +263,56 @@ void draw_actor_editor(AppState& state, const csf::MissionActor& actor) {
             scripts.push_back(*picked);
             apply_mission_edit(state, editor(state).set_actor_scripts(id, scripts));
         }
-        if (secondary_button("Set up a behaviour...")) {
-            state.tools.class_id = actor.class_id.value_or(0);
-            show_panel(state, Panel::behaviours);
-        }
         end_card();
     }
 
-    // Animation overrides: per-actor .ANIMACIONES slots.
+    // Animation overrides: per-actor .ANIMACIONES slots, named in English.
     CardOptions animation_options{icons::LC_FILM};
     animation_options.default_open = !actor.animations.empty();
-    animation_options.help = "Slots come from the game's slot table; preview a clip on the actor in the Inspect "
-                             "mode's Animation workspace. Scripts can still play other animations over these.";
+    animation_options.help =
+        "The game picks an animation for each situation an actor can be in (a slot: standing idle while unaware, "
+        "walking while alert, ...). An override makes this actor play another animation in that situation, for "
+        "example a different idle. To make a guard stand at a post playing animations, use its Behaviour instead. "
+        "Slot names are translated from the game's Spanish ones.";
     if (begin_card("##animations", "Animation overrides", animation_options)) {
         std::vector<csf::ActorAnimationOverride> overrides;
         for (const auto& binding : actor.animations)
             if (binding.id && binding.type) overrides.push_back({*binding.id, *binding.type});
         const auto slots = csf::animation_slot_names();
         std::vector<std::pair<std::string, std::string>> slot_items;
-        for (const auto slot : slots) slot_items.emplace_back(std::string(slot), std::string(slot));
-        const auto animations = animation_items(state);
-        if (ImGui::BeginTable("##overrides", 3, ImGuiTableFlags_SizingStretchProp)) {
+        for (const auto slot : slots)
+            slot_items.emplace_back(std::string(slot), animation_slot_label(slot) + "  (" + std::string(slot) + ")");
+        std::ranges::sort(slot_items, {}, &std::pair<std::string, std::string>::second);
+        const auto slot_label = [](const std::string& slot) { return animation_slot_label(slot); };
+        if (!overrides.empty() && ImGui::BeginTable("##overrides", 4, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("When the game would play", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+            ImGui::TableSetupColumn("it plays", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFrameHeight());
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFrameHeight());
+            ImGui::PushStyleColor(ImGuiCol_Text, color(Token::text_dim));
+            ImGui::TableHeadersRow();
+            ImGui::PopStyleColor();
             for (std::size_t i = 0; i < overrides.size(); ++i) {
                 ImGui::PushID(static_cast<int>(i));
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-FLT_MIN);
-                if (const auto picked = filtered_combo("##slot", overrides[i].slot, slot_items)) {
+                if (const auto picked = filtered_combo("##slot", slot_label(overrides[i].slot), slot_items)) {
                     auto updated = overrides;
                     updated[i].slot = *picked;
                     apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
                 }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                    ImGui::SetTooltip("Game slot %s", overrides[i].slot.c_str());
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-FLT_MIN);
-                if (const auto picked =
-                        filtered_combo("##anim", animation_label(state, overrides[i].animation_id), animations)) {
+                if (const auto picked = animation_combo(state, "##anim", overrides[i].animation_id, false, actor.class_id)) {
                     auto updated = overrides;
                     updated[i].animation_id = *picked;
                     apply_mission_edit(state, editor(state).set_actor_animations(id, updated));
                 }
+                ImGui::TableNextColumn();
+                animation_preview_button(state, "##preview", id, overrides[i].animation_id);
                 ImGui::TableNextColumn();
                 if (ImGui::SmallButton(icons::LC_X)) {
                     auto updated = overrides;
@@ -364,12 +323,15 @@ void draw_actor_editor(AppState& state, const csf::MissionActor& actor) {
             }
             ImGui::EndTable();
         }
-        static std::string new_slot = "DISTRAIDO_IDLE_ARMA1";
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.45F);
-        if (const auto picked = filtered_combo("##new_slot", new_slot, slot_items)) new_slot = *picked;
-        ImGui::SameLine();
+        if (overrides.empty()) dim_text("None: the actor plays its class's animations.");
+        static std::string new_slot(default_idle_slot);
+        ImGui::TextUnformatted("Add: when the game would play");
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (const auto picked = filtered_combo("##new_anim", "Add animation...", animations)) {
+        if (const auto picked = filtered_combo("##new_slot", slot_label(new_slot) + "  (" + new_slot + ")", slot_items))
+            new_slot = *picked;
+        ImGui::TextUnformatted("it plays");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (const auto picked = animation_combo(state, "##new_anim", 0, false, actor.class_id)) {
             auto updated = std::move(overrides);
             std::erase_if(updated, [&](const auto& value) { return value.slot == new_slot; });
             updated.push_back({*picked, new_slot});
@@ -716,59 +678,122 @@ void files_body(AppState& state) {
 void mission_settings_body(AppState& state) {
     auto& editor = *state.mission.editor;
     const auto& scene = *state.mission.scene;
-    if (!begin_fields("##mission_props")) return;
-    begin_row("starting player");
-    std::vector<std::pair<std::int32_t, std::string>> actors;
-    std::string current = "(none)";
-    for (const auto& actor : scene.actors()) {
-        if (!actor.id) continue;
-        auto label = std::to_string(*actor.id) + "  " + actor.name.value_or("");
-        if (scene.player().active_player == actor.id) current = label;
-        actors.emplace_back(*actor.id, std::move(label));
-    }
-    if (const auto picked = filtered_combo("##player", current, actors))
-        apply_mission_edit(state, editor.set_player_actor(*picked));
-    begin_row("available");
-    bool commando = scene.player().commando_start.value_or(0) != 0;
-    bool sniper = scene.player().sniper_start.value_or(0) != 0;
-    bool spy = scene.player().spy_start.value_or(0) != 0;
-    bool changed = ImGui::Checkbox("Commando", &commando);
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Sniper", &sniper);
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("Spy", &spy);
-    if (changed) apply_mission_edit(state, editor.set_start_availability(commando, sniper, spy));
-    int maximum{}, minimum{};
-    const auto& metadata = scene.metadata();
-    if (int_field("maximum score", metadata.maximum_score.value_or(0), maximum))
-        apply_mission_edit(state, editor.set_scores(maximum, metadata.minimum_score.value_or(0)));
-    if (int_field("minimum score", metadata.minimum_score.value_or(0), minimum))
-        apply_mission_edit(state, editor.set_scores(metadata.maximum_score.value_or(0), minimum));
-    ImGui::EndTable();
-
-    ImGui::Spacing();
-    if (!ImGui::TreeNode("Environment (.MUNDOVIS)")) return;
-    if (begin_fields("##environment")) {
-        for (const auto& field : scene.environment()) {
-            ImGui::PushID(field.name.c_str());
-            if (const auto* integer = std::get_if<std::int32_t>(&field.value)) {
-                int value{};
-                if (int_field(field.name.c_str(), *integer, value))
-                    apply_mission_edit(state, editor.set_environment(field.name, value));
-            } else if (const auto* real = std::get_if<float>(&field.value)) {
-                float value{};
-                if (float_field(field.name.c_str(), *real, value, 0.1F, "%.3f") && value != *real)
-                    apply_mission_edit(state, editor.set_environment(field.name, value));
-            } else if (const auto* text = std::get_if<std::string>(&field.value)) {
-                std::string value;
-                if (text_field(field.name.c_str(), *text, value))
-                    apply_mission_edit(state, editor.set_environment(field.name, value));
+    // Players (Phase 7): who starts, who is available, and their kits.
+    if (begin_card("##players", "Players", {icons::LC_USERS, {}, nullptr,
+                                            "The commandos of the mission: the one the player controls first, which "
+                                            "ones are available, and what each carries at the start."})) {
+        if (begin_fields("##mission_props")) {
+            begin_row("Starts as");
+            const auto players = player_items(state);
+            std::string current = "(none)";
+            for (const auto& [id, label] : players)
+                if (scene.player().active_player == id) current = label;
+            if (const auto picked = filtered_combo("##player", current, players))
+                apply_mission_edit(state, editor.set_player_actor(*picked));
+            if (players.empty()) {
+                ImGui::SameLine();
+                dim_text("Place a commando from Assets first.");
             }
-            ImGui::PopID();
+            begin_row("Available");
+            bool commando = scene.player().commando_start.value_or(0) != 0;
+            bool sniper = scene.player().sniper_start.value_or(0) != 0;
+            bool spy = scene.player().spy_start.value_or(0) != 0;
+            // On one line when it fits.
+            const float line_end = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+            const auto wrap = [line_end](const char* next) {
+                const auto& style = ImGui::GetStyle();
+                const float width = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize(next).x;
+                if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + width <= line_end) ImGui::SameLine();
+            };
+            bool changed = ImGui::Checkbox("Green Beret", &commando);
+            wrap("Sniper");
+            changed |= ImGui::Checkbox("Sniper", &sniper);
+            wrap("Spy");
+            changed |= ImGui::Checkbox("Spy", &spy);
+            if (changed) apply_mission_edit(state, editor.set_start_availability(commando, sniper, spy));
+            ImGui::EndTable();
         }
-        ImGui::EndTable();
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Starting kits");
+        help_marker("The weapons and tools each commando starts with. A commando without a kit starts with the "
+                    "game's default equipment.");
+        if (const auto* equipment = equipment_component(state)) draw_component_card(state, equipment->id);
+        // A kit for a player who has none yet.
+        std::vector<std::pair<std::int32_t, std::string>> without;
+        std::set<std::string> kitted;
+        if (const auto* equipment = equipment_component(state))
+            for (const auto& value : equipment->lines) try {
+                    if (const auto line = csf::parse_op_line(value); line.op == "kit") kitted.insert(line.get("actor"));
+                } catch (const std::exception&) {
+                }
+        for (const auto& [id, label] : player_items(state))
+            if (!kitted.contains(std::to_string(id))) without.emplace_back(id, label);
+        ImGui::BeginDisabled(without.empty());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (const auto picked = filtered_combo("##add_kit", std::string(without.empty() ? "Every player has a kit"
+                                                                                        : "Give a player a starting kit..."),
+                                               without))
+            add_kit(state, *picked);
+        ImGui::EndDisabled();
+        end_card();
     }
-    ImGui::TreePop();
+
+    if (begin_card("##tips_card", "Tips", {icons::LC_MESSAGE_SQUARE, {}, nullptr,
+                                            "Hints listed in the mission's pause menu, in order."})) {
+        if (const auto* tips = tips_component(state)) draw_component_card(state, tips->id);
+        if (secondary_button((std::string(icons::LC_PLUS) + "  Add a tip").c_str())) add_tip(state);
+        end_card();
+    }
+
+    if (begin_card("##score", "Score", {icons::LC_GAUGE, {}, nullptr,
+                                        "The score range of the mission's end screen."})) {
+        if (begin_fields("##scores")) {
+            int maximum{}, minimum{};
+            const auto& metadata = scene.metadata();
+            if (int_field("maximum score", metadata.maximum_score.value_or(0), maximum))
+                apply_mission_edit(state, editor.set_scores(maximum, metadata.minimum_score.value_or(0)));
+            if (int_field("minimum score", metadata.minimum_score.value_or(0), minimum))
+                apply_mission_edit(state, editor.set_scores(metadata.maximum_score.value_or(0), minimum));
+            ImGui::EndTable();
+        }
+        end_card();
+    }
+
+    CardOptions environment{icons::LC_SUN, {}, nullptr, "Sky, fog and light settings of the scene (.MUNDOVIS)."};
+    environment.default_open = false;
+    if (begin_card("##environment_card", "Environment", environment)) {
+        if (begin_fields("##environment")) {
+            for (const auto& field : scene.environment()) {
+                ImGui::PushID(field.name.c_str());
+                if (const auto* integer = std::get_if<std::int32_t>(&field.value)) {
+                    int value{};
+                    if (int_field(field.name.c_str(), *integer, value))
+                        apply_mission_edit(state, editor.set_environment(field.name, value));
+                } else if (const auto* real = std::get_if<float>(&field.value)) {
+                    float value{};
+                    if (float_field(field.name.c_str(), *real, value, 0.1F, "%.3f") && value != *real)
+                        apply_mission_edit(state, editor.set_environment(field.name, value));
+                } else if (const auto* text = std::get_if<std::string>(&field.value)) {
+                    std::string value;
+                    if (text_field(field.name.c_str(), *text, value))
+                        apply_mission_edit(state, editor.set_environment(field.name, value));
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        end_card();
+    }
+
+    CardOptions start_over{icons::LC_TRIANGLE_ALERT, {}, nullptr,
+                           "Empties this slot's actors, navigation, zones, dummies and scripts, keeping the map "
+                           "and the environment. Ctrl+Z brings everything back."};
+    start_over.default_open = false;
+    if (begin_card("##start_over", "Start over", start_over)) {
+        dim_text("Removes everything placed in this mission slot so you can build a new mission on the same map.");
+        if (danger_button("Start a new mission here")) start_new_mission(state);
+        end_card();
+    }
 }
 
 // One placeable thing in the Assets panel: a class (this mission's or another
@@ -926,23 +951,37 @@ void assets_body(AppState& state) {
 void behaviours_body(AppState& state) {
     auto& tools = state.tools;
     using Preset = AuthoringTools::Preset;
-    ImGui::TextUnformatted("Behaviour");
-    help_marker("Behaviour presets write the actor, its navigation groups and its script together, as one undo "
-                "step. Points are taken at the ground under the viewport centre.");
-    static constexpr std::array<const char*, 5> names{"Guard on patrol", "Guard idling", "Animal on patrol",
-                                                      "Cover group", "Walk grid"};
+    dim_text("A guard or animal already in the mission: select it and pick its behaviour in Properties. Here you "
+             "make new ones, drawing their post or route first, and the navigation the guards use.");
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Make");
+    static constexpr std::array<const char*, 5> names{"A guard on patrol", "A guard at a post", "An animal on patrol",
+                                                      "A cover group", "A walk grid (experimental)"};
+    static constexpr std::array<const char*, 5> descriptions{
+        "A new soldier that walks a route you draw, pausing at each point.",
+        "A new soldier that stands at a post you click, playing idle animations in a loop (smoking, the radio...).",
+        "A new animal (a dog) that walks a route you draw with its walk animation.",
+        "Points where guards run and take cover when they are alerted or in combat, each facing the way the cover "
+        "faces. A guard uses the cover group named on its behaviour card (Cover). Proven in hello world.",
+        "A grid of linked navigation points generated over the map. The shipped missions do not have one (they link "
+        "their routes instead) and whether guards use it off their routes is not confirmed in the game yet; most "
+        "missions do not need one."};
     int preset = static_cast<int>(tools.preset);
     ImGui::SetNextItemWidth(-FLT_MIN);
     const bool picked_preset = ImGui::Combo("##preset", &preset, names.data(), static_cast<int>(names.size()));
     name_last_item("##preset");
     if (picked_preset) tools.preset = static_cast<Preset>(preset);
+    dim_text("%s", descriptions[static_cast<std::size_t>(tools.preset)]);
     const bool actor = tools.preset == Preset::guard_patrol || tools.preset == Preset::guard_idle ||
                        tools.preset == Preset::animal_patrol;
     const bool route = tools.preset == Preset::guard_patrol || tools.preset == Preset::animal_patrol;
     if (begin_fields("##preset_fields")) {
         if (actor) {
             begin_row("Class");
-            if (const auto picked = filtered_combo("##preset_class", class_label(state, tools.class_id), class_items(state)))
+            const auto current = tools.class_id ? class_label(state, tools.class_id)
+                                                : std::string(tools.preset == Preset::animal_patrol ? "Pick an animal..."
+                                                                                                    : "Pick a soldier...");
+            if (const auto picked = filtered_combo("##preset_class", current, character_class_items(state)))
                 tools.class_id = *picked;
         }
         begin_row(tools.preset == Preset::cover_group || tools.preset == Preset::walk_grid ? "Group name" : "Name");
@@ -972,15 +1011,31 @@ void behaviours_body(AppState& state) {
                         if (*group.id == tools.cover_group) current = groups.back().second;
                     }
             if (const auto picked = filtered_combo("##preset_cover", current, groups)) tools.cover_group = *picked;
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                ImGui::SetTooltip("Where it takes cover when alerted or in combat; make one with \"A cover group\".");
         }
         if (tools.preset == Preset::guard_idle) {
-            begin_row("Idle loop");
-            ImGui::InputTextWithHint("##preset_idle", "animation IDs, e.g. 1881:2-4,1385", tools.idle_loop.data(),
-                                     tools.idle_loop.size());
+            begin_row("Idle animation");
+            std::int32_t first = 0;
+            try {
+                const std::string loop(tools.idle_loop.data());
+                if (!loop.empty()) first = std::stoi(loop.substr(0, loop.find_first_of(":,")));
+            } catch (const std::exception&) {
+            }
+            if (!first) first = default_idle_animation(state, tools.class_id ? std::optional(tools.class_id) : std::nullopt);
+            if (const auto picked = animation_combo(state, "##preset_idle", first, true,
+                                                    tools.class_id ? std::optional(tools.class_id) : std::nullopt); picked || !tools.idle_loop[0]) {
+                const auto text = std::to_string(picked.value_or(first));
+                tools.idle_loop.fill('\0');
+                text.copy(tools.idle_loop.data(), std::min(text.size(), tools.idle_loop.size() - 1));
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+                ImGui::SetTooltip("Add more animations, and preview them on the guard, on its card once it is made.");
         }
         if (tools.preset == Preset::animal_patrol) {
             begin_row("Walk animation");
-            ImGui::InputInt("##preset_walk", &tools.walk_animation, 0, 0);
+            if (const auto picked = animation_combo(state, "##preset_walk", tools.walk_animation, true))
+                tools.walk_animation = *picked;
         }
         if (tools.preset == Preset::cover_group) {
             begin_row("Facing");
@@ -1001,7 +1056,17 @@ void behaviours_body(AppState& state) {
         }
         ImGui::EndTable();
     }
-    if (route || tools.preset == Preset::cover_group) {
+    if (route || tools.preset == Preset::cover_group || tools.preset == Preset::guard_idle) {
+        if (ImGui::Button("Draw in viewport")) {
+            set_viewport_tool(state, tools.preset == Preset::cover_group ? GeometryPreview::EditTool::cover
+                                                                         : GeometryPreview::EditTool::route);
+            tools.points.clear();
+            tools.preset_sketch = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(tools.preset == Preset::guard_idle ? "Click the guard's post, then Enter."
+                                                                 : "Click the points, then Enter.");
+        ImGui::SameLine();
         if (ImGui::Button("Add point at view")) add_preset_point(state);
         ImGui::SameLine();
         ImGui::BeginDisabled(tools.points.empty());
@@ -1014,16 +1079,12 @@ void behaviours_body(AppState& state) {
     }
     const bool ready = !actor || tools.class_id != 0;
     ImGui::BeginDisabled(!ready);
-    if (ImGui::Button(tools.preset == Preset::walk_grid ? "Generate" : "Create")) apply_preset(state);
+    if (primary_button(tools.preset == Preset::walk_grid ? "Generate" : "Create")) apply_preset(state);
     ImGui::EndDisabled();
     if (!ready) {
         ImGui::SameLine();
-        dim_text("Pick a class (import it in Assets first).");
+        dim_text("Pick its class first (Assets imports classes of other missions).");
     }
-    ImGui::Separator();
-    if (ImGui::Button("Start a new mission here")) start_new_mission(state);
-    ImGui::SameLine();
-    dim_text("Empties this slot's actors, navigation, zones, dummies and scripts (undoable).");
 }
 
 void flow_body(AppState& state) {
@@ -1106,116 +1167,40 @@ void flow_body(AppState& state) {
 
 void objectives_body(AppState& state) {
     auto& tools = state.tools;
-    const bool project = state.authoring.project != nullptr;
-    // The objectives, equipment and tips already made: their recipes, editable.
-    draw_component_cards(state, {"objective", "objectives", "kit", "equipment", "tips"});
-    ImGui::TextUnformatted("New objectives");
-    help_marker(project ? "Objectives, their completion scripts and the success check, as one undo step. Type the "
-                          "text; the project stores it in the mission's text file (GlobalEK)."
-                        : "Objectives, their completion scripts and the success check, as one undo step. Without an "
-                          "authoring project, text fields are FLI string IDs.");
-    std::vector<std::pair<int, std::string>> zones, actors;
-    if (state.mission.scene) {
-        for (const auto& area : state.mission.scene->areas())
-            if (area.id) zones.emplace_back(*area.id, std::to_string(*area.id) + "  " + area.name.value_or(""));
-        for (const auto& actor : state.mission.scene->actors())
-            if (actor.id) actors.emplace_back(*actor.id, std::to_string(*actor.id) + "  " + actor.name.value_or(""));
+    // Objectives (Phase 7): one list, edited in place; Add appends to it.
+    section("Objectives");
+    help_marker("The goals the player is given, listed in the game's objectives screen. Each objective completes "
+                "itself when what it waits for happens (the player reaches its zone, its actor dies, the object is "
+                "used): you do not need a trigger for that. When every primary objective is complete the mission "
+                "is won.");
+    const auto* objectives = objectives_component(state);
+    if (objectives) draw_component_card(state, objectives->id);
+    else
+        dim_text("No objectives yet. Add one, then pick what completes it; the text is what the player reads.");
+    // Older missions can have several objective lists: their numbers clash.
+    std::size_t lists = 0;
+    for (const auto& component : mission_component_list(state))
+        if (component.op() == "objective" || component.op() == "objectives") ++lists;
+    if (lists > 1) {
+        token_text(Token::warn, "%s This mission has %zu objective lists. Their objectives share numbers, so they "
+                                "overwrite each other: move them into one list (delete one and add its objectives "
+                                "to the other).",
+                   icons::LC_TRIANGLE_ALERT, lists);
+        draw_component_cards(state, {"objective", "objectives"});
     }
-    static constexpr std::array<const char*, 3> kinds{"Reach a zone", "Kill an actor", "Use an object"};
-    for (std::size_t i = 0; i < tools.objectives.size(); ++i) {
-        auto& form = tools.objectives[i];
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::Separator();
-        ImGui::Text("Objective %zu", i + 1);
-        ImGui::SameLine();
-        ImGui::Checkbox("secondary", &form.secondary);
-        ImGui::SameLine();
-        const bool remove = ImGui::SmallButton("Remove");
-        if (begin_fields("##objective")) {
-            begin_row("Kind");
-            ImGui::Combo("##kind", &form.kind, kinds.data(), static_cast<int>(kinds.size()));
-            begin_row(form.kind == 0 ? "Zone" : form.kind == 1 ? "Actor" : "Object");
-            const auto& items = form.kind == 0 ? zones : actors;
-            std::string current = std::to_string(form.target);
-            for (const auto& [id, label] : items)
-                if (id == form.target) current = label;
-            ImGui::SetNextItemWidth(-ImGui::GetFrameHeightWithSpacing());
-            if (const auto picked = filtered_combo("##target", current, items)) form.target = *picked;
-            ImGui::SameLine(0.0F, 2.0F);
-            const bool zone = form.kind == 0;
-            pick_button(state, "##pick_target", {zone ? MissionRecordKey::Kind::area : MissionRecordKey::Kind::actor},
-                        zone ? "Pick the objective's zone" : "Pick the objective's actor",
-                        [&tools, i](const MissionRecordKey& key) {
-                            if (i < tools.objectives.size()) tools.objectives[i].target = key.id;
-                        });
-            begin_row("Text");
-            ImGui::InputText("##label", form.label.data(), form.label.size());
-            begin_row("Done message");
-            ImGui::InputText("##done", form.done.data(), form.done.size());
-            if (form.kind == 2) {
-                begin_row("Prompt");
-                ImGui::InputText("##prompt", form.prompt.data(), form.prompt.size());
-            }
-            ImGui::EndTable();
-        }
-        ImGui::PopID();
-        if (remove) {
-            tools.objectives.erase(tools.objectives.begin() + static_cast<std::ptrdiff_t>(i));
-            break;
-        }
-    }
-    if (ImGui::Button("Add objective")) tools.objectives.emplace_back();
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(90.0F * ui_scale());
-    ImGui::InputText("success message", tools.success_message.data(), tools.success_message.size());
-    ImGui::BeginDisabled(tools.objectives.empty());
-    if (ImGui::Button("Create objectives")) create_objectives(state);
-    ImGui::EndDisabled();
-
-    section("Starting equipment");
-    for (std::size_t i = 0; i < tools.kits.size(); ++i) {
-        auto& kit = tools.kits[i];
-        ImGui::PushID(1000 + static_cast<int>(i));
-        std::string current = std::to_string(kit.actor);
-        for (const auto& [id, label] : actors)
-            if (id == kit.actor) current = label;
-        ImGui::SetNextItemWidth(160.0F * ui_scale());
-        if (const auto picked = filtered_combo("##kit_actor", current, actors)) kit.actor = *picked;
-        ImGui::SameLine(0.0F, 2.0F);
-        pick_button(state, "##pick_kit_actor", {MissionRecordKey::Kind::actor}, "Pick the player this kit is for",
-                    [&tools, i](const MissionRecordKey& key) {
-                        if (i < tools.kits.size()) tools.kits[i].actor = key.id;
-                    });
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-220.0F * ui_scale());
-        ImGui::InputTextWithHint("##weapons", "weapons: 16,102@100/100,...", kit.weapons.data(), kit.weapons.size());
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(60.0F * ui_scale());
-        ImGui::InputInt("select", &kit.selected, 0, 0);
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(60.0F * ui_scale());
-        ImGui::InputInt("disguise", &kit.disguise, 0, 0);
-        ImGui::PopID();
-    }
-    if (ImGui::Button("Add player kit")) tools.kits.emplace_back();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(tools.kits.empty());
-    if (ImGui::Button("Create equipment script")) create_equipment(state);
-    ImGui::EndDisabled();
-
-    section("Mission tips");
-    ImGui::SetNextItemWidth(-150.0F * ui_scale());
-    ImGui::InputTextWithHint("##tips", "FLI IDs, e.g. g200,g199", tools.tips.data(), tools.tips.size());
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!tools.tips[0]);
-    if (ImGui::Button("Create tips script")) create_tips(state);
-    ImGui::EndDisabled();
+    if (primary_button((std::string(icons::LC_PLUS) + "  Add objective").c_str())) add_objective(state);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
+        ImGui::SetTooltip("Adds an objective aimed at the first zone (or enemy); change what completes it on its card.");
 
     // Triggers (E10): When -> If -> Do, each a component; Convert to script detaches one.
+    ImGui::Spacing();
     section("Triggers");
-    help_marker("Mission logic without script text: when something happens (the player enters a zone, an actor "
-                "dies...), if an objective is or is not complete, do some actions. Each trigger is one script "
-                "of a known shape; Convert to script turns it into ordinary script text.");
+    help_marker("Mission logic the player does not see as a goal: when something happens (the player enters a "
+                "zone, an actor dies, a timer runs out), if an objective is or is not complete, do something (show "
+                "a message, sound the alarm, change a guard's alert behaviour, make an object usable). Each trigger "
+                "is one script of a known shape; Convert to script turns it into ordinary script text.");
+    dim_text("Objectives are goals the player sees and they complete themselves. Triggers are everything else "
+             "that happens during the mission.");
     draw_component_cards(state, {"trigger"});
     auto& draft = tools.trigger_draft;
     ImGui::PushID("new_trigger");
@@ -1287,66 +1272,6 @@ void texts_body(AppState& state) {
     if (removed) set_project_text(state, *removed, std::nullopt);
 }
 
-void cutscene_body(AppState& state) {
-    auto& tools = state.tools;
-    draw_component_cards(state, {"shot", "intro"});
-    help_marker("Travelling shots for an intro cutscene: frame each shot in the viewport and capture it; the "
-                "camera moves by the travel distance at constant height while keeping its target in view. Playing "
-                "the shots here approximates the game (its field of view and timing differ).");
-    ImGui::SameLine();
-    if (ImGui::Button("Capture shot from view")) capture_shot(state);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(tools.shots.empty());
-    if (!tools.preview_started) {
-        if (ImGui::Button("Play shots")) play_shots(state);
-    } else if (ImGui::Button("Stop")) {
-        stop_shots(state);
-    }
-    ImGui::EndDisabled();
-    std::optional<std::size_t> removed, raised;
-    for (std::size_t i = 0; i < tools.shots.size(); ++i) {
-        auto& shot = tools.shots[i];
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::Separator();
-        ImGui::Text("Shot %zu", i + 1);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Start")) view_shot(state, i, 0.0F);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("End")) view_shot(state, i, 1.0F);
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Recapture")) {
-            const auto eye = state.preview.eye_position(), target = state.preview.orbit_target();
-            shot.camera = {eye.x, eye.y, eye.z};
-            shot.target = {target.x, target.y, target.z};
-        }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(i == 0);
-        if (ImGui::SmallButton("Up")) raised = i;
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Remove")) removed = i;
-        ImGui::SetNextItemWidth(90.0F * ui_scale());
-        ImGui::DragFloat("seconds", &shot.seconds, 0.1F, 0.5F, 60.0F, "%.1f");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(180.0F * ui_scale());
-        float travel[2]{shot.travel_x, shot.travel_z};
-        if (ImGui::DragFloat2("travel x z (cm)", travel, 5.0F, -5000.0F, 5000.0F, "%.0f")) {
-            shot.travel_x = travel[0];
-            shot.travel_z = travel[1];
-        }
-        dim_text("camera %.0f %.0f %.0f, target %.0f %.0f %.0f", shot.camera.x, shot.camera.y, shot.camera.z,
-                 shot.target.x, shot.target.y, shot.target.z);
-        ImGui::PopID();
-    }
-    if (removed) tools.shots.erase(tools.shots.begin() + static_cast<std::ptrdiff_t>(*removed));
-    if (raised) std::swap(tools.shots[*raised], tools.shots[*raised - 1]);
-    ImGui::Separator();
-    ImGui::Checkbox("Start the actors' scripts (raise INIT)", &tools.send_init);
-    ImGui::BeginDisabled(tools.shots.empty());
-    if (ImGui::Button("Create intro cutscene")) create_intro(state);
-    ImGui::EndDisabled();
-}
-
 void import_body(AppState& state) {
     help_marker("Copies a class (with its models, collision, weapons, textures and animations) or an animation "
                 "from another unpacked mission into this one, updating the package indexes.");
@@ -1384,7 +1309,8 @@ void import_body(AppState& state) {
             const bool present = state.mission.objects && !state.mission.objects->find_class(*definition.class_id).empty();
             ImGui::PushID(*definition.class_id);
             ImGui::BeginDisabled(present);
-            if (ImGui::SmallButton(present ? "present" : "Import"))
+            const auto button = std::string(present ? "present" : "Import") + "##import_" + std::to_string(*definition.class_id);
+            if (ImGui::SmallButton(button.c_str()))
                 apply_mission_edit(state, state.mission.editor->import_class(root, *definition.class_id));
             ImGui::EndDisabled();
             ImGui::SameLine();
@@ -1552,10 +1478,6 @@ void draw_objectives_panel(AppState& state) {
 
 void draw_texts_panel(AppState& state) {
     if (editing_ready(state)) texts_body(state);
-}
-
-void draw_timeline(AppState& state) {
-    if (editing_ready(state)) cutscene_body(state);
 }
 
 void draw_build(AppState& state) {

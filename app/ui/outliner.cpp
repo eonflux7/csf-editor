@@ -22,6 +22,7 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <functional>
 #include <cctype>
@@ -126,9 +127,13 @@ std::vector<std::pair<EntityKind, std::vector<Row>>> build_rows(AppState& state)
             const auto& placement = project->placements[index];
             const auto kind =
                 placement.kind == csf::ProjectPlacement::Kind::prop ? EntityKind::vegetation : EntityKind::building;
+            // A piece says what it was cut from: "piece of RANSOM: EDIFICIO_5".
+            std::string piece = placement.donor.empty() ? "piece" : "piece of " + placement.donor;
+            if (!placement.lightmaps.empty()) piece += ": " + placement.lightmaps.front();
+            if (placement.lightmaps.size() > 1) piece += " +" + std::to_string(placement.lightmaps.size() - 1);
             Row row{kind, {MissionRecordKey::Kind::placement, static_cast<std::int32_t>(index), 0}, placement.id,
                     placement.kind == csf::ProjectPlacement::Kind::building ? placement.asset
-                    : placement.kind == csf::ProjectPlacement::Kind::piece  ? "donor piece"
+                    : placement.kind == csf::ProjectPlacement::Kind::piece  ? piece
                                                                             : "donor prop"};
             row.problem = std::ranges::any_of(state.problems, [&](const Problem& problem) {
                 return problem.subject.kind == ProblemSubject::Kind::placement && problem.subject.text == placement.id;
@@ -185,7 +190,7 @@ std::vector<std::pair<EntityKind, std::vector<Row>>> build_rows(AppState& state)
             intro.detail = std::to_string(std::ranges::count(component.lines, std::string("shot"), [](const std::string& line) {
                                return line.substr(0, line.find(' '));
                            })) + " shots";
-            intro.tooltip = "The intro's cameras, targets and paths; edit the shots in the Intro cutscene tab.";
+            intro.tooltip = "The intro's cameras, targets and paths; edit the shots in the Intro cutscene panel.";
             intro.activate = [&state] { show_panel(state, Panel::timeline); };
             groups[EntityKind::camera_path].push_back(std::move(intro));
             continue;
@@ -369,7 +374,10 @@ void draw_outliner(AppState& state) {
     search_input("##outliner_search", "filter by name or class", state.ui.outliner_query.data(),
                  state.ui.outliner_query.size());
     const auto query = lower(state.ui.outliner_query.data());
+    const auto started = std::chrono::steady_clock::now();
     const auto groups = build_rows(state);
+    state.frame_stats.outliner_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     ImGui::BeginChild("##outliner_rows", {0, 0}, ImGuiChildFlags_None);
     for (const auto& [kind, rows] : groups) {
         std::vector<const Row*> shown;

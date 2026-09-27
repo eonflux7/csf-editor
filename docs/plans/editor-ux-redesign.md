@@ -889,6 +889,112 @@ E11, V7, V8, T9, T10 (long run), T12. `docs/guides/gui.md` and
 and a playtest of a GUI-made mission that is not hello world is recorded in
 its playtest log.
 
+**Progress (2026-09-26).** Built:
+
+- **E11, the timeline.** The Intro cutscene panel (`app/ui/timeline.cpp`,
+  model in `rwsman/cutscene_timeline`) shows the intro component's shots as
+  strips on a time ruler: drag a strip's right edge to change its duration,
+  drag on the ruler (or click a strip) to move the playhead, which moves the
+  view camera; **Play** and **Look through**. There is no separate draft list
+  any more: **Capture shot** makes the intro with its first shot and appends
+  the others, and every edit (duration, order, removal, a part taken from
+  the view) regenerates the component as one undo step. A shot kept as it
+  was keeps its line verbatim, so hello world's exact aim, heading and speed
+  survive edits to other shots. The shot card selects a shot's camera, end or
+  target record (the gizmo moves it, through `move_component_record`), and
+  the viewport draws each shot's path, direction, target and sight lines
+  while the panel is shown, with the camera at the playhead.
+- **V7.** The grid fades with distance from its centre; a mission's ground
+  without a lightmap is tinted darker; each actor has a contact shadow on the
+  ground as wide as its marker at any distance; the selection has a second
+  outline ring and a soft glow (a new `glow` marker shape). Models render as
+  before.
+- **V8.** The About dialog and the empty window title follow the mode (CSF
+  Mission Editor, or rws-man in Inspect).
+- **T10, the long run.** `RWSMAN_UI_MONKEY_STEPS=<n>` makes every walk `n`
+  steps; the walk also captures, plays and looks through shots now. 6,000
+  steps (seeds 1-3) and 7,500 more (seeds 4-8) pass on the Debug build.
+- **T12.** `tests/ui/local/ransom_performance.uiscript` opens Ransom with
+  every marker layer and label shown and checks `perf.frame_ms` (the median
+  CPU frame time of the last 120 frames), `perf.outliner_ms` and
+  `perf.problems_ms` against budgets of 16, 4 and 20 ms (measured 1.2, 0.14
+  and 0.02 ms), with `expect-at-most`; `require-release` skips it in Debug.
+- **Harness.** `drag <target> <dx> <dy>` drags a widget; `timeline.*` and
+  `perf.*` state keys. The fixture gained an empty cutscene program and the
+  invisible camera class 197. `fixture_timeline.uiscript` captures two shots,
+  drags an edge, scrubs, and moves a target with the gizmo.
+- **Docs.** `docs/guides/mission-editor.md` is rewritten around the journey
+  (create, terrain, dressing, actors, players, zones, objectives and
+  triggers, intro, check, build and play, then components); `gui.md` is
+  organised by mode; `AGENTS.md` and `ui-tests.md` cover the timeline, the
+  long run and the performance budget.
+
+**T9, scoped (the user chose structure over bytes).**
+`tests/ui/local/hello_world_e2e.uiscript` (`RWSMAN_CORPUS`,
+`RWSMAN_HELLO_WORLD`) makes a project with the wizard, gives it hello world's
+terrain (copied as Blender's Send writes it, then **Rebuild map**), imports
+the dog, the radio and the crate through the import form, places the players
+and props from Assets, makes the cover group, the two guards at a post, the
+two patrols and the dog from the Behaviours tab with their points drawn in
+the viewport, generates the walk grid, draws both zones, makes the three
+objectives (targets picked with the eyedropper), both kits and the tips, and
+captures a five-shot intro; then it saves and reopens the project. The result
+has hello world's 24 actors, 2 zones, 5 dummies and 16 scripts, every event
+raised, no problems, and survives the reopen unchanged. It has one
+navigation group fewer (the players get no start group) and a different walk
+grid (it keeps clear of props its own way). Built for it: **Draw in
+viewport** on the Behaviours form (J5: the Route or Cover tool fills the
+preset's points, one click for a guard's post); numbered widget IDs in the
+objective and kit rows (`pick_target_2`, `weapons_1`); the kit on three
+lines (its weapons field had shrunk to a pixel); `filtered_combo` named for
+scripts; unique import buttons; `log.last_warning` and `problems.*` state
+keys; and `mission.hash` taken in path order, since a reopened project lists
+its files in another order.
+
+Byte identity through the GUI still needs: settable record IDs (hello world
+chooses its own), `scene.py`'s rounding (positions to 0.1 cm, computed
+angles and speeds to 6 decimals), players standing on a start group's
+points, typed shot positions, and a portrait field on the guard presets.
+Zones have no name field in Properties either.
+
+### Phase 7: the first user's feedback (2026-09-27)
+
+The user made a new project, *Checkpoint* (Convoy slot), with the GUI alone
+and played it. Their findings, what caused each, and what changed:
+
+| Finding | Cause | Change |
+|---|---|---|
+| Recent files on Home "leak" the selection | `icon_row` rows span every column of Home's one-row table: 1100 px wide, highlighted and clickable over the other two columns | rows are as wide as their column |
+| Objectives and triggers both react to a kill or a zone; the difference is unclear | the trigger form's default action was *Complete an objective*, and nothing said objectives complete themselves | Objectives and Triggers each explain what they are; a new trigger shows a message by default, *Complete an objective* is last in its menu, and a trigger completing an objective that completes itself is flagged on its card |
+| The UI is all over the place; IDs typed by hand (animations, weapons, tips, objective numbers) | forms and cards grew as text fields over operation lines | `app/ui/pickers.hpp`: classes, animations (loops first, with a play button that previews the clip on the actor, `app/animation_preview.cpp`), weapons (Spanish names with English), objectives and texts picked by name; idle loops, kits and tips edited as rows; trigger objective numbers are combos |
+| The officer glows in game when killed | not the editor: most likely the game marking the body of an officer whose uniform the Spy can take (classes have a `.GRADO`; `DISFRAZ_COGIDO` is an engine event) | none; to confirm in game: kill a common soldier and compare |
+| Objectives did not show at first; adding one to the staged ones gave errors | the first two builds had no GlobalEK.pak (no project texts yet), and **Create objectives** numbered every new batch from 1, making a second objectives list whose `SET_OBJETIVO 1` overwrote the first and whose success check ignored it | one objectives list per mission: **Add objective** appends to it (numbered after the last), and each objective is edited on its card; Problems flags a script showing a text the project does not have, an objective set up by two scripts, and one completed by two scripts when one of them checks for success (Checkpoint's leftover `trigger` and `officer` scripts) |
+| Animation overrides have two unexplained fields | an unlabelled slot combo (Spanish engine names) beside an animation combo | columns *When the game would play* / *it plays*, slots named in English (`rwsman/animation_slots`), the raw name in a tooltip, a preview button, and help that points guards at their Behaviour instead |
+| An existing guard cannot be given an idle animation | behaviours only made new actors | the **Behaviour** card in Properties: **Guard a post** / **Patrol a route** (**Walk a route** for animals) makes the actor again from the recipe in its place, keeping its ID (so targets still resolve), as one undo step |
+| Player setup belongs in the Mission tab | kits and tips were in the Objectives tab | the Mission tab has Players (starting player, available commandos, a kit per player), Tips, Score, Environment and **Start over** (moved from Behaviours) |
+| What is a walk grid, a cover group? | no explanation | each preset has a line saying what it makes; the walk grid is marked experimental (the shipped missions have none, and whether guards use it is not confirmed) |
+
+Also fixed: a trigger named with a space (`officer kill`) wrote `.NOMBRE
+officer` and a stray `kill` into the script; `script_text` now writes the
+name as one token (`officer_kill`). Selecting something in the viewport or
+the Outliner brings Properties in front of the tabs beside it (not after an
+eyedropper pick). Component cards keep their operation lines, **Detach** and
+**Delete** in a folded **Advanced** section, and no longer say "made by a
+recipe". The Outliner and the graph show an objective's words, not its text
+ID.
+
+Tests: `tests/document_tests.cpp` covers the name token, the doubled
+completion finding, the missing text problem and the slot labels;
+`fixture_components` gives a guard a behaviour from its card and adds an
+idle animation; `fixture_viewport_tools` adds two objectives to one list and
+retargets one with the eyedropper; `hello_world_e2e` now makes its
+objectives, kits (weapons by name) and tips through the new panels, and
+still ends with hello world's structure and no problems.
+
+Not changed: the user's Checkpoint project still has the leftover `trigger`,
+`trigger_INI` and `officer` scripts; Problems names them, and deleting them
+(Script mode) or their completing actions is the user's call.
+
 ---
 
 ## 10. Decisions

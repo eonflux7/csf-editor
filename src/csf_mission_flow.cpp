@@ -97,6 +97,10 @@ MissionFlow MissionFlow::build(const ProgramDocument* mission, const ProgramDocu
                 const auto operand = [&](const std::size_t i) -> const ProgramOperand* {
                     return i < operands.size() ? &operands[i] : nullptr;
                 };
+                for (const auto& o : operands)
+                    if (o.tag == "FLI")
+                        if (auto id = text_of(o); !id.empty() && std::ranges::find(script.texts, id) == script.texts.end())
+                            script.texts.push_back(std::move(id));
                 if (opcode == "SEND_EVENT" || opcode == "SEND_EVENT_BICHO") {
                     for (const auto& o : operands)
                         if (o.tag == "EVENT") {
@@ -173,6 +177,37 @@ MissionFlow MissionFlow::build(const ProgramDocument* mission, const ProgramDocu
             findings.push_back({Severity::warning, objective.defined_by.empty() ? std::nullopt
                                                                                 : std::optional(objective.defined_by.front()),
                                 label + " is set up but nothing completes it (SET_OBJETIVO_SUCCESS)"});
+        const auto names = [&](const std::vector<std::int32_t>& ids) {
+            std::string text;
+            for (const auto id : ids) {
+                const auto* script = flow.script("mission", id);
+                text += (text.empty() ? "" : ", ") + (script && !script->name.empty() ? script->name : std::to_string(id));
+            }
+            return text;
+        };
+        if (std::set(objective.defined_by.begin(), objective.defined_by.end()).size() > 1)
+            findings.push_back({Severity::warning, objective.defined_by[1],
+                                label + " is set up by " + std::to_string(objective.defined_by.size()) + " scripts (" +
+                                    names(objective.defined_by) + "): two objective lists use the same number"});
+        if (const std::set completers(objective.completed_by.begin(), objective.completed_by.end()); completers.size() > 1) {
+            // The objectives recipe's completion script also checks for the
+            // mission's success, and runs only while its objective is open:
+            // another script completing it first skips that check.
+            const auto checks = std::ranges::find_if(completers, [&](const std::int32_t id) {
+                const auto* script = flow.script("mission", id);
+                return script && script->mission_success;
+            });
+            if (checks != completers.end())
+                findings.push_back({Severity::warning, *checks,
+                                    label + " is completed by " + std::to_string(completers.size()) + " scripts (" +
+                                        names(objective.completed_by) + "). The one that also checks for the mission's "
+                                        "success may never run if another completes it first, and then the mission is "
+                                        "never won; complete each objective in one place"});
+            else
+                findings.push_back({Severity::info, objective.completed_by.front(),
+                                    label + " is completed by " + std::to_string(completers.size()) + " scripts (" +
+                                        names(objective.completed_by) + ")"});
+        }
         if (objective.label.empty() && !objective.defined_by.empty())
             findings.push_back({Severity::info, objective.defined_by.front(), label + " has no text (SET_OBJETIVO_LABEL)"});
     }

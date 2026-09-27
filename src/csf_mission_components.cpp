@@ -36,7 +36,8 @@ constexpr IdKey id_keys[] = {
     {"cover-group", "id", Type::navigation_group}, {"walk-grid", "id", Type::navigation_group},
     {"objective", "script", Type::script},    {"objectives", "setup", Type::script},
     {"equipment", "script", Type::script},    {"tips", "script", Type::script},
-    {"intro", "script", Type::script},        {"trigger", "script", Type::script},
+    {"intro", "script", Type::script},        {"intro", "setup", Type::script},
+    {"trigger", "script", Type::script},
     {"trigger", "setup", Type::script},       {"actor", "id", Type::actor},
     {"prop", "id", Type::actor},              {"nav-group", "id", Type::navigation_group},
     {"dummy", "id", Type::dummy},             {"area", "id", Type::area},
@@ -118,6 +119,8 @@ std::vector<std::string> pin_ids(const MissionEditor& editor, std::vector<OpLine
             // A trigger has a setup script only for zones and used objects.
             if (line.op == "trigger" && key.key == "setup" && line.get("when") != "zone" && line.get("when") != "used")
                 continue;
+            // So has a cutscene only when a zone starts it.
+            if (line.op == "intro" && key.key == "setup" && !line.find("zone")) continue;
             if (key.op == line.op && !line.find(key.key)) line.set(key.key, take(key.type, 1));
         }
         if (line.op == "intro") {
@@ -329,6 +332,13 @@ std::string component_kind_title(const std::string_view op) {
 std::string component_title(const MissionComponent& component) {
     auto title = component_kind_title(component.op());
     if (component.lines.empty()) return title;
+    try {
+        // A cutscene played on entering a zone ends with its intro line.
+        const auto last = parse_op_line(component.lines.back());
+        if (last.op == "intro" && last.find("zone"))
+            return "Zone cutscene " + last.get("cutscene-name", "CUT_INICIO") + " (zone " + last.get("zone") + ")";
+    } catch (const std::exception&) {
+    }
     try {
         const auto line = parse_op_line(component.lines.front());
         if (const auto* name = line.find("name")) return title + ' ' + *name;

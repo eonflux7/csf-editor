@@ -40,6 +40,29 @@ std::vector<Problem> collect_problems(const ProblemInputs& inputs) {
             }
             add(std::move(problem));
         }
+        if (const auto& texts = inputs.project_texts)
+            for (const auto& script : inputs.flow->scripts())
+                for (const auto& id : script.texts) {
+                    std::int32_t number{};
+                    if (id.empty() || !std::ranges::all_of(id, [](const char c) { return c >= '0' && c <= '9'; }))
+                        continue;  // g014 and the like: the game's own texts
+                    try {
+                        number = std::stoi(id);
+                    } catch (const std::exception&) {
+                        continue;
+                    }
+                    if (number < texts->first || number > texts->last || std::ranges::find(texts->ids, id) != texts->ids.end())
+                        continue;
+                    Problem problem;
+                    problem.severity = Problem::Severity::error;
+                    problem.source = "Texts";
+                    problem.message = "Script " + (script.name.empty() ? std::to_string(script.id) : script.name) +
+                                      " shows text " + id + ", which the project does not have: the game shows "
+                                      "nothing there (type the text in the objective or trigger, or add it in Texts)";
+                    problem.kind = EntityKind::script;
+                    problem.subject = {ProblemSubject::Kind::script, script.id, script.program};
+                    add(std::move(problem));
+                }
     }
 
     for (const auto& finding : inputs.heights) {
@@ -64,6 +87,15 @@ std::vector<Problem> collect_problems(const ProblemInputs& inputs) {
             problem.fix_command = "mission.project_resnap";
             problem.fix_label = "Resnap all";
         }
+        add(std::move(problem));
+    }
+
+    for (const auto& finding : inputs.lightmaps) {
+        Problem problem;
+        problem.severity = Problem::Severity::warning;
+        problem.source = "Lighting";
+        problem.message = csf::lightmap_finding_text(finding);
+        problem.kind = EntityKind::building;
         add(std::move(problem));
     }
 

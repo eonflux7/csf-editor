@@ -18,6 +18,22 @@ expect mission.history.top "Edit Guard patrol WALKER"
 expect selection.component_state clean
 expect selection.title WALKER
 
+# Starts: on a mission event instead of INIT (an arrival), typed as a new
+# event name; back to the mission start.
+remember selection.component_lines
+click Properties::start
+click new_event
+type OFICIAL_LLEGA
+key Enter
+expect mission.history.top "Edit Guard patrol WALKER"
+expect-contains selection.component_lines start=OFICIAL_LLEGA
+click Properties::start
+click "When the mission starts"
+expect-same selection.component_lines
+undo
+undo
+expect selection.component_state clean
+
 # A route point more, then back.
 remember count.nav_points
 click "Properties::Add point"
@@ -76,14 +92,14 @@ expect-same mission.hash
 add-component "objective n=1 kind=zone target=1 label=0900 done=0902|objectives success=g014"
 expect count.components 1
 command mission.objectives
-click Objectives::label
+click Objectives::label_1
 key Ctrl+A
 type 0907
 key Enter
 expect mission.history.top "Edit Objectives"
 expect count.components 1
-click Objectives::kind
-click "Kill an actor"
+click Objectives::kind_1
+click "An actor is killed"
 expect mission.history.top "Edit Objectives"
 undo-all
 expect-same mission.hash
@@ -91,7 +107,7 @@ expect-same mission.hash
 # The walk grid: previewed in the viewport, then generated as a component.
 command mission.presets
 click Behaviours::preset
-click "Walk grid"
+click "A walk grid (experimental)"
 click Behaviours::preview_grid
 expect viewport.grid_preview_points 62
 remember count.nav_groups
@@ -100,3 +116,24 @@ expect-changed count.nav_groups
 expect count.components 1
 expect mission.history.top "Add Walk grid MALLA"
 undo
+
+# A guard no recipe made gets its behaviour on its Behaviour card (Phase 7):
+# the recipe makes it again in its place, keeping its ID, and owns it; the
+# card then edits its idle animations. Selecting it in the Outliner shows
+# Properties even while another tab of that dock is in front.
+remember mission.hash
+command mission.objectives
+click Outliner::GUARD_PATROL
+expect panel.properties true
+expect selection.component ""
+click "Properties::Guard a post"
+expect mission.history.top "Give GUARD_PATROL a behaviour"
+expect count.components 1
+expect selection.id 6
+expect selection.component "Guard at a post GUARD_PATROL"
+click Properties::idle_add
+click "idle  100"
+expect mission.history.top "Edit Guard at a post GUARD_PATROL"
+expect selection.component_state clean
+undo-all
+expect-same mission.hash

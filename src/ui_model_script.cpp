@@ -24,7 +24,7 @@ constexpr std::array ops{
     OpSpec{"expect-contains", 2, 2}, OpSpec{"screenshot", 1, 1},   OpSpec{"compare", 1, 2},
     OpSpec{"dump-state", 1, 1},     OpSpec{"lint", 1, 1},          OpSpec{"resize", 1, 1},
     OpSpec{"list-items", 0, 1},     OpSpec{"remember", 1, 1},      OpSpec{"expect-same", 1, 1},
-    OpSpec{"expect-changed", 1, 1},  OpSpec{"require", 1, 1},     OpSpec{"drag-to-world", 4, 4},  OpSpec{"copy", 2, 2},          OpSpec{"monkey", 2, 2},        OpSpec{"undo-all", 0, 0},       OpSpec{"add-component", 1, 1},  OpSpec{"setting", 2, 2},  OpSpec{"remove", 1, 1},
+    OpSpec{"expect-changed", 1, 1},  OpSpec{"require", 1, 1},     OpSpec{"require-release", 0, 0},  OpSpec{"expect-at-most", 2, 2},     OpSpec{"drag-to-world", 4, 4},  OpSpec{"drag", 3, 4},  OpSpec{"copy", 2, 2},          OpSpec{"monkey", 2, 2},        OpSpec{"undo-all", 0, 0},       OpSpec{"add-component", 1, 1},  OpSpec{"setting", 2, 2},  OpSpec{"remove", 1, 1},
 };
 
 // Splits one line into steps of tokens. Quotes group, '#' outside quotes ends

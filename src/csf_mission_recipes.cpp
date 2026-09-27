@@ -46,6 +46,8 @@ std::vector<std::string> cover_lines(const std::optional<std::int32_t> group) {
             "SET_IA_COMBATE (THIS) (IA_COMBATE MOVIL_A_PARAPETO)"};
 }
 
+std::string start_event(const std::string& event) { return event.empty() ? default_start_event : event; }
+
 std::int32_t script_id(const MissionEditor& editor, const ScriptSpec& spec) {
     return spec.id ? *spec.id : editor.next_script_id(mission_program(editor));
 }
@@ -78,10 +80,20 @@ std::string script_number(const float value) {
     return text;
 }
 
+std::string script_name_token(const std::string_view name) {
+    std::string token;
+    for (const char c : name) {
+        const bool word = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+        token.push_back(word ? c : '_');
+    }
+    if (!token.empty() && token.front() >= '0' && token.front() <= '9') token.insert(0, "S_");
+    return token;
+}
+
 std::string script_text(const std::int32_t id, const std::string_view name, const std::int32_t trigger,
                         const std::vector<std::string>& events, const std::vector<std::string>& actions,
-                        const std::vector<std::string>& conditions) {
-    std::string out = "[\n  .ID " + std::to_string(id) + "\n  .NOMBRE " + std::string(name) +
+                        const std::vector<std::string>& conditions, const std::vector<ScriptVariable>& variables) {
+    std::string out = "[\n  .ID " + std::to_string(id) + "\n  .NOMBRE " + script_name_token(name) +
                       "\n  .CARPETA \"\"\n  .FLAGS [\n    .TRIGGER " + std::to_string(trigger) +
                       "\n    .ENABLED 1\n    .VALIDO 1\n  ]\n";
     if (!events.empty()) {
@@ -93,6 +105,13 @@ std::string script_text(const std::int32_t id, const std::string_view name, cons
         out += "  .CONDICIONES {\n";
         for (const auto& condition : conditions) out += "    " + condition + "\n";
         out += "  }\n";
+    }
+    if (!variables.empty()) {
+        out += "  .VARIABLES (\n";
+        for (const auto& variable : variables)
+            out += "    [\n      .ID " + std::to_string(variable.id) + "\n      .TYPE " + variable.type + "\n      .NOMBRE " +
+                   script_name_token(variable.name) + "\n      .VALOR " + variable.value + "\n    ]\n";
+        out += "  )\n";
     }
     out += "  .ACCIONES {\n";
     for (const auto& action : actions) out += "    " + action + "\n";
@@ -151,21 +170,32 @@ EditResult add_intro_cutscene(MissionEditor& editor, const IntroCutscene& recipe
     const auto first_dummy = next(scene.dummies(), recipe.first_dummy);
     const auto first_actor = next(scene.actors(), recipe.first_actor);
     const auto first_group = next(scene.navigation(), recipe.first_group);
-    const auto intro_id = recipe.intro.id.value_or(editor.next_script_id(program));
-    auto cutscene_next = editor.next_script_id(*cutscene_file);
+    // Script IDs are unique across both programs: take them all from one
+    // counter, so no script is renumbered on the way in (its references would not be).
+    auto next_id = editor.next_script_id(program);
+    const auto take = [&](const std::optional<std::int32_t> wanted) {
+        const auto id = wanted.value_or(next_id);
+        next_id = std::max(next_id, id + 1);
+        return id;
+    };
+    const auto intro_id = take(recipe.intro.id);
+    const auto setup_id = recipe.zone ? take(recipe.setup.id) : 0;
     std::array<std::int32_t, 4> cutscene{};
-    for (std::size_t k = 0; k < cutscene.size(); ++k) {
-        cutscene[k] = recipe.cutscene_ids[k].value_or(cutscene_next);
-        cutscene_next = std::max(cutscene_next, cutscene[k] + 1);
-    }
+    for (std::size_t k = 0; k < cutscene.size(); ++k) cutscene[k] = take(recipe.cutscene_ids[k]);
     const auto n = static_cast<std::int32_t>(recipe.shots.size());
     const auto fade = [](const bool in) {
         return "FX_FADE (NUMERO 1.0) (BOOL " + std::string(in ? "TRUE" : "FALSE") + ") (VECTOR 0.0 0.0 0.0)";
     };
-    std::vector<std::string> intro{fade(false), "CUTSCENE_NO_INTERACTIVA (BOOL TRUE)", "PLAYER_TERCERA (BOOL TRUE)"};
+    std::vector<std::string> intro;
+    const auto zone = recipe.zone ? "(ZONA " + std::to_string(*recipe.zone) + ")" : std::string{};
+    // A zone's cutscene runs once, from a fade out (Ransom's CUT_ENTRADA): DEACT
+    // removes the armed entry (ACT with FALSE would arm a leave event instead, KB-scn-10).
+    if (recipe.zone)
+        intro.insert(intro.end(), {"DEACT_BICHO_EVENT_ZONA (PLAYER) " + zone + " (BOOL TRUE)", fade(true), "PAUSE (NUMERO 1.5)"});
+    intro.insert(intro.end(), {fade(false), "CUTSCENE_NO_INTERACTIVA (BOOL TRUE)", "PLAYER_TERCERA (BOOL TRUE)"});
     // INIT is a mission event (KB-scripting-14): the actor scripts that wait
     // for it start here, as Convoy's intro sends it.
-    if (recipe.send_init) intro.emplace_back("SEND_EVENT (EVENT INIT)");
+    if (recipe.send_init && !recipe.zone) intro.emplace_back("SEND_EVENT (EVENT INIT)");
     for (std::int32_t k = 0; k < n; ++k)
         intro.push_back("CREATE_VIEWPOINT (DUMMY " + std::to_string(first_dummy + k) + ") (BICHO " +
                         std::to_string(first_actor + 2 * k) + ") (BICHO " + std::to_string(first_actor + 2 * k + 1) +
@@ -175,6 +205,8 @@ EditResult add_intro_cutscene(MissionEditor& editor, const IntroCutscene& recipe
                                "PLAYER_TERCERA (BOOL FALSE)"});
     for (std::int32_t k = 0; k < n; ++k) intro.push_back("NAVEGACION_STOP (BICHO " + std::to_string(first_actor + 2 * k) + ")");
     intro.push_back(fade(false));
+    // And never again, even when another commando (another PLAYER) enters.
+    if (recipe.zone) intro.push_back("TRIGGER_OFF (TRIGGER " + std::to_string(intro_id) + ")");
 
     std::vector<std::string> camera;
     for (std::int32_t k = 0; k < n; ++k) {
@@ -191,7 +223,7 @@ EditResult add_intro_cutscene(MissionEditor& editor, const IntroCutscene& recipe
     }
     const auto name = recipe.cutscene_name;
     const auto header_only = [](const std::int32_t id, const std::string& script_name) {
-        return "[\n  .ID " + std::to_string(id) + "\n  .NOMBRE " + script_name +
+        return "[\n  .ID " + std::to_string(id) + "\n  .NOMBRE " + script_name_token(script_name) +
                "\n  .CARPETA \"\"\n  .FLAGS [\n    .TRIGGER 1\n    .ENABLED 1\n    .VALIDO 1\n  ]\n]\n";
     };
     const std::vector<std::string> cutscene_texts{
@@ -211,13 +243,16 @@ EditResult add_intro_cutscene(MissionEditor& editor, const IntroCutscene& recipe
             const auto heading = shot.heading.value_or(
                 std::atan2(shot.camera_end.x - shot.camera.x, shot.camera_end.z - shot.camera.z));
             const auto suffix = std::to_string(k + 1);
-            if (!steps.ok(editor.add_navigation_group("Rutas_Cutscene_Inicio_Camara_" + suffix, 0,
+            // A zone's cutscene names its helpers after itself: names are unique in a mission.
+            const auto prefix = recipe.zone ? script_name_token(recipe.cutscene_name) : std::string("INTRO");
+            if (!steps.ok(editor.add_navigation_group(
+                    (recipe.zone ? "Rutas_" + prefix + "_Camara_" : std::string("Rutas_Cutscene_Inicio_Camara_")) + suffix, 0,
                                                       {{shot.camera, heading, 0}, {shot.camera_end, heading, 0}},
                                                       {{1, 2}}, first_group + k)))
                 return steps.last;
-            ActorSpec cameraman{first_actor + 2 * k, "INTRO_CAMERA_" + suffix, recipe.camera_class, {shot.camera, 0, 0},
+            ActorSpec cameraman{first_actor + 2 * k, prefix + "_CAMERA_" + suffix, recipe.camera_class, {shot.camera, 0, 0},
                                 std::pair{first_group + k, 1}, {}, {}};
-            ActorSpec target{first_actor + 2 * k + 1, "INTRO_TARGET_" + suffix, recipe.camera_class, {shot.target, 0, 0},
+            ActorSpec target{first_actor + 2 * k + 1, prefix + "_TARGET_" + suffix, recipe.camera_class, {shot.target, 0, 0},
                              std::nullopt, {}, {}};
             if (!steps.ok(editor.add_actor_record(cameraman)) || !steps.ok(editor.add_actor_record(target)))
                 return steps.last;
@@ -226,10 +261,18 @@ EditResult add_intro_cutscene(MissionEditor& editor, const IntroCutscene& recipe
             if (!steps.ok(editor.add_dummy("CAMARA_" + std::to_string(dummy), shot.camera, yaw, pitch, dummy)))
                 return steps.last;
         }
-        if (!steps.ok(editor.add_script(program, script_text(intro_id, recipe.intro.name.empty() ? "CUTSCENE_INICIO"
-                                                                                                 : recipe.intro.name,
-                                                             1, {"START_GAME"}, intro))))
+        const auto intro_name = recipe.intro.name.empty() ? "CUTSCENE_INICIO" : recipe.intro.name;
+        if (recipe.zone) {
+            if (!steps.ok(editor.add_script(program, script_text(intro_id, intro_name, 1, {"BICHO_ENT_ZONA"}, intro,
+                                                                 {"CMP_OP_ZONA (EVT_ZONA) (OP_BOOLEAN 0) " + zone}))) ||
+                !steps.ok(editor.add_script(program,
+                                            script_text(setup_id, recipe.setup.name.empty() ? intro_name + "_INI" : recipe.setup.name,
+                                                        1, {recipe.arm_event.empty() ? "START_GAME" : recipe.arm_event},
+                                                        {"ACT_BICHO_EVENT_ZONA (PLAYER) " + zone + " (BOOL TRUE)"}))))
+                return steps.last;
+        } else if (!steps.ok(editor.add_script(program, script_text(intro_id, intro_name, 1, {"START_GAME"}, intro)))) {
             return steps.last;
+        }
         for (const auto& text : cutscene_texts)
             if (!steps.ok(editor.add_script(*cutscene_file, text))) return steps.last;
         return steps.finish("Added an intro of " + std::to_string(n) + " shot(s): script " + std::to_string(intro_id) +
@@ -293,7 +336,7 @@ EditResult add_objectives(MissionEditor& editor, const Objectives& recipe) {
             const auto zone = "(ZONA " + std::to_string(objective.target) + ")";
             events = {"BICHO_ENT_ZONA"};
             conditions = {"CMP_OP_ZONA (EVT_ZONA) (OP_BOOLEAN 0) " + zone};
-            actions = {"ACT_BICHO_EVENT_ZONA (PLAYER) " + zone + " (BOOL FALSE)"};
+            actions = {"DEACT_BICHO_EVENT_ZONA (PLAYER) " + zone + " (BOOL TRUE)"};
             break;
         }
         case Objective::Kind::kill_actor:
@@ -342,8 +385,9 @@ EditResult add_equipment(MissionEditor& editor, const Equipment& recipe) {
 
 bool trigger_when_proven(const Trigger::When when) noexcept {
     // A mission-level script on a custom event: shipped programs listen to
-    // custom events from actor scripts only.
-    return when != Trigger::When::event;
+    // custom events from actor scripts only. A body found is Country's
+    // watcher: VEO_BICHO on a dead actor is not yet seen working in game.
+    return when != Trigger::When::event && when != Trigger::When::body_found;
 }
 
 bool trigger_action_proven(const TriggerAction::Kind kind) noexcept {
@@ -375,11 +419,40 @@ std::vector<std::string> trigger_script_texts(const Trigger& trigger, const std:
         texts.push_back(script_text(setup_id, trigger.setup.name.empty() ? name + "_INI" : trigger.setup.name, 1,
                                     {"START_GAME"}, setup));
     }
-    std::vector<std::string> events, actions;
+    std::vector<std::string> events, actions, extra_conditions;
+    std::vector<ScriptVariable> variables;
     std::string condition;
     switch (trigger.when) {
     case When::mission_start:
     case When::timer: events = {"START_GAME"}; break;
+    case When::alerted:
+        // Convoy's SET_ALARMA, as the shipped program writes it.
+        events = {"IA_CHANGE_STATE"};
+        extra_conditions = {"CMP_OP_BANDO (GET_BANDO (EVT_BICHO1)) (OP_BOOLEAN 0) (BANDO ALEMAN)",
+                            "OR (CMP_OP_ACTITUD (EVT_ACTITUD) (OP_BOOLEAN 0) (ACTITUD ALERTA)) (CMP_OP_ACTITUD "
+                            "(EVT_ACTITUD) (OP_BOOLEAN 0) (ACTITUD COMBATIENDO))"};
+        break;
+    case When::body_found: {
+        // There is no body-found event: once a second, for each watched
+        // soldier who is dead, whether a living one sees him; the finder is
+        // kept for the alarm's position. Only the dead cost anything.
+        events = {"START_GAME"};
+        variables = {{1, "BOOL", "Encontrado", "FALSE"}, {2, "BICHO", "Descubridor", "0"}};
+        actions = {"WHILE (NOT (VAR 1))", "  PAUSE (NUMERO 1.0)"};
+        for (const auto dead : trigger.watch) {
+            actions.push_back("  IF (NOT (ESTA_VIVO (BICHO " + std::to_string(dead) + ")))");
+            for (const auto finder : trigger.watch) {
+                if (finder == dead) continue;
+                const auto who = "(BICHO " + std::to_string(finder) + ")";
+                actions.insert(actions.end(), {"    IF (AND (ESTA_VIVO " + who + ") (VEO_BICHO " + who + " (BICHO " +
+                                                   std::to_string(dead) + ")))",
+                                               "      SET (VAR 1) (BOOL TRUE)", "      SET (VAR 2) " + who, "    ENDIF"});
+            }
+            actions.emplace_back("  ENDIF");
+        }
+        actions.emplace_back("WEND");
+        break;
+    }
     case When::enter_zone:
         events = {"BICHO_ENT_ZONA"};
         condition = "CMP_OP_ZONA (EVT_ZONA) (OP_BOOLEAN 0) " + zone;
@@ -394,14 +467,19 @@ std::vector<std::string> trigger_script_texts(const Trigger& trigger, const std:
         break;
     case When::event: events = {trigger.event}; break;
     }
+    // The watcher decides when it happens, so its objective test comes then.
+    std::string late_test;
     if (trigger.if_objective) {
         const auto done = "OBJETIVO_COMPLETADO " + number_operand(trigger.if_objective->first);
         const auto test = trigger.if_objective->second ? done : "NOT (" + done + ")";
-        condition = condition.empty() ? test : "AND (" + condition + ") (" + test + ")";
+        if (trigger.when == When::body_found) late_test = test;
+        else if (trigger.when == When::alerted) extra_conditions.push_back(test);
+        else condition = condition.empty() ? test : "AND (" + condition + ") (" + test + ")";
     }
+    const auto first_action = actions.size();
     if (trigger.when == When::timer) actions.push_back("PAUSE (NUMERO " + script_number(trigger.seconds) + ")");
-    // Once: the zone stops reporting the player; the others turn the trigger off at the end.
-    if (trigger.when == When::enter_zone) actions.push_back("ACT_BICHO_EVENT_ZONA (PLAYER) " + zone + " (BOOL FALSE)");
+    // Once: the zone stops reporting the player, and every kind turns the trigger off at the end.
+    if (trigger.when == When::enter_zone) actions.push_back("DEACT_BICHO_EVENT_ZONA (PLAYER) " + zone + " (BOOL TRUE)");
     for (const auto& action : trigger.actions) {
         const auto actor = "(BICHO " + std::to_string(action.number) + ")";
         switch (action.kind) {
@@ -412,9 +490,11 @@ std::vector<std::string> trigger_script_texts(const Trigger& trigger, const std:
         case Kind::raise_event: actions.push_back("SEND_EVENT (EVENT " + action.text + ")"); break;
         case Kind::alarm: {
             // As Convoy's camp: a threat heard far around where it happened, then the alarm.
-            const std::string where = trigger.when == When::actor_killed  ? "(EVT_BICHO1)"
+            const std::string where = trigger.when == When::actor_killed || trigger.when == When::alerted
+                                          ? "(EVT_BICHO1)"
                                       : trigger.when == When::object_used ? target_actor
                                       : trigger.when == When::enter_zone  ? "(PLAYER)"
+                                      : trigger.when == When::body_found  ? "(VAR 2)"
                                                                           : "";
             if (!where.empty())
                 actions.push_back("CREA_ESTIMULO_ACUSTICO (REACTIVIDAD AMENAZA_DIRECTA) (GET_PATHPOINT " + where +
@@ -431,16 +511,25 @@ std::vector<std::string> trigger_script_texts(const Trigger& trigger, const std:
         case Kind::mission_success: actions.push_back("SET_MISSION_SUCCESS (BOOL TRUE)"); break;
         }
     }
-    if (trigger.when == When::actor_killed || trigger.when == When::object_used || trigger.when == When::event)
+    if (!late_test.empty()) {
+        for (auto k = first_action; k < actions.size(); ++k) actions[k].insert(0, "  ");
+        actions.insert(actions.begin() + static_cast<std::ptrdiff_t>(first_action), "IF (" + late_test + ")");
+        actions.emplace_back("ENDIF");
+    }
+    if (trigger.when == When::actor_killed || trigger.when == When::object_used || trigger.when == When::event ||
+        trigger.when == When::enter_zone || trigger.when == When::alerted)
         actions.push_back("TRIGGER_OFF (TRIGGER " + std::to_string(script_id) + ")");
-    texts.push_back(script_text(script_id, name, 1, events, actions, condition.empty() ? std::vector<std::string>{}
-                                                                                     : std::vector{condition}));
+    auto conditions = condition.empty() ? std::vector<std::string>{} : std::vector{condition};
+    conditions.insert(conditions.end(), extra_conditions.begin(), extra_conditions.end());
+    texts.push_back(script_text(script_id, name, 1, events, actions, conditions, variables));
     return texts;
 }
 
 EditResult add_trigger(MissionEditor& editor, const Trigger& recipe) {
     if (recipe.actions.empty()) return {false, "The trigger does nothing: add an action", {}};
     if (recipe.when == Trigger::When::event && recipe.event.empty()) return {false, "Name the event it waits for", {}};
+    if (recipe.when == Trigger::When::body_found && recipe.watch.size() < 2)
+        return {false, "A body is found by another watched soldier: watch at least two", {}};
     auto next = editor.next_script_id(mission_program(editor));
     const auto setup_id = trigger_needs_setup(recipe) ? recipe.setup.id.value_or(next) : 0;
     if (trigger_needs_setup(recipe)) next = std::max(next, setup_id + 1);
@@ -485,7 +574,8 @@ EditResult add_guard_patrol(MissionEditor& editor, GuardPatrol recipe) {
         }
         actions.emplace_back("WEND");
         std::int32_t added{};
-        if (!steps.ok(editor.add_script(program, script_text(id, recipe.script.name, 0, {"INIT"}, actions), &added)))
+        if (!steps.ok(editor.add_script(program, script_text(id, recipe.script.name, 0, {start_event(recipe.start_event)}, actions),
+                                          &added)))
             return steps.last;
         auto actor = recipe.actor;
         actor.placement.position = recipe.route.points.front().position;
@@ -511,7 +601,7 @@ EditResult add_guard_idle(MissionEditor& editor, GuardIdle recipe) {
                               : "  PLAY_ANMBDD (THIS) (ANM_BDD " + std::to_string(step.animation) + ")");
     actions.emplace_back("WEND");
     return actor_with_script(editor, "Add " + recipe.actor.name, recipe.actor,
-                             script_text(id, recipe.script.name, 0, {"INIT"}, actions), {});
+                             script_text(id, recipe.script.name, 0, {start_event(recipe.start_event)}, actions), {});
 }
 
 EditResult add_animal_patrol(MissionEditor& editor, AnimalPatrol recipe) {
@@ -531,7 +621,8 @@ EditResult add_animal_patrol(MissionEditor& editor, AnimalPatrol recipe) {
                               std::to_string(recipe.walk_animation) + ")");
         actions.emplace_back("WEND");
         std::int32_t added{};
-        if (!steps.ok(editor.add_script(program, script_text(id, recipe.script.name, 0, {"INIT"}, actions), &added)))
+        if (!steps.ok(editor.add_script(
+                program, script_text(id, recipe.script.name, 0, {start_event(recipe.start_event)}, actions), &added)))
             return steps.last;
         auto actor = recipe.actor;
         actor.scripts.push_back(added);

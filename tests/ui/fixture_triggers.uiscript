@@ -27,5 +27,23 @@ click "Sound the alarm"
 expect form.trigger_actions 1
 expect form.trigger_unverified 1
 
+# A guard finds a body (unverified): every enemy is watched, the alarm sounds.
+click Objectives::trigger_name
+type CADAVER
+key Enter
+click Objectives::trigger_when
+click "A guard finds a body"
+click "Objectives::Create trigger"
+expect count.components 2
+expect mission.history.top "Add Trigger CADAVER"
+# A guard alerted is Convoy's own alarm, offered without asking.
+click "Objectives::Offer unverified events and actions"
+click Objectives::trigger_when
+expect item:"A guard is alerted" visible
+click "A guard is alerted"
+click Objectives::trigger_when
+expect item:"A guard finds a body" missing
+key Escape
+
 undo-all
 expect-same mission.hash

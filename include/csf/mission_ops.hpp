@@ -28,10 +28,11 @@
 //   scale-class class= scale=                         (a scaled copy of a class, IDs from 500)
 //   script file=<path>          cutscene-script file=<path>   (relative to the ops file)
 //   guard-patrol [id=] name= class= [heading=] route= route-name= points= [pause=] [cover=]
-//                [script=] script-name= [loop=0]
+//                [script=] script-name= [loop=0] [start=<event>]
 //   guard-idle [id=] name= class= pos= [heading=] [portrait=] [cover=] [script=] script-name=
-//              loop=<anim>[:<min>-<max>],<anim>...
+//              loop=<anim>[:<min>-<max>],<anim>... [start=<event>]
 //   animal-patrol [id=] name= class= pos= [heading=] route= route-name= points= walk= [script=] script-name=
+//                 [start=<event>]   (a behaviour's script starts on INIT unless start= names a mission event)
 //   cover-group [id=] name= points=
 //   walk-grid [id=] [name=] spacing= x=<min>..<max> z=<min>..<max> [stagger=0|1]
 //             [exclude=x0,z0,x1,z1;...] [avoid=x,z,r;...]   (heights from the ground)
@@ -43,9 +44,10 @@
 //   tips tips=<fli>,... [pos=<x>,<y>] [script=] [script-name=]
 //   shot camera=x,y,z [end=x,y,z] target=x,y,z [seconds=] [aim=<rot>,<pitch>] [heading=] [speed=]   (then:)
 //   intro [class=197] [send-init=0] [dummy=] [actor=] [group=] [script=] [script-name=]
+//         [zone= [setup=] [setup-name=] [arm=<event>]]
 //         [cutscene=<main>,<init>,<end>,<camera>] [cutscene-name=]
-//   trigger [script=] name= [setup=] [setup-name=] when=start|zone|killed|used|event|timer [target=]
-//           [event=] [seconds=] [if=<objective>:done|open]
+//   trigger [script=] name= [setup=] [setup-name=] when=start|zone|killed|used|event|timer|alerted|body-found
+//           [target=] [event=] [seconds=] [watch=<actor>,...] [if=<objective>:done|open]
 //           do=<action>;...   (complete:<n> message:<fli> raise:<event> alarm:<seconds>
 //                              alert:<actor>:<mode> combat:<actor>:<mode> ghost-on:<actor> ghost-off:<actor> success)
 namespace csf {

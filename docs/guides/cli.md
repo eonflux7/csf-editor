@@ -232,18 +232,22 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
     ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.rws [--keep-props]
 
 # An authoring project (docs/plans/editor-project-format.md): build its map,
-# collision map and sector map into <project>/build/ when they are stale.
+# collision map and sector map into <project>/build/ when they are stale. A
+# `warning` line names each lightmap much brighter than the slot map's own.
 ./build/Release/csf-mod project-build ~/dev/csf-mods/hello-world-project [--force]
 # Placements and anchored actors off their height rules (> 1 cm), and the resnap.
 ./build/Release/csf-mod project-heights ~/dev/csf-mods/hello-world-project [--resnap]
 # A mission built from operations and presets (include/csf/mission_ops.hpp),
 # and how its scripts connect (events, objectives, findings).
 ./build/Release/csf-mod mission-ops out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn my.ops
+# (behaviours take start=<event> to begin on a mission event instead of INIT;
+# triggers take when=alerted, Convoy's camp alarm, and when=body-found watch=<actors>)
 # The same with each recipe kept as an editable component (out/mission/components.csfops),
 # then listed, checked (each regenerates identically), and one edited in place.
 ./build/Release/csf-mod mission-ops out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn my.ops --components
 ./build/Release/csf-mod mission-components out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn list
 ./build/Release/csf-mod mission-components out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn check
+# (--ground <terrain.csfworld> before the action when a component is a walk grid)
 ./build/Release/csf-mod mission-components out/mission ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn set 6 1 pause=5
 ./build/Release/csf-mod mission-flow ../CSF_unpacks/Convoy/Maps/FR03/Convoy.scn --workspace out/mission
 
@@ -256,6 +260,13 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 ./build/Release/csf-mod project-deploy ~/dev/csf-mods/checkpoint <build-id>
 ./build/Release/csf-mod project-rollback ~/dev/csf-mods/checkpoint <build-id>
 ./build/Release/csf-mod project-playtest ~/dev/csf-mods/checkpoint <build-id> worked "guards patrol"
+
+# Pieces of another mission's map: a project.csfproj `donor fr01 Ransom Maps/FR01/FR01.rws
+# Maps/FR01/FR01_col.rws` record, then `piece barn donor=fr01 lightmaps=EDIFICIO_3 <box> ...`
+# keeps only the triangles lit by those lightmap groups; project-build copies the
+# textures and baked lightmaps they name into build/ (see editor-project-format.md).
+# `texture SANDBAG sources/textures/SANDBAG.png FFLRA11B` gives a model a texture of its own.
+# project-lightmaps then lists and packages lightmaps and textures alike.
 
 # Buildings and baked lightmaps of an authoring project.
 ./build/Release/csf-mod project-place ~/dev/csf-mods/hello-world-project hut-1 hut 3000 16.3 -2500 0 --ground 0

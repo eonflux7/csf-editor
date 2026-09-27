@@ -408,7 +408,7 @@ def scripts() -> dict[int, str]:
             'TIMED_STRING_V2 (FLI "0905") (NUMERO 5.0) (NUMERO 4.0)',
         ], [f"CMP_OP_BICHO (EVT_BICHO2) (OP_BOOLEAN 0) (BICHO {RADIO_GHOST})"]),
         S_ZONE: script(S_ZONE, "CASA_ALCANZADA", 1, ["BICHO_ENT_ZONA"], [
-            f"ACT_BICHO_EVENT_ZONA (PLAYER) (ZONA {ZONE_HOUSE}) (BOOL FALSE)",
+            f"DEACT_BICHO_EVENT_ZONA (PLAYER) (ZONA {ZONE_HOUSE}) (BOOL TRUE)",
             "SET_OBJETIVO_SUCCESS (NUMERO 1.0) (BOOL TRUE)",
             'TIMED_STRING_V2 (FLI "0902") (NUMERO 5.0) (NUMERO 4.0)',
             *CHECK_BOTH,

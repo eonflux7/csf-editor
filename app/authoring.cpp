@@ -92,6 +92,7 @@ void start_job(AppState& state) {
                 outcome.report.rebuilt = outcome.report.rebuilt || part.rebuilt;
             }
             outcome.findings = project.height_report(actors);
+            outcome.lightmaps = project.lightmap_brightness();
             outcome.project = std::move(project);
         } catch (const std::exception& error) {
             outcome.error = error.what();
@@ -100,15 +101,15 @@ void start_job(AppState& state) {
     });
 }
 
-// Lists the project's built lightmaps in the open mission's texture list and
-// packages them from build/ (an undoable edit; saving keeps it).
+// Lists the project's built lightmaps and copied donor textures in the open
+// mission's texture list and packages them from build/ (an undoable edit; saving keeps it).
 void register_lightmaps(AppState& state) {
     const auto& project = *state.authoring.project;
     auto* workspace = state.mission.project.get();
-    if (project.lightmaps.empty() || !workspace || !mission_editable(state)) return;
+    const auto textures = project.packaged_textures();
+    if (textures.empty() || !workspace || !mission_editable(state)) return;
     std::vector<std::string> entries;
-    for (const auto& lightmap : project.lightmaps) {
-        const auto relative = project.lightmap_package_path(lightmap);
+    for (const auto& relative : textures) {
         const auto built = project.directory / "build" / relative;
         std::error_code error;
         if (!std::filesystem::is_regular_file(built, error)) continue;
@@ -133,7 +134,7 @@ void register_lightmaps(AppState& state) {
     if (std::ranges::all_of(entries, [&](const std::string& e) { return listed.find(lower_ascii(e)) != std::string::npos; }))
         return;
     if (apply_mission_edit(state, editor.add_texture_list_entries(entries)))
-        state.notify(LogLevel::info, "Listed the project's lightmaps in the mission; save to keep them");
+        state.notify(LogLevel::info, "Listed the project's lightmaps and textures in the mission; save to keep them");
 }
 
 // The project's rebuilt outputs that the open mission packages (the maps, the
@@ -206,6 +207,7 @@ void finish_job(AppState& state, AuthoringSession::Outcome outcome) {
     const auto before = session.checked ? session.findings.size() : std::numeric_limits<std::size_t>::max();
     session.checked = true;
     session.findings = std::move(outcome.findings);
+    session.lightmap_findings = std::move(outcome.lightmaps);
     if (!session.findings.empty()) {
         // Open the report after a rebuild or when something new is off; known
         // findings on opening the project only go to the status bar.

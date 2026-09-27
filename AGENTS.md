@@ -27,7 +27,9 @@
   in `app/commands.cpp`; add commands there. Write ImGui colors only in
   `app/ui/theme.cpp` (tokens, the per-kind palette and the viewport palette). Build
   authoring panels from the `app/ui/widgets.hpp` helpers (cards, buttons by role,
-  empty states, help markers) so they stay consistent; the design is
+  empty states, help markers) so they stay consistent, and let authors pick
+  classes, animations, weapons, objectives and texts by name with
+  `app/ui/pickers.hpp` rather than typing IDs; the design is
   `docs/plans/editor-ux-redesign.md`.
 - Mission editing: `csf::MissionEditor` (`src/csf_mission_edit.cpp`) owns the
   edited files as canonical `csf::Tree`s and is the only writer; the GUI calls it
@@ -46,7 +48,9 @@
   (`app/mission_authoring.hpp`). Triggers are the `trigger` recipe
   (`csf::Trigger`); Script mode's editor is `app/ui/script_editor.cpp` (its
   text logic in `rwsman/script_syntax`) and the flow graph
-  `app/ui/flow_graph.cpp`.
+  `app/ui/flow_graph.cpp`. The intro is a timeline over the intro component's
+  shot lines (`app/ui/timeline.cpp`, model in `rwsman/cutscene_timeline`); its
+  records move through `move_component_record` like any component's.
   `csf-mod audit` must keep every corpus file byte-identical through the tree
   writer and the source text; regenerate `src/csf_script_signatures.cpp` with
   `tools/generate_script_signatures.py` instead of editing it.
@@ -74,9 +78,13 @@
   `build/`; the format is `docs/plans/editor-project-format.md`. Hello world's
   recipe (`tools/hello_world/build.sh`) creates one; its World and sector
   files must stay identical to v13's unless a change intends otherwise.
+  Country (`tools/country/build.sh`, `docs/plans/country-mission.md`) is
+  the CLI-only showcase: pieces of other missions' maps (`donor`, `piece
+  donor= lightmaps=`), textures of its own (`texture`), pulled scripts, and
+  `tools/country/catalog.py`, the first asset catalogue.
 - GUI-free helpers (settings, command registry, fuzzy matcher, navigation history,
   operation log, search index, diagnostics table, mission discovery, entity kinds,
-  the problem list, UI scripts, contrast, script syntax) live in the
+  the problem list, UI scripts, contrast, script syntax, cutscene timeline) live in the
   `rwsman_ui_model` library (`include/rwsman/`, `src/ui_model_*.cpp`). It must not
   depend on ImGui, GLFW, or OpenGL, and its tests go in `tests/document_tests.cpp`.
 - The GUI writes only to the per-user config directory (`settings.ini`, `layout.ini`,
@@ -92,9 +100,13 @@
 - UI tests are `tests/ui/*.uiscript` scenario scripts (`rws-man --run-script`,
   guide: `docs/guides/ui-tests.md`) against the generated fixture mission
   (`tests/ui/make_fixture.cpp`); `tests/ui/local/` holds scripts that need
-  local game data and skip without it. Run them with `./test.sh --ui` /
+  local game data and skip without it (`RWSMAN_HELLO_WORLD`, `RWSMAN_CORPUS`,
+  `RWSMAN_TEST_INSTALL`; `ransom_performance` is the frame-time budget and
+  runs in Release only). Run them with `./test.sh --ui` /
   `./test.ps1 -Ui` after GUI changes, and add or extend a script for new UI
-  behaviour. Reference PNGs in `tests/ui/golden/` come from the fixture only.
+  behaviour; `RWSMAN_UI_MONKEY_STEPS=<n>` lengthens the random walks for a
+  long run. Reference PNGs in `tests/ui/golden/` come from the fixture only;
+  regenerate them with `--update-goldens` after an intended visual change.
 - Locally available unpacked game resources live in `../CSF_unpacks`; treat them
   as read-only reference data and do not copy them into the repository.
 - Executable reverse-engineering work lives in `docs/format-reversal/`, with its

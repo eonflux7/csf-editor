@@ -3,7 +3,9 @@
 #include "rws/map_assembly.hpp"
 #include "rws/world_model.hpp"
 
+#include <compare>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -22,12 +24,18 @@ namespace rws {
 //   v <x> <y> <z> <nx> <ny> <nz> <u0> <v0> [<u1> <v1>]
 //   f <a> <b> <c> <material> <visual|collision|both>
 //   prop <donor-instance-id>[,<id>...] <x> <y> <z> [<yaw-degrees>]
-//   piece <x0> <y0> <z0> <x1> <y1> <z1> <x> <y> <z> [<yaw-degrees>]
+//   piece <x0> <y0> <z0> <x1> <y1> <z1> <x> <y> <z> [<yaw-degrees>] [donor=<key>] [lightmaps=<name>,...]
 //
 // A prop copies a donor scene instance (and its Clump); a piece copies the
 // donor Worlds' own triangles lying wholly inside a box, visual and collision,
 // with their donor materials. Both are turned about +Y and moved so the bottom
 // centre of their donor bounds (a piece: of its box) lands on <x> <y> <z>.
+// A piece with `donor=` is cut from another map (a WorldDonor, e.g. a
+// building of Ransom's FR01), its materials copied with their textures
+// renamed as the donor says. With `lightmaps=` it keeps only the visual
+// triangles lit by those lightmaps (a building is its lightmap group:
+// EDIFICIO_3 means EDIFICIO_3_Lm) and the collision triangles lying on them,
+// so the ground and fences around a building stay behind.
 //
 // Lines starting with '#' and blank lines are ignored. Texture names select a
 // donor visual material, surfaces a donor collision material by its Pyro name.
@@ -52,6 +60,24 @@ struct WorldPiece {
     Vec3 inf, sup;  // donor box
     Vec3 position;
     float yaw_degrees{};
+    std::string donor;                   // a WorldDonor key; empty: the map's own donor
+    std::vector<std::string> lightmaps;  // lightmap groups to keep (without _Lm); empty: all
+};
+
+// Another map that pieces are cut from. Its textures (base and lightmap) keep
+// their names unless `renamed` maps the lower-case name to a new one, as when
+// the target map has a different texture of that name.
+struct WorldDonor {
+    std::string key;
+    std::span<const std::byte> map, collision;
+    std::map<std::string, std::string> renamed;
+};
+
+// A texture that copied donor materials name: the build must ship the
+// donor's `source` DDS as `name` in the map's texture folder.
+struct DonorTexture {
+    std::string donor, source, name;
+    auto operator<=>(const DonorTexture&) const = default;
 };
 
 struct WorldSource {
@@ -74,11 +100,23 @@ struct WorldCompileOptions {
     // keep their dual-pass lightmap, so this picks one lightmap texel.
     bool constant_lightmap_uv{true};
     std::array<float, 2> lightmap_uv{0.5F, 0.5F};
+    // Textures of the World's own (lower-case name -> the donor texture whose
+    // material they copy, e.g. "sandbag" -> "FWAL_00A"): a material naming one
+    // is that donor material with its base texture renamed.
+    std::map<std::string, std::string> new_textures;
 };
 
 struct CompiledWorlds {
     WorldModel visual, collision;
     std::vector<std::string> notes;  // what was resolved from where
+    std::vector<DonorTexture> textures;  // of other donors' materials, sorted
+};
+
+// Another donor's Worlds, parsed.
+struct DonorWorlds {
+    std::string key;
+    WorldModel visual, collision;
+    std::map<std::string, std::string> renamed;
 };
 
 // Materials are copied from the donor Worlds (the map .rws and its _col.rws):
@@ -88,7 +126,8 @@ struct CompiledWorlds {
 [[nodiscard]] DecodeResult<CompiledWorlds>
 compile_world_source(const WorldSource& source, const WorldModel& donor_visual,
                      const WorldModel& donor_collision, const WorldCompileOptions& options = {},
-                     std::span<const WorldBuildTriangle> extra_collision = {});
+                     std::span<const WorldBuildTriangle> extra_collision = {},
+                     std::span<const DonorWorlds> donors = {});
 
 // Complete map files for a World source: `map` is <map>.rws (the placed props'
 // Clumps and instance records, or with `keep_donor_props` the donor's, then
@@ -98,13 +137,15 @@ compile_world_source(const WorldSource& source, const WorldModel& donor_visual,
 struct BuiltMap {
     std::vector<std::byte> map, collision;
     std::vector<std::string> notes;
+    std::vector<DonorTexture> textures;  // see CompiledWorlds
     std::uint32_t visual_triangles{}, visual_sectors{}, collision_triangles{}, collision_sectors{};
 };
 [[nodiscard]] DecodeResult<BuiltMap> build_map_files(const WorldSource& source,
                                                      std::span<const std::byte> donor_map,
                                                      std::span<const std::byte> donor_collision,
                                                      const WorldCompileOptions& options = {},
-                                                     bool keep_donor_props = false);
+                                                     bool keep_donor_props = false,
+                                                     std::span<const WorldDonor> donors = {});
 
 // `.csfworld` text for a source; parsing it gives the same source (positions
 // keep their exact values).
@@ -126,6 +167,9 @@ void append_world_source(WorldSource& target, const WorldSource& part,
 [[nodiscard]] DecodeResult<std::vector<std::byte>> replace_material_lightmap(std::span<const std::byte> material,
                                                                              std::string_view lightmap);
 [[nodiscard]] std::string material_lightmap_name(std::span<const std::byte> material);
+// The same for the base texture (the Material's own Texture chunk).
+[[nodiscard]] DecodeResult<std::vector<std::byte>> replace_material_texture(std::span<const std::byte> material,
+                                                                            std::string_view texture);
 
 // Texture name of a Material (0x07) chunk, or its Pyro surface name.
 [[nodiscard]] std::string material_texture_name(std::span<const std::byte> material);

@@ -1,0 +1,557 @@
+# T9 (docs/plans/editor-ux-redesign.md): hello world's journey through the GUI
+# alone (RWSMAN_CORPUS=<unpacked game>, RWSMAN_HELLO_WORLD=<its project>, for
+# the terrain). A new project in the Convoy slot gets hello world's terrain,
+# its imports, players, props, cover, guards, dog, walk grid, zones,
+# objectives, equipment, tips and a five-shot intro, all by clicks in the
+# viewport, the Outliner and the panels; then it is saved and reopened.
+#
+# The result has hello world's structure, not its bytes: the same actors,
+# zones, dummies and scripts, every event raised and no problems. It differs
+# where the GUI works differently: the players get no start group (so one
+# navigation group fewer), the walk grid keeps clear of props in its own way,
+# IDs are the next free ones and positions are where the clicks land.
+require RWSMAN_CORPUS
+require RWSMAN_HELLO_WORLD
+remove $UI_OUTPUT/HelloE2E
+resize 1600x1200
+setting resource_root $RWSMAN_CORPUS
+setting projects_root $UI_OUTPUT
+click "New project..."
+click "New project::new_project_name"
+key Ctrl+A
+type HelloE2E
+click "New project::Create"
+wait idle
+expect project.slot Convoy
+# The terrain, as Blender's Send writes it: hello world's; then Rebuild map.
+copy $RWSMAN_HELLO_WORLD/sources/world HelloE2E/sources/world
+command mission.project_rebuild
+wait idle
+# Classes and animations from other missions, through the import form.
+click "Assets::Import a class without placing it"
+click Assets::##donor
+type $RWSMAN_CORPUS/Escape
+click Assets::##import_filter
+key Ctrl+A
+type "484  "
+click Assets::import_484
+click Assets::##import_filter
+key Ctrl+A
+type "383  "
+click Assets::import_383
+click Assets::##donor
+key Ctrl+A
+type $RWSMAN_CORPUS/Ransom
+click Assets::##import_filter
+key Ctrl+A
+type "431  "
+click Assets::import_431
+click Assets::##import_anim
+key Ctrl+A
+type 2383
+click "Assets::Import animation"
+click Assets::##import_anim
+key Ctrl+A
+type 2384
+click "Assets::Import animation"
+click "Assets::Import a class without placing it"
+# Everything is placed from above.
+command view.ortho_top
+command view.frame_all
+# The players and the props, from the Assets panel.
+click Assets::##asset_filter
+key Ctrl+A
+type "Francotirador"
+click "Assets::Francotirador"
+click-world 3500 0 -3500
+click Properties::##name
+key Ctrl+A
+type Sniper
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type 7.3
+key Enter
+expect selection.title Sniper
+click Assets::##asset_filter
+key Ctrl+A
+type "Espia"
+click "Assets::Espia"
+click-world 3700 0 -3300
+click Properties::##name
+key Ctrl+A
+type Spy
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type 112.5
+key Enter
+expect selection.title Spy
+click Assets::##asset_filter
+key Ctrl+A
+type Caja
+click "Assets::Caja Madera_Estatica"
+click-world 350 0 -3050
+click Properties::##name
+key Ctrl+A
+type RADIO_CRATE
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type 0
+key Enter
+expect selection.title RADIO_CRATE
+click Assets::##asset_filter
+key Ctrl+A
+type Mercedes
+click "Assets::CA_Mercedes Quemado"
+click-world 600 0 -2700
+click Properties::##name
+key Ctrl+A
+type CAMP_TRUCK
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type 90
+key Enter
+expect selection.title CAMP_TRUCK
+click Assets::##asset_filter
+key Ctrl+A
+type "MontonesMadera"
+click "Assets::MontonesMadera"
+click-world 150 0 -3450
+click Properties::##name
+key Ctrl+A
+type CAMP_WOOD_1
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type 20
+key Enter
+expect selection.title CAMP_WOOD_1
+click Assets::##asset_filter
+key Ctrl+A
+type "MontonesMadera"
+click "Assets::MontonesMadera"
+click-world 950 0 -3550
+click Properties::##name
+key Ctrl+A
+type CAMP_WOOD_2
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type -35
+key Enter
+expect selection.title CAMP_WOOD_2
+click Assets::##asset_filter
+key Ctrl+A
+type Chatarra
+click "Assets::Camion Chatarra"
+click-world -900 0 3300
+click Properties::##name
+key Ctrl+A
+type SCRAP_TRUCK
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type 160
+key Enter
+expect selection.title SCRAP_TRUCK
+click Assets::##asset_filter
+key Ctrl+A
+type Mp40
+click "Assets::Arma Mp40"
+click-world 2600 0 -3300
+click Properties::##name
+key Ctrl+A
+type PICKUP_MP40
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type 0
+key Enter
+expect selection.title PICKUP_MP40
+click Assets::##asset_filter
+key Ctrl+A
+type Telefono
+click "Assets::Item Telefono Ghost"
+click-world 350 0 -3050
+click Properties::##name
+key Ctrl+A
+type CAMP_RADIO
+key Enter
+double-click Properties::##heading
+key Ctrl+A
+type 0
+key Enter
+expect selection.title CAMP_RADIO
+expect count.actors 9
+# Behaviours: the cover group, two guards at a post, two patrols and the dog.
+command view.panel.behaviours
+click Behaviours::##preset
+click "A cover group"
+click Behaviours::##preset_name
+key Ctrl+A
+type Parapeto_Campamento
+key Enter
+click "Behaviours::Draw in viewport"
+click-world 330 0 -2800
+click-world 330 0 -2550
+click-world 0 0 -3450
+click-world 780 0 -3600
+click-world -1150 0 3300
+key Enter
+click Behaviours::Create
+expect count.components 1
+click Behaviours::##preset
+click "A guard at a post"
+click Behaviours::##preset_class
+type Pistola
+click "Infanteria Oficial Pistola  36"
+click Behaviours::##preset_name
+key Ctrl+A
+type OFICIAL
+key Enter
+double-click Behaviours::##preset_heading
+key Ctrl+A
+type -90
+key Enter
+click Behaviours::##preset_script
+key Ctrl+A
+type OFICIAL_FUMAR
+key Enter
+click Behaviours::##preset_idle
+type 1881
+click "SPFumPiMitIdle  1881  · loops"
+click "Behaviours::Draw in viewport"
+click-world 500 0 -3150
+key Enter
+click Behaviours::Create
+expect mission.history.top "Add Guard at a post OFICIAL"
+# Its idle loop on its card: smoking 2-4 times, then the other smoking idle.
+# Selecting it in the Outliner brings Properties forward.
+click Outliner::OFICIAL
+expect panel.properties true
+click Properties::##idle_times_1
+key Ctrl+A
+type 2-4
+key Enter
+expect mission.history.top "Edit Guard at a post OFICIAL"
+click Properties::##idle_add
+type 1385
+click "SPFumPiMed  1385  · loops"
+expect mission.history.top "Edit Guard at a post OFICIAL"
+command view.panel.behaviours
+click Behaviours::##preset
+click "A guard at a post"
+click Behaviours::##preset_class
+type "Normal 2"
+click "Infanteria Normal 2  3"
+click Behaviours::##preset_name
+key Ctrl+A
+type GE_HOUSE
+key Enter
+double-click Behaviours::##preset_heading
+key Ctrl+A
+type 90
+key Enter
+click Behaviours::##preset_script
+key Ctrl+A
+type GE_RADIO
+key Enter
+click Behaviours::##preset_idle
+type 1782
+click "SPTfnoHablar  1782  · loops"
+click "Behaviours::Draw in viewport"
+click-world -1400 0 -2000
+key Enter
+click Behaviours::Create
+expect mission.history.top "Add Guard at a post GE_HOUSE"
+click Behaviours::##preset
+click "A guard on patrol"
+click Behaviours::##preset_class
+type "Normal 1 Rifle"
+click "Infanteria Normal 1 Rifle  13"
+click Behaviours::##preset_name
+key Ctrl+A
+type GE_CAMP
+key Enter
+double-click Behaviours::##preset_heading
+key Ctrl+A
+type -90
+key Enter
+click Behaviours::##preset_script
+key Ctrl+A
+type GE_RUTA_CAMPAMENTO
+key Enter
+click Behaviours::##preset_route
+key Ctrl+A
+type RUTA_CAMPAMENTO
+key Enter
+double-click Behaviours::##preset_pause
+key Ctrl+A
+type 3
+key Enter
+click "Behaviours::Draw in viewport"
+click-world 1600 0 -2400
+click-world -400 0 -2400
+click-world -400 0 -3900
+click-world 1600 0 -3900
+key Enter
+click Behaviours::Create
+expect mission.history.top "Add Guard patrol GE_CAMP"
+click Behaviours::##preset
+click "A guard on patrol"
+click Behaviours::##preset_class
+type "Normal 2 Rifle"
+click "Infanteria Normal 2 Rifle  21"
+click Behaviours::##preset_name
+key Ctrl+A
+type GE_NORTH
+key Enter
+double-click Behaviours::##preset_heading
+key Ctrl+A
+type -101.5
+key Enter
+click Behaviours::##preset_script
+key Ctrl+A
+type GE_RUTA_NORTE
+key Enter
+click Behaviours::##preset_route
+key Ctrl+A
+type RUTA_NORTE
+key Enter
+double-click Behaviours::##preset_pause
+key Ctrl+A
+type 4
+key Enter
+click "Behaviours::Draw in viewport"
+click-world 1000 0 4000
+click-world -4000 0 4000
+key Enter
+click Behaviours::Create
+expect mission.history.top "Add Guard patrol GE_NORTH"
+click Behaviours::##preset
+click "An animal on patrol"
+click Behaviours::##preset_class
+type Doberman
+click "Doberman  431"
+click Behaviours::##preset_name
+key Ctrl+A
+type DOBERMAN
+key Enter
+double-click Behaviours::##preset_heading
+key Ctrl+A
+type -90
+key Enter
+click Behaviours::##preset_script
+key Ctrl+A
+type PERRO_RUTA
+key Enter
+click Behaviours::##preset_route
+key Ctrl+A
+type RUTA_PERRO
+key Enter
+click Behaviours::##preset_walk
+type 2383
+click "DobermanAndar  2383  · loops"
+click "Behaviours::Draw in viewport"
+click-world 1750 0 -2250
+click-world -550 0 -2250
+click-world -550 0 -4050
+click-world 1750 0 -4050
+key Enter
+click Behaviours::Create
+expect mission.history.top "Add Animal patrol DOBERMAN"
+expect count.actors 14
+# The walk grid, clear of the props.
+click Behaviours::##preset
+click "A walk grid (experimental)"
+click Behaviours::##preset_name
+key Ctrl+A
+type MALLA
+key Enter
+click Behaviours::Generate
+expect mission.history.top "Add Walk grid MALLA"
+# Zones: the house, and the whole map.
+command mission.tool_zone
+double-click height
+key Ctrl+A
+type 400
+key Enter
+click-world -3400 0 -3350
+click-world -1600 0 -3350
+click-world -1600 0 -1650
+click-world -3400 0 -1650
+key Enter
+command mission.tool_zone
+double-click height
+key Ctrl+A
+type 3000
+key Enter
+click-world -4900 0 -4900
+click-world 4900 0 -4900
+click-world 4900 0 4900
+click-world -4900 0 4900
+key Enter
+expect count.areas 2
+command view.panel.objectives
+wait frames 2
+# Objectives: reach the house, kill the officer, sabotage the radio
+# (secondary), each added to the one list and edited on its card.
+click "Objectives::Add objective"
+expect mission.history.top "Add Objectives"
+click Objectives::pick_target_1
+click Outliner::ZONA_1
+click Objectives::##label_1
+key Ctrl+A
+type "Reach the farmhouse"
+key Enter
+click Objectives::##done_1
+key Ctrl+A
+type "The farmhouse is ours"
+key Enter
+click "Objectives::Add objective"
+expect mission.history.top "Edit Objectives"
+click Objectives::kind_2
+click "An actor is killed"
+click Objectives::pick_target_2
+click Outliner::OFICIAL
+click Objectives::##label_2
+key Ctrl+A
+type "Kill the officer"
+key Enter
+click Objectives::##done_2
+key Ctrl+A
+type "The officer is down"
+key Enter
+click "Objectives::Add objective"
+click Objectives::kind_3
+click "The player uses an object"
+click Objectives::pick_target_3
+click Outliner::CAMP_RADIO
+click Objectives::##label_3
+key Ctrl+A
+type "Sabotage the radio"
+key Enter
+click Objectives::##done_3
+key Ctrl+A
+type "The radio is silent"
+key Enter
+click Objectives::##prompt_3
+key Ctrl+A
+type "Sabotage"
+key Enter
+click Objectives::secondary_3
+click "Secondary: optional"
+# Starting kits and tips, in the Mission panel.
+command mission.settings
+click Mission::add_kit
+click "Sniper  (Francotirador)"
+expect mission.history.top "Add Equipment"
+click Mission::weapon_1_1
+type 16
+click "Cuchillo Lanzable (throwing knife)  16"
+click Mission::add_weapon_1
+type 102
+click "Luger  102"
+click Mission::##ammo_1_2
+key Ctrl+A
+type 100/100
+key Enter
+click Mission::add_weapon_1
+type 1903
+click "Springfield 1903  4"
+click Mission::##ammo_1_3
+key Ctrl+A
+type 100/100
+key Enter
+click Mission::add_weapon_1
+type Pulso
+click "Pulso (punch)  64"
+click Mission::add_weapon_1
+type Prism
+click "Prismaticos (binoculars)  37"
+click Mission::select_1
+type 1903
+click "Springfield 1903  4"
+click Mission::add_kit
+click "Spy  (Espia)"
+expect mission.history.top "Edit Equipment"
+click Mission::weapon_2_1
+type Piano
+click "Cuerda Piano (garrotte wire)  50"
+click Mission::add_weapon_2
+type 102
+click "Luger  102"
+click Mission::##ammo_2_2
+key Ctrl+A
+type 100/100
+key Enter
+click Mission::add_weapon_2
+type Moneda
+click "Moneda (coin)  45"
+click Mission::add_weapon_2
+type Disfraz
+click "Disfraz (disguise)  44"
+click Mission::add_weapon_2
+type Prism
+click "Prismaticos (binoculars)  37"
+click Mission::add_weapon_2
+type Desarmado
+click "Desarmado (unarmed)  70"
+click Mission::disguise_2
+type "Normal 4"
+click "Infanteria Normal 4  23"
+expect mission.history.top "Edit Equipment"
+click "Mission::Add a tip"
+expect mission.history.top "Add Tips"
+click Mission::##tip_1
+key Ctrl+A
+type "Take out the officer before the camp is alerted."
+key Enter
+click "Mission::Add a tip"
+click Mission::##tip_2
+key Ctrl+A
+type "The radio can call for help: silence it."
+key Enter
+# The intro: five shots captured from the view, around the camp and the north.
+command mission.cutscene
+goto actor:CAMP_TRUCK
+click "Intro cutscene::Capture shot from view"
+goto actor:OFICIAL
+click "Intro cutscene::Capture shot"
+goto actor:GE_CAMP
+click "Intro cutscene::Capture shot"
+goto actor:GE_NORTH
+click "Intro cutscene::Capture shot"
+goto actor:GE_HOUSE
+click "Intro cutscene::Capture shot"
+expect timeline.durations 4,4,4,4,4
+command file.save
+wait idle
+
+# Hello world's structure: 24 actors (2 players, 4 guards, the dog, 7 props
+# and the intro's 10 helpers), 2 zones, 5 intro dummies, 16 scripts; one
+# navigation group fewer (no start group for the players).
+expect count.actors 24
+expect count.areas 2
+expect count.dummies 5
+expect count.scripts 16
+expect count.nav_groups 10
+expect count.components 11
+expect flow.unraised_events 0
+expect problems.errors 0
+expect problems.warnings 0
+expect log.errors 0
+expect mission.dirty false
+expect project.dirty false
+
+# Saved: reopened, it is the same mission.
+remember mission.hash
+open $UI_OUTPUT/HelloE2E
+wait idle
+expect-same mission.hash
+expect count.actors 24
+expect count.components 11
+expect timeline.durations 4,4,4,4,4

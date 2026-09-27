@@ -611,30 +611,30 @@ void register_commands(AppState& state) {
         }
         b.add("mission.add_objective", "Add objective", "Mission", "",
               [&s] {
-                  s.tools.objectives.emplace_back();
                   show_panel(s, Panel::objectives);
+                  add_objective(s);
               },
               editable)
             .keywords = "goal zone kill use";
         for (const auto& [id, label, panel, keywords] :
              {std::tuple{"mission.settings", "Mission settings", Panel::mission_settings,
                          "players start score environment fog"},
-              std::tuple{"mission.objectives", "Objectives and starting equipment", Panel::objectives,
-                         "goal success kit weapons tips"},
+              std::tuple{"mission.objectives", "Objectives and triggers", Panel::objectives,
+                         "goal success trigger logic when zone kill"},
               std::tuple{"mission.flow", "Mission flow", Panel::flow, "events scripts graph findings objectives"},
               std::tuple{"mission.cutscene", "Intro cutscene", Panel::timeline, "camera shots travelling intro timeline"},
               std::tuple{"mission.texts", "Mission text", Panel::texts, "strings fli globalek localization"}})
             b.add(id, label, "Mission", "", [&s, panel] { show_panel(s, panel); }, editable).keywords = keywords;
-        b.add("mission.capture_shot", "Capture cutscene shot from view", "Mission", "",
-              [&s] {
-                  capture_shot(s);
-                  s.info("Captured shot " + std::to_string(s.tools.shots.size()));
-              },
+        const auto has_intro = [&s] { return intro_component(s) != nullptr; };
+        b.add("mission.capture_shot", "Capture cutscene shot from view", "Mission", "", [&s] { capture_shot(s); },
               editable)
-            .keywords = "camera intro cutscene";
-        b.add("mission.play_shots", "Play cutscene shots", "Mission", "", [&s] { play_shots(s); },
-              [&s] { return !s.tools.shots.empty(); })
-            .keywords = "camera intro cutscene preview";
+            .keywords = "camera intro cutscene timeline";
+        b.add("mission.play_shots", "Play or stop the intro", "Mission", "",
+              [&s] { s.tools.preview_started ? stop_shots(s) : play_shots(s); }, has_intro)
+            .keywords = "camera intro cutscene preview timeline";
+        b.add("mission.look_through_shot", "Look through shot", "Mission", "",
+              [&s] { view_shot(s, s.tools.timeline_shot, 0.0F); }, has_intro)
+            .keywords = "camera intro cutscene view timeline";
         b.add("mission.new_mission", "Start a new mission in this slot", "Mission", "",
               [&s] { start_new_mission(s); }, editable)
             .keywords = "empty clear slot";
@@ -678,7 +678,7 @@ void register_commands(AppState& state) {
 
     // ---- Help ---------------------------------------------------------------
     b.add("help.shortcuts", "Keyboard shortcuts", "Help", "F1", [&s] { s.ui.show_shortcuts = true; });
-    b.add("help.about", "About CSF Mission Editor", "Help", "", [&s] { s.ui.show_about = true; });
+    b.add("help.about", "About", "Help", "", [&s] { s.ui.show_about = true; });
 }
 
 } // namespace rwsman

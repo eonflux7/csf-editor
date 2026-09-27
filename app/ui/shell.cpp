@@ -1,5 +1,6 @@
 #include "ui/shell.hpp"
 
+#include "animation_preview.hpp"
 #include "authoring.hpp"
 #include "app_actions.hpp"
 #include "app_state.hpp"
@@ -40,7 +41,7 @@ void update_window_title(AppState& state) {
     } else if (document) {
         window_title = path_utf8(document->source_path().filename()) + (document->dirty() ? " *" : "") + " - rws-man";
     } else {
-        window_title = "CSF Mission Editor";
+        window_title = mode_of(state.workspace) == Mode::inspect ? "rws-man" : "CSF Mission Editor";
     }
     if (window_title != previous_window_title) {
         glfwSetWindowTitle(state.window, window_title.c_str());
@@ -174,6 +175,7 @@ void draw_frame(AppState& state) {
     dispatch_shortcuts(state);
     refresh_mission_from_editor(state);
     update_authoring_views(state);
+    tick_actor_animation(state);
     track_selection(state);
     update_mission_gizmo(state);
     if (state.preview.take_screenshot_request()) state.ui.screenshot_requested = true;

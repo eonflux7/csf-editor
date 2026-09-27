@@ -10,6 +10,7 @@
 
 #include "csf/mission_components.hpp"
 #include "csf/project_pipeline.hpp"
+#include "rwsman/cutscene_timeline.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -33,11 +34,16 @@ std::string mission_hash(const csf::MissionEditor& editor) {
             hash *= 0x100000001b3ULL;
         }
     };
-    for (const auto& file : editor.files()) {
-        if (!file.present) continue;
-        const auto path = file.relative_path.generic_string();
+    // By path: the editor's file order depends on how the mission was opened
+    // (a reopened project lists its authored files in another order).
+    std::vector<const csf::MissionFile*> files;
+    for (const auto& file : editor.files())
+        if (file.present) files.push_back(&file);
+    std::ranges::sort(files, {}, [](const auto* file) { return file->relative_path.generic_string(); });
+    for (const auto* file : files) {
+        const auto path = file->relative_path.generic_string();
         mix(path.data(), path.size());
-        const auto bytes = file.bytes();
+        const auto bytes = file->bytes();
         mix(bytes.data(), bytes.size());
     }
     char text[17];
@@ -140,6 +146,37 @@ StateSnapshot snapshot_state(const AppState& state) {
         // Components (csf/mission_components.hpp) and the one that made the selection.
         const auto components = csf::mission_components(*editor);
         s["count.components"] = number(components.size());
+        // The timeline's cutscene (E11), as intro_component picks it: its
+        // shots' durations ("4,2.5"), its name and the zone that plays it.
+        const auto intro_value = [](const csf::MissionComponent& component, const char* key, const char* fallback = "") {
+            try {
+                return csf::parse_op_line(component.lines.back()).get(key, fallback);
+            } catch (const std::exception&) {
+                return std::string(fallback);
+            }
+        };
+        const auto zone_of = [&](const csf::MissionComponent& component) { return intro_value(component, "zone"); };
+        const csf::MissionComponent* cutscene{};
+        std::size_t cutscenes = 0;
+        for (const auto& component : components) {
+            if (component.op() != "shot") continue;
+            ++cutscenes;
+            if (component.id == state.tools.timeline_component) cutscene = &component;
+        }
+        for (const auto& component : components)
+            if (!cutscene && component.op() == "shot" && zone_of(component).empty()) cutscene = &component;
+        for (const auto& component : components)
+            if (!cutscene && component.op() == "shot") cutscene = &component;
+        std::string durations;
+        if (cutscene) try {
+                for (const auto& shot : timeline_shots(cutscene->lines))
+                    durations += (durations.empty() ? "" : ",") + csf::op_number(shot.seconds);
+            } catch (const std::exception&) {
+            }
+        s["timeline.durations"] = durations;
+        s["count.cutscenes"] = number(cutscenes);
+        s["timeline.cutscene"] = cutscene ? intro_value(*cutscene, "cutscene-name", "CUT_INICIO") : "";
+        s["timeline.zone"] = cutscene ? zone_of(*cutscene) : "";
         std::optional<csf::MissionRecordId> owned;
         using Type = csf::MissionRecordId::Type;
         using Kind = MissionRecordKey::Kind;
@@ -150,9 +187,13 @@ StateSnapshot snapshot_state(const AppState& state) {
         if (record.kind == Kind::area) owned = csf::MissionRecordId{Type::area, record.id};
         s["selection.component"] = "";
         s["selection.component_state"] = "";
+        s["selection.component_lines"] = "";
         for (const auto& component : components)
             if (owned && std::ranges::find(component.owns, *owned) != component.owns.end()) {
                 s["selection.component"] = csf::component_title(component);
+                std::string lines;
+                for (const auto& line : component.lines) lines += (lines.empty() ? "" : " | ") + line;
+                s["selection.component_lines"] = lines;
                 s["selection.component_state"] =
                     csf::component_state(*editor, component) == csf::ComponentState::clean ? "clean" : "modified";
             }
@@ -197,6 +238,16 @@ StateSnapshot snapshot_state(const AppState& state) {
     s["log.warnings"] = number(state.log.count(LogLevel::warn));
     const auto latest = state.log.latest();
     s["log.last"] = latest ? latest->message : "";
+    // The latest warning, and the Problems list by severity (E7).
+    std::string last_warning;
+    for (const auto& entry : state.log.snapshot())
+        if (entry.level == LogLevel::warn) last_warning = entry.message;
+    s["log.last_warning"] = last_warning;
+    std::size_t problem_counts[3]{};
+    for (const auto& problem : state.problems) ++problem_counts[static_cast<std::size_t>(problem.severity)];
+    s["problems.errors"] = number(problem_counts[0]);
+    s["problems.warnings"] = number(problem_counts[1]);
+    s["problems.notes"] = number(problem_counts[2]);
     s["toast.count"] = number(state.toasts.size());
     s["toast.last"] = state.toasts.empty() ? "" : state.toasts.back().message;
 
@@ -222,9 +273,16 @@ StateSnapshot snapshot_state(const AppState& state) {
                                                 : "select";
     s["viewport.sketch"] = number(state.tools.sketch.size());
     s["viewport.picking"] = boolean(state.ui.pick.has_value());
+    // The mission's objectives: each one's target, in order.
     std::string targets;
-    for (const auto& form : state.tools.objectives) targets += (targets.empty() ? "" : ",") + std::to_string(form.target);
-    s["form.objective_targets"] = targets;
+    if (state.mission.editor)
+        for (const auto& component : csf::mission_components(*state.mission.editor))
+            for (const auto& value : component.lines) try {
+                    if (const auto line = csf::parse_op_line(value); line.op == "objective")
+                        targets += (targets.empty() ? "" : ",") + line.get("target");
+                } catch (const std::exception&) {
+                }
+    s["objectives.targets"] = targets;
     // The New trigger form: its actions, and how many of them are unverified.
     const auto& draft = state.tools.trigger_draft;
     s["form.trigger_actions"] = number(draft.actions.size());
@@ -232,6 +290,20 @@ StateSnapshot snapshot_state(const AppState& state) {
     if (const auto* flow = state.tools.flow.get())
         for (const auto& event : flow->events()) unraised += ui::flow_event_unraised(event);
     s["flow.unraised_events"] = number(unraised);
+    char time[32];
+    std::snprintf(time, sizeof(time), "%.1f", state.tools.timeline_time);
+    s["timeline.time"] = time;
+    // T12: the median CPU frame time of the last frames, and the latest
+    // Outliner and Problems builds (milliseconds; they vary run to run).
+    const auto milliseconds = [](const double value) {
+        char text[32];
+        std::snprintf(text, sizeof(text), "%.2f", value);
+        return std::string(text);
+    };
+    s["perf.frame_ms"] = milliseconds(state.frame_stats.median_ms());
+    s["perf.outliner_ms"] = milliseconds(state.frame_stats.outliner_ms);
+    s["perf.problems_ms"] = milliseconds(state.frame_stats.problems_ms);
+    s["timeline.shot"] = number(state.tools.timeline_shot + 1);
     s["form.trigger_unverified"] = number(static_cast<std::size_t>(std::ranges::count_if(
         draft.actions, [](const csf::TriggerAction& action) { return !csf::trigger_action_proven(action.kind); })));
     s["viewport.place_asset"] = !state.tools.place_building_asset.empty() ? state.tools.place_building_asset

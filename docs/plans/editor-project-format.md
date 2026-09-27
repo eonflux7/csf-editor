@@ -11,6 +11,10 @@ reads and writes both files and builds the World, collision and sector map
 Height resolution, the height report and resnap (`csf-mod project-heights`),
 and mission text (`text` records; `project-build` writes
 `build/<archive stem>/<file>`, e.g. `build/GlobalEK/Texts/Convoy.fli`).
+Pieces of other missions' maps (`donor`, `piece ... donor= lightmaps=`) and
+textures of the project's own (`texture`) came with Country
+([country-mission.md](country-mission.md)); `AuthoringProject::packaged_textures`
+lists every texture the mission must package.
 **Not yet:** `.csfworld` version 2
 `object` lines, and building the archives into `dist/` from C++ (the
 hello-world scripts do that today).
@@ -108,6 +112,9 @@ output build/Maps/Secs/Convoy.sec sectors sha256:<output> inputs sha256:<...>
 | `anchor actor <actor-id> <height>` | height relation of a scene actor |
 | `text <id> <string>` | a mission string (UTF-8) for the texts file; the ID is within the reserved range |
 | `lightmap <name> <source.png>` | a baked lightmap; built into `build/<map folder>/Textures/<name>.dds` (DXT1) |
+| `donor <key> <mission> <visual> <collision>` | another mission's map that pieces are cut from (paths within the corpus' `<mission>/`) |
+| `piece <id> donor=<key> lightmaps=<group>,... <box> ...` | a piece of that donor (options after the ID, both optional): only the triangles lit by those lightmap groups (`EDIFICIO_5`, `EDIFICIO_5_INTERIOR`) and the collision lying on them. The build copies the textures and lightmaps its materials name into `build/<map folder>/Textures/` (`output ... texture`), as `<KEY>_<name>` when the slot's map has a different file of that name |
+| `texture <name> <source.png\|dds> <like>` | a texture of the project's own (an imported model's); built like a lightmap (a DDS source is copied). World materials naming it copy the donor material of texture `like` with the texture renamed |
 | `building <id> <asset> <x y z> <yaw> <height>` | (see above) a building placement stands on the terrain |
 | `output <path> <kind> <hash> inputs <hash>` | a generated file, its hash and the hash of what it was built from |
 | `playtest <build-id> <worked\|failed> <note>` | a playtest of `dist/<build-id>/`'s archives (the Build panel's log) |

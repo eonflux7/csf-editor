@@ -19,14 +19,21 @@ are skipped when it is missing.
 
 - `tests/ui/*.uiscript` open the **fixture**, a mission that
   `rwsman_ui_fixture <dir>` generates (a small World, four actors, a route,
-  cover, a zone and two scripts, with no game data). Scripts find it through
+  cover, a zone, two scripts, an empty cutscene program and the invisible
+  camera class the intro needs, with no game data). Scripts find it through
   `$RWSMAN_UI_FIXTURE`. These run everywhere, CI included.
 - `tests/ui/local/*.uiscript` need local game data through environment
   variables and begin with `require <VARIABLE>`: `RWSMAN_HELLO_WORLD` (hello
   world's project), `RWSMAN_CORPUS` (the unpacked game) and
   `RWSMAN_TEST_INSTALL` (a game folder with untouched `maps/Convoy.pak` and
   `GlobalEK.pak`; the pipeline script copies it and deploys into the copy).
-  They are skipped when it is unset.
+  They are skipped when it is unset. `hello_world_e2e` builds hello world's
+  mission through the GUI alone and checks its structure. `ransom_performance` fails when Ransom's
+  median CPU frame time, or the Outliner's or Problems' build time, exceeds
+  its budget; it is skipped in Debug builds (`require-release`).
+- For a long random walk, `RWSMAN_UI_MONKEY_STEPS=5000 ./test.sh --ui` makes
+  every `monkey` step that many steps long (run it on a Debug build too, for
+  ImGui's assertions).
 - `tests/ui/golden/*.png` are the references for `compare`. They are rendered
   from the fixture only, never from game data.
 
@@ -45,6 +52,7 @@ argument with spaces. Paths expand `~/` and `$VARIABLE`.
 | `palette <text>`, `goto-palette <text>` | open the palette with a query |
 | `click <target> [mods]`, `double-click`, `hover` | pointer input on a widget (`click Outliner::tree-2 Shift`) |
 | `click-world <x y z> [mods]`, `drag-world <x0 y0 z0 x1 y1 z1> [mods]` | pointer input at game coordinates in the viewport, with `Shift`, `Ctrl` or `Shift+Ctrl` held |
+| `drag <target> <dx> <dy> [mods]` | drag a widget by an offset in pixels (a timeline shot's edge) |
 | `drag-to-world <target> <x y z>` | drag a widget into the viewport (an asset onto the ground) |
 | `key <shortcut>`, `type <text>` | keyboard input (`key Ctrl+Z`, `key Enter`); a text starting with `$` or `~/` is a path (`type $UI_OUTPUT/name`) |
 | `expect <key> <value>`, `expect-not`, `expect-contains` | check a state key (below) |
@@ -53,8 +61,9 @@ argument with spaces. Paths expand `~/` and `$VARIABLE`.
 | `screenshot <file>`, `compare <name> [<percent>]` | save the frame, or compare it with `golden/<name>.png` |
 | `dump-state <file>`, `list-items [<text>]` | write the state as JSON, print visible widgets |
 | `lint commands` | fail on command registry problems |
-| `resize <w>x<h>`, `require <VARIABLE>` | resize the window, skip without the variable |
-| `monkey <seed> <steps>`, `undo-all` | a seeded random walk of edits; undo every mission and project edit |
+| `resize <w>x<h>`, `require <VARIABLE>`, `require-release` | resize the window, skip without the variable, skip in a Debug build |
+| `expect-at-most <key> <number>` | check a numeric state key against a budget (`perf.frame_ms`) |
+| `monkey <seed> <steps>`, `undo-all` | a seeded random walk of edits; undo every mission and project edit (`RWSMAN_UI_MONKEY_STEPS=<n>` makes every walk `n` steps: the long run) |
 | `add-component <lines>` | add a component from mission operation lines, with `\|` between lines |
 | `setting <key> <value>` | `resource_root`, `game_root`, `projects_root` or `blender` for this run (never saved) |
 | `remove <path>` | delete a file or folder inside the output directory (a project a script makes again) |
@@ -83,19 +92,30 @@ its target to appear.
 - `count.actors`, `count.nav_groups`, `count.nav_points`, `count.areas`,
   `count.scripts`, `count.placements` (the project's), `count.components`
 - `selection.component` (the component that made the selection, "Guard
-  patrol GE_CAMP") and `selection.component_state` (`clean` or `modified`)
+  patrol GE_CAMP"), `selection.component_state` (`clean` or `modified`) and
+  `selection.component_lines` (its operation lines, joined by ` | `)
 - `project.open`, `project.busy`, `project.dirty` (unsaved project edits),
   `project.slot`, `project.builds` (in `dist/`), `project.deployed` (active
   deployments), `project.playtests`,
   `project.history.size`,
   `project.history.position`, `project.height_findings`, `log.errors`,
-  `log.last`, `toast.last`
+  `log.last`, `log.last_warning`, `toast.last`, `problems.errors`,
+  `problems.warnings`, `problems.notes` (the Problems panel's list)
 - `panel.<name>` (a panel shown this frame), `ui.palette`, `viewport.tool`
   (`select`, `move`, `rotate`, `place`, `route`, `zone`, `cover`),
   `viewport.sketch` (points of the route or zone being drawn),
   `viewport.place_asset`, `viewport.picking`, `viewport.grid_preview_points`
 - `form.trigger_actions`, `form.trigger_unverified` (the New trigger form),
-  `flow.unraised_events` (events that start scripts but nothing raises)
+  `flow.unraised_events` (events that start scripts but nothing raises),
+  `objectives.targets` (each objective's target ID, in order: "1,7")
+- `perf.frame_ms` (median CPU time of the last 120 frames), `perf.outliner_ms`,
+  `perf.problems_ms` (the latest builds of the Outliner rows and the Problems
+  list); they vary from run to run, so compare them with `expect-at-most`
+- `timeline.durations` (the timeline's cutscene's shots, "4,2.5"),
+  `timeline.time` (the playhead, seconds), `timeline.shot` (the selected
+  shot, from 1), `timeline.cutscene` (its name, `CUT_INICIO`),
+  `timeline.zone` (the zone that plays it, empty at the start) and
+  `count.cutscenes`
 
 ## Failures
 

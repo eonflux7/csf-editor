@@ -3032,7 +3032,11 @@ void GeometryPreview::render_scene_gpu() {
         return batch.layer != PreviewLayer::collision_world &&
                actor_owner(batch.owner_offset) == selected_mission_entry_;
     };
-    const auto batch_dim = [&](const DrawBatch& batch) {
+    // A mission's ground without a lightmap is tinted darker, so the markers
+    // on it stand out (V7); lit ground and models are drawn as they are.
+    const bool tint_ground = scene_mode_ && has_mission_overlays();
+    const auto batch_dim = [&](const DrawBatch& batch, const bool lit) {
+        if (tint_ground && batch.layer == PreviewLayer::visual_world && !lit) return 0.78F;
         if (!dim_unselected_actors_ || !has_selected_actor || isolate_selected_actor_)
             return 1.0F;
         return actor_owner(batch.owner_offset) == selected_mission_entry_ ? 1.0F : 0.55F;
@@ -3118,7 +3122,7 @@ void GeometryPreview::render_scene_gpu() {
                 const auto& batch = draw_batches_[draw.batch];
                 set_color(batch);
                 set_model(batch.transform);
-                set_dim(batch_dim(batch));
+                set_dim(batch_dim(batch, draw.lightmap != 0));
                 set_flag(u.use_texture, bound.use_texture, draw.texture != 0);
                 set_flag(u.use_lightmap, bound.use_lightmap, draw.lightmap != 0);
                 set_flag(u.force_opaque, bound.force_opaque, pass != 2 && batch.force_opaque);
@@ -3469,8 +3473,10 @@ bool GeometryPreview::draw_scene(
     hover_ground_.reset();
     // The ground under a screen point: the collision surface, else the plane
     // at the height of the last surface hit (open terrain edges, no collision).
+    // Placing stands things on furniture too (a radio on a table).
+    const bool placing = edit_tool_ == EditTool::place || dragging_asset;
     const auto ground_at = [&](const ImVec2 screen) -> std::optional<rws::Vec3> {
-        if (const auto surface = surface_point(screen)) {
+        if (const auto surface = placing ? placement_point(screen) : surface_point(screen)) {
             last_ground_height_ = surface->y;
             return surface;
         }
@@ -3613,25 +3619,34 @@ bool GeometryPreview::draw_scene(
     const float spacing = decade * (ratio > 5 ? 10 : (ratio > 2 ? 5 : (ratio > 1 ? 2 : 1)));
     const float extent = spacing * 10;
     const ImU32 minor = ui::viewport_color(ui::Viewport::grid_minor), major = ui::viewport_color(ui::Viewport::grid_major);
+    // The grid fades with distance from its centre (V7): each line is drawn in
+    // pieces whose alpha falls off towards the edge, so it has no hard border.
+    const auto faded = [](const ImU32 color, const float t) {
+        const float keep = std::clamp(1.0F - t * t, 0.0F, 1.0F);
+        const auto alpha = static_cast<ImU32>(static_cast<float>((color >> IM_COL32_A_SHIFT) & 0xFFU) * keep);
+        return (color & ~IM_COL32_A_MASK) | (alpha << IM_COL32_A_SHIFT);
+    };
+    // A line of the grid from its (u, v) plane coordinates about the centre.
+    const auto grid_line = [&](const float u0, const float v0, const float u1, const float v1, const ImU32 color) {
+        constexpr int pieces = 12;
+        const auto at = [&](const float u, const float v) -> rws::Vec3 {
+            if (projection_ == 2) return {center_.x + u, center_.y + v, center_.z};
+            if (projection_ == 3) return {center_.x, center_.y + v, center_.z + u};
+            return {center_.x + u, center_.y, center_.z + v};
+        };
+        for (int k = 0; k < pieces; ++k) {
+            const float a = static_cast<float>(k) / pieces, b = static_cast<float>(k + 1) / pieces;
+            const float um = u0 + (u1 - u0) * (a + b) * 0.5F, vm = v0 + (v1 - v0) * (a + b) * 0.5F;
+            const auto shade = faded(color, std::sqrt(um * um + vm * vm) / extent);
+            if ((shade & IM_COL32_A_MASK) == 0) continue;
+            line3d(at(u0 + (u1 - u0) * a, v0 + (v1 - v0) * a), at(u0 + (u1 - u0) * b, v0 + (v1 - v0) * b), shade);
+        }
+    };
     for (int i = -10; i <= 10; ++i) {
         const float v = i * spacing;
         const auto color = i % 5 == 0 ? major : minor;
-        if (projection_ == 2) {
-            line3d({center_.x - extent, center_.y + v, center_.z},
-                   {center_.x + extent, center_.y + v, center_.z}, color);
-            line3d({center_.x + v, center_.y - extent, center_.z},
-                   {center_.x + v, center_.y + extent, center_.z}, color);
-        } else if (projection_ == 3) {
-            line3d({center_.x, center_.y + v, center_.z - extent},
-                   {center_.x, center_.y + v, center_.z + extent}, color);
-            line3d({center_.x, center_.y - extent, center_.z + v},
-                   {center_.x, center_.y + extent, center_.z + v}, color);
-        } else {
-            line3d({center_.x - extent, center_.y, center_.z + v},
-                   {center_.x + extent, center_.y, center_.z + v}, color);
-            line3d({center_.x + v, center_.y, center_.z - extent},
-                   {center_.x + v, center_.y, center_.z + extent}, color);
-        }
+        grid_line(-extent, v, extent, v, color);
+        grid_line(v, -extent, v, extent, color);
     }
     const auto draw_box = [&](const rws::Vec3 lo, const rws::Vec3 hi, const ImU32 color) {
         const std::array<rws::Vec3, 8> p{{{lo.x, lo.y, lo.z},

@@ -155,6 +155,8 @@ const char* icon_for(const SymbolKind kind) {
         return icons::LC_CUBOID;
     case SymbolKind::resource:
         return icons::LC_FILE;
+    case SymbolKind::placement:
+        return icons::LC_BUILDING_2;
     case SymbolKind::count:
         break;
     }

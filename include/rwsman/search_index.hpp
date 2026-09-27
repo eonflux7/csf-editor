@@ -28,6 +28,7 @@ enum class SymbolKind : std::uint8_t {
     chunk,
     instance,
     resource,
+    placement, // An authoring project's placement: a building, donor piece or props.
     count
 };
 

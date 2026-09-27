@@ -46,7 +46,7 @@ void usage() {
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod mission-ops <workspace> <scene.scn> <ops-file> [--package <root>] [--ground <source.csfworld>]\n"
            "                      [--components]\n"
-           "  csf-mod mission-components <workspace> <scene.scn> [--package <root>] list | check\n"
+           "  csf-mod mission-components <workspace> <scene.scn> [--package <root>] [--ground <source.csfworld>] list | check\n"
            "                      | set <id> <line> <key>=<value>... | regenerate <id> | detach <id> | delete <id>\n"
            "  csf-mod mission-flow <scene.scn> [--package <root>] [--workspace <dir>]\n"
            "  csf-mod project-new <project-dir> --slot <mission> [--name <text>] [--corpus <root>]\n"
@@ -366,6 +366,8 @@ int main(int argc, char** argv) try {
         for (const auto* report : {&world, &texts, &lightmaps})
             for (const auto& line : report->lines)
                 if (verbose || !line.starts_with("note\t")) std::cout << line << '\n';
+        for (const auto& finding : project.lightmap_brightness())
+            std::cout << "warning\t" << csf::lightmap_finding_text(finding) << '\n';
         return 0;
     }
     if (command == "project-heights") {
@@ -491,15 +493,14 @@ int main(int argc, char** argv) try {
         return 0;
     }
     if (command == "project-lightmaps") {
-        // Lists every built lightmap in the mission's texture list and packages
-        // its DDS from build/ (run project-build first).
+        // Lists every built lightmap and copied donor texture in the mission's
+        // texture list and packages it from build/ (run project-build first).
         if (argc != 3) { usage(); return 1; }
         const auto project = csf::AuthoringProject::load(argv[2]);
         auto [mod, editor] = open_project_mission(project);
         if (!editor) throw std::runtime_error("The project has no mission workspace");
         std::vector<std::string> entries;
-        for (const auto& lightmap : project.lightmaps) {
-            const auto relative = project.lightmap_package_path(lightmap);
+        for (const auto& relative : project.packaged_textures()) {
             const auto built = project.directory / "build" / relative;
             if (!std::filesystem::is_regular_file(built))
                 throw std::runtime_error(built.generic_string() + " is not built; run project-build first");
@@ -1001,10 +1002,12 @@ int main(int argc, char** argv) try {
         if (argc < 5) { usage(); return 1; }
         const std::filesystem::path workspace = argv[2], scene = argv[3];
         int i = 4;
-        std::filesystem::path package;
-        if (i + 1 < argc && std::string_view(argv[i]) == "--package") {
-            package = argv[i + 1];
-            i += 2;
+        std::filesystem::path package, ground_source;
+        for (; i + 1 < argc; i += 2) {
+            const std::string_view option = argv[i];
+            if (option == "--package") package = argv[i + 1];
+            else if (option == "--ground") ground_source = argv[i + 1];  // walk grids' heights, as mission-ops
+            else break;
         }
         if (package.empty())
             for (auto dir = std::filesystem::weakly_canonical(scene).parent_path(); !dir.empty(); dir = dir.parent_path()) {
@@ -1016,6 +1019,18 @@ int main(int argc, char** argv) try {
             }
         if (package.empty()) throw std::runtime_error("Cannot find the mission root; pass --package");
         if (i >= argc) { usage(); return 1; }
+        csf::MissionOpsOptions options;
+        std::optional<rws::GroundQuery> ground;
+        if (!ground_source.empty()) {
+            const auto bytes = read_bytes(ground_source);
+            const auto source = rws::parse_world_source({reinterpret_cast<const char*>(bytes.data()), bytes.size()});
+            if (!source) throw std::runtime_error(ground_source.generic_string() + ": " + source.error);
+            ground.emplace(*source.value);
+            options.ground = [&ground](const float x, const float z) -> std::optional<float> {
+                if (const auto hit = ground->highest(x, z)) return hit->height;
+                return std::nullopt;
+            };
+        }
         auto project = csf::ModProject::load(workspace);
         auto editor = csf::MissionEditor::open(scene, package, &project);
         const std::string_view action = argv[i++];
@@ -1043,7 +1058,7 @@ int main(int argc, char** argv) try {
                     std::cout << "modified\t" << component.id << '\t' << csf::component_title(component) << '\n';
                     status = 3;
                 }
-            for (const auto id : csf::components_that_drift(editor)) {
+            for (const auto id : csf::components_that_drift(editor, options)) {
                 std::cout << "drifts\t" << id << '\n';
                 status = 3;
             }
@@ -1067,9 +1082,9 @@ int main(int argc, char** argv) try {
             lines[line_number - 1] = csf::format_op_line(line);
             std::string text;
             for (const auto& value : lines) text += value + '\n';
-            result = csf::update_component(editor, id, text);
+            result = csf::update_component(editor, id, text, options);
         } else if (action == "regenerate") {
-            result = csf::regenerate_component(editor, id_argument());
+            result = csf::regenerate_component(editor, id_argument(), options);
         } else if (action == "detach") {
             result = csf::detach_component(editor, id_argument());
         } else if (action == "delete") {
