@@ -14,7 +14,7 @@ Options:
   -c, --config <Debug|Release>  Configuration to test (default: Release)
       --core-only               Test the core targets only
       --no-build                Run tests without rebuilding the test executable
-      --ui                      Also build rws-man and run the UI tests (label ui;
+      --ui                      Also build csf-editor and run the UI tests (label ui;
                                 under xvfb-run when there is no display)
   -h, --help                    Show this help
 EOF
@@ -80,7 +80,7 @@ fi
 
 if [[ $no_build -eq 0 ]]; then
     targets=(rws_core_tests csf_authoring_tests fake_pakman)
-    [[ $ui -eq 1 ]] && targets+=(rws-man rwsman_ui_fixture)
+    [[ $ui -eq 1 ]] && targets+=(csf-editor rwsman_ui_fixture)
     cmake --build --preset "$test_preset" --target "${targets[@]}" --parallel
 fi
 

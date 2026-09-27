@@ -8,7 +8,7 @@
 #include <vector>
 
 // Script source text as the Script mode editor sees it
-// (docs/plans/editor-ux-redesign.md, S2): highlighting spans, the word being
+// (docs/archive/editor/editor-ux-redesign.md, S2): highlighting spans, the word being
 // completed, and the operand under a click. Text only; the opcode and tag
 // names come from the caller (csf_script_signatures).
 namespace rwsman {

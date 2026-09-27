@@ -19,7 +19,7 @@ struct PanelSlot {
 };
 
 // The panels of a workspace, in tab order within each dock. Mission mode
-// (docs/plans/editor-ux-redesign.md, §3 B): Outliner and Assets on the left,
+// (docs/archive/editor/editor-ux-redesign.md, §3 B): Outliner and Assets on the left,
 // Properties and the mission forms on the right, Problems, History and the
 // rest at the bottom. Script: the program outline, the listing, the
 // Inspector and Flow. Inspect: the workbench as it was.

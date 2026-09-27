@@ -1,4 +1,4 @@
-// The Timeline panel (docs/plans/editor-ux-redesign.md, E11): a cutscene (the
+// The Timeline panel (docs/archive/editor/editor-ux-redesign.md, E11): a cutscene (the
 // intro, or one a zone plays) as one strip per shot along a time ruler. Drag a strip's right edge
 // to change how long the shot lasts, drag on the ruler (or click a strip) to
 // move the playhead, which moves the viewport camera through the shots. The

@@ -6,7 +6,7 @@ into a map `.rws` and `_col.rws` (format: include/rws/world_source.hpp).
 Conventions
 -----------
 * Blender metres, Z up  ->  game centimetres, source Y up: game = 100 * (x, z, -y).
-  This is the inverse of the glTF path (rws-man exports Y-up glTF at 0.01 and
+  This is the inverse of the glTF path (csf-editor exports Y-up glTF at 0.01 and
   Blender's importer turns it Z-up), so an exported map re-exports in place.
 * Faces keep Blender's counter-clockwise front, which is the game's too.
 * UV V is flipped (Blender's origin is bottom-left, the game's top-left).

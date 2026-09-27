@@ -418,7 +418,7 @@ the same accessors and topology-independent sector list.
 This may be a damaged/cut sample or a tolerated exporter defect. Do not rewrite the
 declared sizes until another copy or another stage confirms the intended behavior.
 
-## Parsing rules used by CSF RWS Tools
+## Parsing rules used by CSF Mission Editor
 
 1. Read only complete 12-byte headers.
 2. Perform all end calculations in 64 bits.

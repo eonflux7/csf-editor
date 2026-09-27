@@ -14,7 +14,7 @@
 
 // Pickers for the things a mission author chooses by name rather than by ID:
 // classes, animations, weapons, objectives and game texts. Every authoring
-// card uses these instead of number fields (docs/plans/editor-ux-redesign.md,
+// card uses these instead of number fields (docs/archive/editor/editor-ux-redesign.md,
 // Phase 7).
 namespace rwsman::ui {
 

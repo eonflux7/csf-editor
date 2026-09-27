@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Creates the Country authoring project (docs/plans/country-mission.md) in a
+# Creates the Country authoring project (examples/country/README.md) in a
 # new directory, entirely through the command-line tools, and builds both
 # archives into PROJECT_DIR/dist/<build-id>/; never deploys.
 # Run from the repository root after ./build.sh.
 #
-#   tools/country/build.sh PROJECT_DIR ORIGINAL_CONVOY_PAK ORIGINAL_GLOBALEK_PAK [CORPUS_ROOT] [DOWNLOADS]
+#   examples/country/build.sh PROJECT_DIR ORIGINAL_CONVOY_PAK ORIGINAL_GLOBALEK_PAK [CORPUS_ROOT] [DOWNLOADS]
 #
 # DOWNLOADS holds the two CC0 models (fetched from OpenGameArt when absent):
 # picketfence_0.blend ("Basic Wooden Fence", WeaponGuy) and pzIIIs.blend
@@ -32,19 +32,19 @@ for file in picketfence_0.blend pzIIIs.blend; do
     if [ -n "$downloads" ] && [ -f "$downloads/$file" ]; then cp "$downloads/$file" "$src/downloads/"
     else curl -sfL -o "$src/downloads/$file" "https://opengameart.org/sites/default/files/$file"; fi
 done
-blender --background --factory-startup --python tools/country/assets.py -- "$src/downloads" "$src/assets" | grep '^asset'
-blender --background --factory-startup --python tools/country/terrain.py -- \
+blender --background --factory-startup --python examples/country/assets.py -- "$src/downloads" "$src/assets" | grep '^asset'
+blender --background --factory-startup --python examples/country/terrain.py -- \
     "$src/world/terrain.csfworld" "$src/world/terrain.blend" | grep '^csfworld'
-python3 tools/country/lightmaps.py "$src/lightmaps"
+python3 examples/country/lightmaps.py "$src/lightmaps"
 mkdir -p "$src/textures"
 cp "$corpus/Ransom/Maps/FR01/Textures/FFLR_16A.dds" "$corpus/Ransom/Maps/FR01/Textures/FFLR_35A.dds" "$src/textures/"
 cp "$corpus/Panzers/Models/Vehi/Textures/pcadena.dds" "$src/textures/PZ3_TRACK.dds"
-python3 tools/country/textures.py "$src/textures"
+python3 examples/country/textures.py "$src/textures"
 
 # 3. The project records and the World: FR01's buildings and props and
 #    Convoy's logs as pieces, the models, trees and bushes; everything on the
 #    ground, then textures listed in the mission.
-python3 tools/country/project.py "$project"
+python3 examples/country/project.py "$project"
 "$csfmod" project-build "$project" > "$project/build/world.log"
 "$csfmod" project-heights "$project" --resnap | tail -1
 "$csfmod" project-build "$project" >> "$project/build/world.log"
@@ -55,7 +55,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 "$csfmod" decompile "$corpus/Convoy/Maps/FR03/Convoy.gsc" "$tmp/convoy.gsc.txt" > /dev/null
 "$csfmod" decompile "$corpus/Ransom/Maps/FR01/Ransom.gsc" "$tmp/ransom.gsc.txt" > /dev/null
 first_text=$(awk '/^texts /{print $4}' "$project/project.csfproj")
-python3 tools/country/ops.py "$corpus" "$tmp/convoy.gsc.txt" "$tmp/ransom.gsc.txt" "$src/mission" "$first_text"
+python3 examples/country/ops.py "$corpus" "$tmp/convoy.gsc.txt" "$tmp/ransom.gsc.txt" "$src/mission" "$first_text"
 "$csfmod" mission-ops "$project/mission" "$scene" "$src/mission/country.ops" --components \
     --ground "$src/world/terrain.csfworld" > "$project/build/mission.log" || {
     grep -v '^applied\|^wrote' "$project/build/mission.log" >&2; exit 1;

@@ -1,15 +1,15 @@
-"""CSF authoring: Blender side of an rws-man authoring project.
+"""CSF authoring: Blender side of a csf-editor authoring project.
 
-Blender owns mesh sources; rws-man owns placements and mission records
-(docs/plans/editor-blender-authoring.md). The sidebar tab "CSF" (3D view, N):
+Blender owns mesh sources; csf-editor owns placements and mission records
+(docs/archive/editor/editor-blender-authoring.md). The sidebar tab "CSF" (3D view, N):
 
 * Project: the authoring project folder (with project.csfproj) and csf-mod.
 * Asset: tag selected meshes as the project's terrain or as a building (a
-  building is exported about its own origin; rws-man places it).
+  building is exported about its own origin; csf-editor places it).
 * Bake lighting: bakes each tagged asset's light (Cycles, no colour) into its
   own lightmap, saved into the project; Send then uses it.
-* Send to rws-man: saves the .blend, exports every tagged asset into the
-  project and registers new ones. An open rws-man rebuilds the map by itself.
+* Send to csf-editor: saves the .blend, exports every tagged asset into the
+  project and registers new ones. An open csf-editor rebuilds the map by itself.
 * Load reference: the built map, actor models and the mission's placements,
   navigation routes, areas and dummies in a locked "CSF reference" collection.
   It is view-only and never exported.
@@ -34,17 +34,17 @@ from . import csfworld
 
 bl_info = {
     "name": "CSF authoring",
-    "author": "rws-man",
+    "author": "csf-editor",
     "version": (0, 1, 0),
     "blender": (4, 2, 0),
     "location": "3D View > Sidebar > CSF",
-    "description": "Terrain and building assets for rws-man authoring projects",
+    "description": "Terrain and building assets for csf-editor authoring projects",
     "category": "Import-Export",
 }
 
 REFERENCE = "CSF reference"
 KINDS = (("terrain", "Terrain", "Built into the World where it is modelled"),
-         ("building", "Building", "Exported about its origin; rws-man places it"))
+         ("building", "Building", "Exported about its origin; csf-editor places it"))
 
 
 # ---- Project file ----------------------------------------------------------------
@@ -96,7 +96,7 @@ def to_blender(position) -> tuple[float, float, float]:
 class CsfPreferences(bpy.types.AddonPreferences):
     bl_idname = __package__
     csf_mod: StringProperty(name="csf-mod", subtype="FILE_PATH",
-                            description="The csf-mod executable (rws-man's build/Release/csf-mod); empty: from PATH")
+                            description="The csf-mod executable (csf-editor's build/Release/csf-mod); empty: from PATH")
 
     def draw(self, context):
         self.layout.prop(self, "csf_mod")
@@ -196,7 +196,7 @@ def send(context) -> list[str]:
             f"sources/{'world' if kind == 'terrain' else 'buildings'}/{ident}.csfworld"
         target = project / export
         target.parent.mkdir(parents=True, exist_ok=True)
-        # Written beside the target, then renamed: rws-man never sees half a file.
+        # Written beside the target, then renamed: csf-editor never sees half a file.
         with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".tmp", delete=False) as handle:
             temporary = Path(handle.name)
         stats = csfworld.export(str(temporary), context.scene, objects, local=kind == "building")
@@ -258,7 +258,7 @@ def own_materials(objects, ident: str) -> list:
 
 def bake_lightmaps(context, size: int, samples: int) -> list[str]:
     """Bake each tagged asset's diffuse lighting (direct and indirect, no colour)
-    into <ASSET>_Lm and save it into the project for rws-man to build."""
+    into <ASSET>_Lm and save it into the project for csf-editor to build."""
     import numpy as np
     project = project_dir(context)
     assets = tagged_assets(context.scene)
@@ -345,14 +345,14 @@ class CSF_OT_bake(bpy.types.Operator):
         except (RuntimeError, OSError, ValueError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report({"INFO"}, "Baked " + "; ".join(lines) + ". Send to rws-man to use them.")
+        self.report({"INFO"}, "Baked " + "; ".join(lines) + ". Send to csf-editor to use them.")
         return {"FINISHED"}
 
 
 class CSF_OT_send(bpy.types.Operator):
-    """Export the tagged assets into the project; rws-man rebuilds the map"""
+    """Export the tagged assets into the project; csf-editor rebuilds the map"""
     bl_idname = "csf.send"
-    bl_label = "Send to rws-man"
+    bl_label = "Send to csf-editor"
 
     def execute(self, context):
         try:

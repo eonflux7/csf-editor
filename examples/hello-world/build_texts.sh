@@ -4,7 +4,7 @@
 # GlobalEK.pak. Mission text is read only from GlobalEK.pak: a Texts/*.fli
 # inside the mission archive is ignored (in-game, 2026-09-25).
 #
-#   tools/hello_world/build_texts.sh PROJECT_DIR ORIGINAL_GLOBALEK_PAK OUT_PAK [CORPUS_ROOT]
+#   examples/hello-world/build_texts.sh PROJECT_DIR ORIGINAL_GLOBALEK_PAK OUT_PAK [CORPUS_ROOT]
 #
 # Creates the workspace PROJECT_DIR/texts. Deploy with
 # `csf-mod deploy-pak PROJECT_DIR/texts OUT_PAK <test-install> GlobalEK.pak --apply`.

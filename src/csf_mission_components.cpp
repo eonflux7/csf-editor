@@ -14,7 +14,7 @@ namespace {
 using Type = MissionRecordId::Type;
 
 constexpr std::string_view list_header =
-    "# rws-man components: each block is a component's operation lines (csf/mission_ops.hpp)\n";
+    "# csf-editor components: each block is a component's operation lines (csf/mission_ops.hpp)\n";
 
 std::optional<Type> type_named(const std::string_view name) {
     for (const auto type : {Type::actor, Type::navigation_group, Type::dummy, Type::area, Type::script,

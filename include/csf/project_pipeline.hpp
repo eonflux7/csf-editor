@@ -10,7 +10,7 @@
 #include <vector>
 
 // An authoring project's life outside the editor's panels
-// (docs/plans/editor-ux-redesign.md, E8 and E9): creating one in a shipped
+// (docs/archive/editor/editor-ux-redesign.md, E8 and E9): creating one in a shipped
 // mission's slot, building its two archives (the mission and GlobalEK's
 // texts) into dist/<build-id>/, deploying them into a test install with
 // rollback records, and the playtest log. GUI-free; `csf-mod project-new`,

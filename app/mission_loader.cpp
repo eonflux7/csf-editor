@@ -23,7 +23,7 @@ void append_debug_log(const std::filesystem::path& directory, const std::string_
         if (directory.empty()) return;
         std::error_code error;
         std::filesystem::create_directories(directory, error);
-        std::ofstream output(directory / "rws-man-debug.log", std::ios::app);
+        std::ofstream output(directory / "csf-editor-debug.log", std::ios::app);
         output << text << '\n';
     } catch (...) {
     }
@@ -184,7 +184,7 @@ void MissionLoader::set_stage(const int index, const char* text) {
 void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_log_directory,
                         std::optional<std::filesystem::path> project_workspace) {
     const auto started = std::chrono::steady_clock::now();
-    append_debug_log(debug_log_directory, "rws-man Debug mission load\n  input (UTF-8): " + path_utf8(path));
+    append_debug_log(debug_log_directory, "csf-editor Debug mission load\n  input (UTF-8): " + path_utf8(path));
     const auto check_cancelled = [this] {
         if (cancel_.load()) throw LoadCancelled{};
     };

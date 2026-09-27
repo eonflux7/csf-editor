@@ -9,7 +9,7 @@
 #include <string_view>
 #include <vector>
 
-// Components: recipes that can be edited again (docs/plans/editor-ux-redesign.md,
+// Components: recipes that can be edited again (docs/archive/editor/editor-ux-redesign.md,
 // E1). A component is the mission operation lines (csf/mission_ops.hpp, with
 // explicit IDs) that made some records, and the list of those records. Editing
 // it deletes the records and runs its new lines in their places
@@ -17,7 +17,7 @@
 // edited lines would give. The list is the editor's components.csfops, a
 // mission file like any other: undo and save include it, packaging does not.
 //
-//   # rws-man components
+//   # csf-editor components
 //   component 3 owns=actor:11,group:5,script:9011 fingerprint=1f0c...
 //     guard-patrol id=11 name=GE_CAMP ... route=5 ... script=9011 script-name=GE_CAMP
 //     link-nearest group=5 target=1

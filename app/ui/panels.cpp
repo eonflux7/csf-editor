@@ -78,11 +78,10 @@ void draw_about_window(AppState& state) {
         return;
     }
     ImGui::PushFont(font(Font::sans_bold));
-    // Decision Q8: the product in Mission mode; the binaries keep their names.
-    ImGui::TextUnformatted(mode_of(state.workspace) == Mode::inspect ? "rws-man" : "CSF Mission Editor");
+    ImGui::TextUnformatted("CSF Mission Editor");
     ImGui::PopFont();
     dim_text("Makes missions for Commandos: Strike Force, and inspects its data (chunks, missions, models) in "
-             "Inspect mode. The executable is rws-man.");
+             "Inspect mode. The executable is csf-editor.");
     section("Build");
     ImGui::PushFont(font(Font::mono));
     ImGui::Text("Dear ImGui %s (docking)", IMGUI_VERSION);

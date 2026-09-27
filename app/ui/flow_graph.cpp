@@ -1,4 +1,4 @@
-// The mission's flow as a graph (docs/plans/editor-ux-redesign.md, S3): events
+// The mission's flow as a graph (docs/archive/editor/editor-ux-redesign.md, S3): events
 // on the left, the scripts they start in the middle, the objectives on the
 // right; edges for "starts", "raises" and "completes". An event that starts
 // scripts but that nothing raises, and an objective that nothing completes,

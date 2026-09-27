@@ -15,7 +15,7 @@
 
 namespace csf {
 
-// An authoring project (docs/plans/editor-project-format.md): the Blender
+// An authoring project (docs/reference/project-format.md): the Blender
 // sources and the World placements of a mission, around the csf-mod
 // workspaces that package it (`mission/`, `texts/`). `project.csfproj` is
 // shared; `local.csfproj` holds machine-specific paths. Project paths are

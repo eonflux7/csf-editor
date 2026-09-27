@@ -3,7 +3,7 @@
     CSF_MOD=build/Release/csf-mod blender PROJECT/sources/world/terrain.blend --background \
         --factory-startup --python tools/blender/csf_authoring_test.py -- PROJECT
 
-PROJECT must be a disposable copy (tools/hello_world/build.sh output): the test
+PROJECT must be a disposable copy (examples/hello-world/build.sh output): the test
 saves the .blend, rewrites the terrain export, adds a building asset and raises
 the terrain by 0.5 m. It loads the reference, checks it is never exported, and
 checks each export; `csf-mod project-heights` must then report the raise.
@@ -67,7 +67,7 @@ def main(argv: list[str]) -> int:
           if line.startswith("v ")]
     check(min(xs) == -100.0 and max(xs) == 100.0, "the building is exported about its origin")
 
-    # Raising the terrain shows up in rws-man's height report.
+    # Raising the terrain shows up in csf-editor's height report.
     terrain = next(obj for obj in bpy.data.objects if obj.get("csf_asset_id") == "terrain")
     for vertex in terrain.data.vertices:
         vertex.co.z += 0.5

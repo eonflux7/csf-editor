@@ -7,7 +7,7 @@ param(
 
     [switch]$NoBuild,
 
-    # Also build rws-man and run the UI tests (label ui).
+    # Also build csf-editor and run the UI tests (label ui).
     [switch]$Ui
 )
 
@@ -44,7 +44,7 @@ try {
 
     if (-not $NoBuild) {
         $targets = @('rws_core_tests', 'csf_authoring_tests', 'fake_pakman')
-        if ($Ui) { $targets += @('rws-man', 'rwsman_ui_fixture') }
+        if ($Ui) { $targets += @('csf-editor', 'rwsman_ui_fixture') }
         Invoke-Native 'cmake' (@('--build', '--preset', $testPreset, '--target') + $targets + @('--parallel'))
     }
 

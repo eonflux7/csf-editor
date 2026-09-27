@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(csf-rws-tools VERSION 0.1.0 LANGUAGES CXX)
+project(csf-editor VERSION 0.1.0 LANGUAGES CXX)
 
 option(RWSMAN_BUILD_GUI "Build the Dear ImGui desktop application" ON)
 option(RWSMAN_BUILD_TESTS "Build parser tests" ON)
@@ -192,7 +192,7 @@ if(RWSMAN_BUILD_GUI)
         ${imgui_SOURCE_DIR}/backends
         app/imgui
     )
-    # rws-man's ImGui configuration: assertions and the test-engine item hooks
+    # csf-editor's ImGui configuration: assertions and the test-engine item hooks
     # report to the UI test harness (app/ui_automation.hpp). The hooks cost one
     # branch per item unless a UI script turns them on.
     target_compile_definitions(imgui_backend PUBLIC
@@ -202,7 +202,7 @@ if(RWSMAN_BUILD_GUI)
     target_link_libraries(imgui_backend PUBLIC glfw OpenGL::GL)
     target_compile_features(imgui_backend PUBLIC cxx_std_20)
 
-    add_executable(rws-man WIN32
+    add_executable(csf-editor WIN32
         app/main.cpp
         app/app_actions.cpp
         app/commands.cpp
@@ -260,12 +260,12 @@ if(RWSMAN_BUILD_GUI)
         app/ui/theme.cpp
         app/ui/widgets.cpp
     )
-    target_include_directories(rws-man PRIVATE app ${pfd_SOURCE_DIR})
-    target_compile_definitions(rws-man PRIVATE RWSMAN_VERSION="${PROJECT_VERSION}"
+    target_include_directories(csf-editor PRIVATE app ${pfd_SOURCE_DIR})
+    target_compile_definitions(csf-editor PRIVATE RWSMAN_VERSION="${PROJECT_VERSION}"
                                                RWSMAN_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(rws-man PRIVATE rws::core csf::core rws::image rwsman::ui_model imgui_backend)
+    target_link_libraries(csf-editor PRIVATE rws::core csf::core rws::image rwsman::ui_model imgui_backend)
     if(WIN32)
-        target_link_libraries(rws-man PRIVATE Shell32 Comdlg32)
+        target_link_libraries(csf-editor PRIVATE Shell32 Comdlg32)
     endif()
 endif()
 
@@ -280,8 +280,8 @@ if(RWSMAN_BUILD_TESTS)
     target_compile_features(fake_pakman PRIVATE cxx_std_20)
     add_test(NAME csf_authoring_tests COMMAND csf_authoring_tests $<TARGET_FILE:fake_pakman>)
 
-    # UI tests (docs/plans/editor-ux-redesign.md, T8): every tests/ui/*.uiscript
-    # runs in a hidden rws-man window against a generated fixture mission, with
+    # UI tests (docs/archive/editor/editor-ux-redesign.md, T8): every tests/ui/*.uiscript
+    # runs in a hidden csf-editor window against a generated fixture mission, with
     # its own config directory. Label `ui`; `./test.sh --ui` runs them. Without
     # a display they run under xvfb-run, or are skipped (exit 77).
     add_executable(rwsman_ui_fixture tests/ui/make_fixture.cpp)
@@ -306,7 +306,7 @@ if(RWSMAN_BUILD_TESTS)
                 set(name "local.${name}")
             endif()
             add_test(NAME ui.${name}
-                COMMAND ${ui_launcher} $<TARGET_FILE:rws-man> --run-script "${script}"
+                COMMAND ${ui_launcher} $<TARGET_FILE:csf-editor> --run-script "${script}"
                     --config-dir "${ui_test_root}/config/${name}" --output-dir "${ui_test_root}/out"
                     --golden-dir "${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/golden" --overwrite --size 1280x720)
             set_tests_properties(ui.${name} PROPERTIES

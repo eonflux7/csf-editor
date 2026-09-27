@@ -1,14 +1,14 @@
 # UI tests
 
-`rws-man --run-script <file>` drives the GUI from a script, one step per
+`csf-editor --run-script <file>` drives the GUI from a script, one step per
 frame, in a hidden window. It clicks and types through ImGui's own input
 handling, and it checks the application state and the rendered frames. The
-design is in [the UX plan](../plans/editor-ux-redesign.md) (§7).
+design is in [the UX plan](../archive/editor/editor-ux-redesign.md) (§7).
 
 ```bash
-./test.sh --ui                        # builds rws-man and runs every UI test
+./test.sh --ui                        # builds csf-editor and runs every UI test
 RWSMAN_HELLO_WORLD=~/dev/csf-mods/hello-world-project ./test.sh --ui   # also the local tier
-rws-man --run-script tests/ui/fixture_editing.uiscript --config-dir /tmp/cfg \
+csf-editor --run-script tests/ui/fixture_editing.uiscript --config-dir /tmp/cfg \
         --output-dir /tmp/out --golden-dir tests/ui/golden --overwrite --size 1280x720
 ```
 

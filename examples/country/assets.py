@@ -1,6 +1,6 @@
 """Turn Country's two downloaded CC0 models into project building assets.
 
-    blender --background --factory-startup --python tools/country/assets.py -- DOWNLOADS OUT_DIR
+    blender --background --factory-startup --python examples/country/assets.py -- DOWNLOADS OUT_DIR
 
 DOWNLOADS holds `picketfence_0.blend` ("Basic Wooden Fence" by WeaponGuy,
 OpenGameArt, CC0) and `pzIIIs.blend` ("panzerkampfwagen III" by konserwa,

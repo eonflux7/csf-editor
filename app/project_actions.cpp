@@ -187,7 +187,7 @@ void edit_in_blender(AppState& state) {
     if (!std::filesystem::is_regular_file(script, error))
         script = executable_directory() / "tools" / "blender" / "open_project.py";
     if (!std::filesystem::is_regular_file(script, error))
-        return state.warn("tools/blender/open_project.py was not found beside rws-man");
+        return state.warn("tools/blender/open_project.py was not found beside csf-editor");
     auto csf_mod = executable_directory() / "csf-mod";
 #ifdef _WIN32
     csf_mod += ".exe";

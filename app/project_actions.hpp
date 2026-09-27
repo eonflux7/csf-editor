@@ -8,7 +8,7 @@
 #include <string>
 #include <vector>
 
-// The authoring project's lifecycle in the GUI (docs/plans/editor-ux-redesign.md,
+// The authoring project's lifecycle in the GUI (docs/archive/editor/editor-ux-redesign.md,
 // E8, E9 and E15): the New project wizard, the archives, deploying and rolling
 // back, the playtest log and Edit in Blender. The work is csf/project_pipeline;
 // these report to the log and toasts and keep the open project current.

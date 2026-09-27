@@ -1,4 +1,4 @@
-// The component card in Properties (docs/plans/editor-ux-redesign.md, E1 and
+// The component card in Properties (docs/archive/editor/editor-ux-redesign.md, E1 and
 // E12): the recipe that made the selected record, with its parameters. Every
 // edit rewrites the component's lines and regenerates its records in place
 // (csf/mission_components.hpp), one undo step; a component whose records were

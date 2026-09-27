@@ -12,13 +12,13 @@ mkdir -p "$project"
 project=$(realpath "$project")
 dist="$project/dist/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$dist"
-tools/hello_world/build_world.sh "$project" "$corpus" > "$dist/world.log" 2>&1 || {
+examples/hello-world/build_world.sh "$project" "$corpus" > "$dist/world.log" 2>&1 || {
     cat "$dist/world.log" >&2; exit 1;
 }
-tools/hello_world/build_mission.sh "$project" "$convoy" "$dist/hello-world.pak" "$corpus" > "$dist/mission.log" 2>&1 || {
+examples/hello-world/build_mission.sh "$project" "$convoy" "$dist/hello-world.pak" "$corpus" > "$dist/mission.log" 2>&1 || {
     cat "$dist/mission.log" >&2; exit 1;
 }
-tools/hello_world/build_texts.sh "$project" "$global" "$dist/hello-texts.pak" "$corpus" > "$dist/texts.log" 2>&1 || {
+examples/hello-world/build_texts.sh "$project" "$global" "$dist/hello-texts.pak" "$corpus" > "$dist/texts.log" 2>&1 || {
     cat "$dist/texts.log" >&2; exit 1;
 }
 # Validate again after each child has removed its temporary files.
@@ -46,7 +46,7 @@ manifest = {
 }
 (dist / 'build.json').write_text(json.dumps(manifest, indent=2) + '\n')
 # Preserve the generator used even when the checkout has uncommitted changes.
-shutil.copytree('tools/hello_world', dist / 'recipe', ignore=shutil.ignore_patterns('__pycache__'))
+shutil.copytree('examples/hello-world', dist / 'recipe', ignore=shutil.ignore_patterns('__pycache__'))
 PY
-printf 'Built project %s\nArchives: %s\nSee docs/guides/hello-world-mission.md for deployment and playtest steps.\n' \
+printf 'Built project %s\nArchives: %s\nSee examples/hello-world/README.md for deployment and playtest steps.\n' \
     "$project" "$dist"

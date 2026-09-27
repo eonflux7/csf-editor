@@ -1,4 +1,4 @@
-// The authoring project's lifecycle (docs/plans/editor-ux-redesign.md, E8,
+// The authoring project's lifecycle (docs/archive/editor/editor-ux-redesign.md, E8,
 // E9, E15): the New project wizard, and the Build panel's archives, test
 // install (deploy and roll back) and playtest log.
 #include "app_state.hpp"

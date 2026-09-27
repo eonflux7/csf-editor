@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Write Country's project.csfproj (docs/plans/editor-project-format.md).
+"""Write Country's project.csfproj (docs/reference/project-format.md).
 
-    tools/country/project.py PROJECT_DIR
+    examples/country/project.py PROJECT_DIR
 
 PROJECT_DIR comes from `csf-mod project-new --slot Convoy --name Country`
 (its text range and local.csfproj are kept) and holds the sources that
@@ -65,7 +65,7 @@ def main(argv: list[str]) -> int:
         "donor-map Maps/FR03/FR03.rws Maps/FR03/FR03_col.rws",
         "donor fr01 Ransom Maps/FR01/FR01.rws Maps/FR01/FR01_col.rws",
         "",
-        "# World geometry from Blender (tools/country/terrain.py, assets.py)",
+        "# World geometry from Blender (examples/country/terrain.py, assets.py)",
         "asset terrain terrain sources/world/terrain.blend sources/world/terrain.csfworld",
         f"asset-export terrain export_csf_world.py 1 sha256:{exports['terrain']}",
         "asset fence building sources/assets/fence.blend sources/assets/fence.csfworld",
@@ -95,7 +95,7 @@ def main(argv: list[str]) -> int:
     for k, (x, z, yaw) in enumerate(bushes(), 1):
         lines.append(f"prop bush-{k} {BUSH} {number(x)} {number(height(x, z) + BUSH_SINK)} {number(z)} {yaw}"
                      f" ground {number(BUSH_SINK)}")
-    lines += ["", "# Placeholder lightmaps (tools/country/lightmaps.py)",
+    lines += ["", "# Placeholder lightmaps (examples/country/lightmaps.py)",
               "lightmap COUNTRY_Lm sources/lightmaps/COUNTRY_Lm.png",
               "lightmap COUNTRY_PROPS_Lm sources/lightmaps/COUNTRY_PROPS_Lm.png",
               "", "# Textures of their own: FR01's fields, the tank's hull and tracks",

@@ -39,7 +39,7 @@ void draw_diagnostics(AppState& state);
 void draw_references(AppState& state);
 // Inspect mode: session byte edits and the mission's changed files.
 void draw_changes(AppState& state);
-// Mission mode panels (docs/plans/editor-ux-redesign.md, §3 B).
+// Mission mode panels (docs/archive/editor/editor-ux-redesign.md, §3 B).
 void draw_outliner(AppState& state);
 void draw_properties(AppState& state);
 // The recipe that made a mission record, as an editable card (Properties).

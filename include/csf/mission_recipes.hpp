@@ -12,7 +12,7 @@
 #include <vector>
 
 // Behaviour presets: the patterns hello world proved in-game, each applied to
-// a MissionEditor as one undo step (docs/plans/editor-blender-authoring.md,
+// a MissionEditor as one undo step (docs/archive/editor/editor-blender-authoring.md,
 // stage 4). Positions are game units; heights are the caller's (the editor
 // snaps to the ground before calling). Presets never guess at arbitrary
 // script control flow: they write whole scripts of known shape.
@@ -182,7 +182,7 @@ struct IntroCutscene {
     std::string arm_event;
 };
 
-// A trigger (docs/plans/editor-ux-redesign.md, E10): When something happens,
+// A trigger (docs/archive/editor/editor-ux-redesign.md, E10): When something happens,
 // If an objective is or is not complete, Do some actions; one trigger script
 // of known shape (with a START_GAME setup script when the event needs one:
 // zone events for the player, a usable ghost). Only patterns seen working are

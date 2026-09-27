@@ -1,40 +1,56 @@
 # Documentation
 
-csf-rws-tools is a RenderWare `.rws` inspection toolkit for *Commandos: Strike
-Force* that grew into a read-only-first CSF mission workbench and a guarded
-mod-authoring tool. This page is the map of everything under `docs/`.
+This page maps everything under `docs/`. CSF Mission Editor (`csf-editor`)
+authors new missions for *Commandos: Strike Force*: maps built in Blender and
+from other missions' pieces, actors and their behaviours, objectives,
+triggers and cutscenes, packaged and deployed to a test install. It grew out
+of a RenderWare `.rws` inspection toolkit, which stays as its Inspect mode and
+the command-line tools.
 
-The [project README](../README.md) covers what the project is, its features,
-requirements, and how to build it. Start here for the rest.
+The [project README](../README.md) covers features, requirements and building.
 
 ## Guides
 
 How to use the tools, from first run to authoring.
 
-- [Command-line usage](guides/cli.md) — `csf-info`, `rws-info`, and
-  `rws-corpus`, with the mission-graph and inspection modes.
-- [GUI usage](guides/gui.md) — workspaces, Explorer, Inspector,
-  viewport and markers, settings, and camera controls.
-- [UI tests](guides/ui-tests.md) — `rws-man --run-script` scenario scripts, the
-  fixture mission, reference screenshots and `./test.sh --ui`.
-- [Geometry and scene export](guides/export.md) — OBJ and glTF output, manifests,
-  and coordinate conversion.
-- [Mission editor](guides/mission-editor.md) — editing missions, project files,
-  and archive export.
-- [Guarded authoring and mods](guides/guarded-authoring-and-mods.md) — the
-  non-destructive edit → validate → stage → package workflow.
-- [Blender lightmap workflow](guides/blender-lightmaps.md) — material preview,
-  Cycles bakes, and DDS staging.
+- [Mission editor](guides/mission-editor.md): a mission from start to finish,
+  what can be edited, projects and archives.
+- [GUI usage](guides/gui.md): modes, panels, viewport, settings and controls.
+- [Command-line usage](guides/cli.md): `csf-mod`, `csf-info`, `rws-info` and
+  `rws-corpus`.
+- [Blender authoring](guides/blender-authoring.md) and the
+  [Blender lightmap workflow](guides/blender-lightmaps.md).
+- [Guarded authoring and mods](guides/guarded-authoring-and-mods.md): the
+  non-destructive edit, validate, stage and package workflow.
+- [Geometry and scene export](guides/export.md): OBJ and glTF output.
+- [UI tests](guides/ui-tests.md): `csf-editor --run-script` scenario scripts
+  and the fixture mission.
+
+## Examples
+
+Two missions kept as worked examples, each rebuilt from nothing by a script
+([`examples/`](../examples/README.md)):
+
+- [Hello world](../examples/hello-world/README.md): the first new-world
+  mission, built from Blender terrain, generated scripts and editor
+  operations; it works in the game.
+- [Country](../examples/country/README.md): a night farm village assembled
+  through the command-line tools from other missions' buildings, props,
+  animations and scripts, with the findings for an asset registry.
+
+## Reference
+
+- [Authoring project format](reference/project-format.md): `project.csfproj`,
+  `local.csfproj`, sources and what the build generates.
 
 ## Plans
 
-Active plans; each moves to [`archive/`](archive/) when it ships.
+- [Roadmap](plans/roadmap.md): what is open, from in-game checks to the
+  editor's next features.
+- [Research spikes](plans/editor-spikes.md): custom props and characters,
+  each behind an in-game go/no-go gate.
 
-- [Hello-world mission](plans/hello-world-mission.md) — a new Blender-built
-  world with vanilla props, actors and scripts, plus the asset store, mission
-  flow view and scene editor it needs.
-- [Mission editor UI/UX redesign](plans/editor-ux-redesign.md) — the GUI
-  rebuilt around creating a mission end to end, plus a UI test harness.
+Plans move to [`archive/`](archive/README.md) when they ship.
 
 ## Game knowledge
 

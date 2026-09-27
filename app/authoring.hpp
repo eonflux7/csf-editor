@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-// Authoring projects in the GUI (docs/plans/editor-project-format.md): the map
+// Authoring projects in the GUI (docs/reference/project-format.md): the map
 // of an open project is rebuilt in the background when a Blender export
 // changes, the mission reloads with it, and the height report lists the
 // placements and anchored actors that no longer stand where their rules say.

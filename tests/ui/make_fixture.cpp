@@ -1,4 +1,4 @@
-// Writes the synthetic mission the UI tests open (docs/plans/editor-ux-redesign.md,
+// Writes the synthetic mission the UI tests open (docs/archive/editor/editor-ux-redesign.md,
 // T6): a small package with a generated World (rolling terrain, no textures),
 // a player, three guards, a patrol route, cover points, a zone, a dummy and a
 // light, and two scripts. It contains no game data, so the committed UI

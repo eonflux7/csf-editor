@@ -1,4 +1,4 @@
-# Reference frames of the main layouts (docs/plans/editor-ux-redesign.md, T6):
+# Reference frames of the main layouts (docs/archive/editor/editor-ux-redesign.md, T6):
 # Mission, Script and Inspect modes at 1280x720 and 1920x1080, the
 # high-contrast theme, and a 150% UI scale. The theme's contrast is linted too.
 lint theme

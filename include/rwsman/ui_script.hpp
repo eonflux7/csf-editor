@@ -8,8 +8,8 @@
 #include <string_view>
 #include <vector>
 
-// UI scenario scripts (docs/plans/editor-ux-redesign.md, T2): one step per
-// line, `<op> <argument>...`, run by `rws-man --run-script` one step per frame.
+// UI scenario scripts (docs/archive/editor/editor-ux-redesign.md, T2): one step per
+// line, `<op> <argument>...`, run by `csf-editor --run-script` one step per frame.
 // Arguments are separated by spaces; double quotes group an argument and
 // accept \" and \\. '#' outside quotes starts a comment and ';' separates
 // steps on one line.

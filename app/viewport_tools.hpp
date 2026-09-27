@@ -6,7 +6,7 @@
 #include <optional>
 #include <vector>
 
-// Editing in the viewport (docs/plans/editor-ux-redesign.md, Phase 2): the
+// Editing in the viewport (docs/archive/editor/editor-ux-redesign.md, Phase 2): the
 // Place, Route, Zone and Cover tools, multi-selection, project placements as
 // viewport records, and picking a record for a form field.
 namespace rwsman {

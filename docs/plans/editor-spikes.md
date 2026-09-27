@@ -1,6 +1,6 @@
 # Plan: research spikes for custom props and characters
 
-Stage 8 of the [editor/Blender plan](editor-blender-authoring.md). Each spike
+Stage 8 of the [editor/Blender plan](../archive/editor/editor-blender-authoring.md). Each spike
 is a small in-game experiment with a go/no-go gate; editor work for its area
 starts only after a "go". Started 2026-09-25.
 
@@ -22,7 +22,7 @@ physics entry scaled. Classes with LOD models or a `.cmo` are refused.
 
 Test build: `~/dev/csf-mods/hello-world-spike-scaled-prop` (hello world plus
 Escape's crate at 1.5x as class 501, `BIG_CRATE` near the MP40 pickup;
-archives in `dist/spike/`). rws-man shows the 135 cm crate textured.
+archives in `dist/spike/`). csf-editor shows the 135 cm crate textured.
 
 **Gate A1:** the mission loads; the big crate is drawn at its size where
 placed; the player collides with its box (walk into it). Go: A2. No-go: find

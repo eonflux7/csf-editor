@@ -657,7 +657,7 @@ void draw_mission_explorer(AppState& state, const Frame& frame) {
     if (!animation) draw_resources(state, frame);
 }
 
-// The scripts grouped by what they do (docs/plans/editor-ux-redesign.md, S1):
+// The scripts grouped by what they do (docs/archive/editor/editor-ux-redesign.md, S1):
 // mission start, triggers, actor behaviours, what recipes (components) made,
 // and the cutscene program.
 void draw_script_explorer(AppState& state, const Frame& frame) {

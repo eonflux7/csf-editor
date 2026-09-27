@@ -25,7 +25,7 @@ struct UiScriptOptions {
     double changed_percent{0.1};              // default budget for `compare`
 };
 
-// Runs a UI script one step per frame (docs/plans/editor-ux-redesign.md, T2):
+// Runs a UI script one step per frame (docs/archive/editor/editor-ux-redesign.md, T2):
 // every step waits until the app is idle (no mission load, authoring job or
 // file dialog), widget steps wait up to a second of frames for their target
 // to appear, and the first failure ends the run with a report on stderr and

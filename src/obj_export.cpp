@@ -97,7 +97,7 @@ void export_geometry_obj(const GeometryInfo& geometry, const std::span<const std
 
     std::ofstream output(output_path, std::ios::trunc);
     if (!output) throw std::runtime_error("Cannot create OBJ: " + output_path.string());
-    output << "# Exported by CSF RWS Tools\n" << std::setprecision(9);
+    output << "# Exported by CSF Mission Editor\n" << std::setprecision(9);
     for (std::int32_t i = 0; i < geometry.vertex_count; ++i) {
         const auto offset = morph->vertices_offset + static_cast<std::uint64_t>(i) * 12;
         output << "v " << read_f32(bytes, offset) << ' ' << read_f32(bytes, offset + 4) << ' '

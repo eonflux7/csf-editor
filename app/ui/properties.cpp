@@ -1,4 +1,4 @@
-// Properties (docs/plans/editor-ux-redesign.md, B4): what the selected record
+// Properties (docs/archive/editor/editor-ux-redesign.md, B4): what the selected record
 // is and everything an author edits on it, as cards. File offsets, entry
 // numbers and provenance appear only with Developer details (Preferences) and
 // always in the Inspect mode's Inspector.

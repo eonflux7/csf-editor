@@ -1,7 +1,7 @@
 #pragma once
 
-// rws-man's Dear ImGui configuration (IMGUI_USER_CONFIG, see imconfig.h).
-// Assertions and the test-engine item hooks forward to rws-man's UI test
+// csf-editor's Dear ImGui configuration (IMGUI_USER_CONFIG, see imconfig.h).
+// Assertions and the test-engine item hooks forward to csf-editor's UI test
 // harness (app/ui_automation.hpp) through app/imgui/imgui_hooks.hpp.
 
 // Returns only when a UI test run records the failure; otherwise prints it

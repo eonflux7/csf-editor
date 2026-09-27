@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-// The intro cutscene as a timeline (docs/plans/editor-ux-redesign.md, E11):
+// The intro cutscene as a timeline (docs/archive/editor/editor-ux-redesign.md, E11):
 // the intro component's shot lines as shots with durations, the camera at a
 // time, which shot and part a record of the component is, and the lines back
 // after an edit. The Timeline panel and the viewport draw it.

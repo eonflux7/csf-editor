@@ -1,12 +1,12 @@
 # GUI usage
 
-`rws-man` is the CSF Mission Editor. It has three modes, switched at the top
+`csf-editor` is the CSF Mission Editor. It has three modes, switched at the top
 right of the menu bar: **Mission** (`Ctrl+1`) for making missions, **Script**
 (`Ctrl+2`) for the mission's programs, and **Inspect** (`Ctrl+3`) for the
-file-level workbench, where the window is titled `rws-man`. Inspect groups the
+file-level workbench. Inspect groups the
 **Scene**, **Geometry**, **Animation** and **Hex** workspaces
 (`Ctrl+4`...`Ctrl+7`; bare `1`-`4` still work while the viewport is hovered).
-The design behind the layout is [the UX plan](../plans/editor-ux-redesign.md),
+The design behind the layout is [the UX plan](../archive/editor/editor-ux-redesign.md),
 and [Mission editor](mission-editor.md) walks through making a mission from
 start to finish.
 
@@ -214,11 +214,14 @@ and high-contrast themes.
 
 Everything the GUI writes for itself lives in one per-user directory, never in the
 working directory or the repository:
-`%LOCALAPPDATA%\CSF RWS Tools\` on Windows, `$XDG_CONFIG_HOME/csf-rws-tools/` (or
-`~/.config/csf-rws-tools/`) on Linux. It holds `settings.ini` (resource root, UI
+`%LOCALAPPDATA%\CSF Mission Editor\` on Windows, `$XDG_CONFIG_HOME/csf-editor/` (or
+`~/.config/csf-editor/`) on Linux; before the rename it was `CSF RWS Tools` and
+`csf-rws-tools`, and the first start moves the old folder, pointing its settings and
+projects at the new place. It holds `projects/` (new projects go there unless
+Preferences names another folder), `settings.ini` (resource root, UI
 scale, theme, recent files and pairings, panel visibility, viewport defaults, export
 policy, marker display options, and camera bookmarks), `layout.ini` (dock layouts), `screenshots/`, and, in
-Debug builds, `rws-man-debug.log`. `settings.ini` is plain text and safe to edit; a
+Debug builds, `csf-editor-debug.log`. `settings.ini` is plain text and safe to edit; a
 missing file yields defaults, and a corrupted one falls back to defaults field by
 field and reports what it ignored in the Console.
 

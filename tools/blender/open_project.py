@@ -1,10 +1,10 @@
-"""Opens an rws-man authoring project in Blender (rws-man's Edit in Blender).
+"""Opens a csf-editor authoring project in Blender (csf-editor's Edit in Blender).
 
     blender [BLEND] --python tools/blender/open_project.py -- PROJECT BLEND EXPORT CSF_MOD
 
 Loads the csf_authoring add-on (installed, or from beside this script), sets
 the scene's project and the csf-mod the add-on runs. When BLEND does not exist
-yet, it starts one from the asset's export (rws-man's starter terrain): one
+yet, it starts one from the asset's export (csf-editor's starter terrain): one
 mesh tagged as the project's terrain, its materials carrying the texture and
 surface names, saved as BLEND. Send (CSF tab) then exports it back.
 """

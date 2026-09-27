@@ -1,6 +1,6 @@
 # Mission editor
 
-`rws-man` (the CSF Mission Editor in Mission mode) and `csf-mod` make and edit
+`csf-editor` (the CSF Mission Editor in Mission mode) and `csf-mod` make and edit
 *Commandos: Strike Force* missions without touching the unpacked resources or
 the game installation. Edits are applied to canonical CSFFBS trees in memory,
 saved into a project, and built into a complete replacement mission archive
@@ -8,21 +8,21 @@ saved into a project, and built into a complete replacement mission archive
 
 Every format rule below is proven against the shipped files (byte-for-byte
 round trips, corpus-wide invariants). Hello world, built by the same recipes
-(`tools/hello_world/`), plays in the game; a mission made entirely through the
+(`examples/hello-world/`), plays in the game; a mission made entirely through the
 GUI has not been playtested yet, and runtime behaviour that nobody has seen in
 the game is marked as untested where it matters.
 
 ## A mission from start to finish
 
 This is the journey the editor is built around
-([the UX plan](../plans/editor-ux-redesign.md), section 2). Each step names
+([the UX plan](../archive/editor/editor-ux-redesign.md), section 2). Each step names
 where it happens; [GUI usage](gui.md) describes the panels themselves.
 
 1. **Create.** **New project...** (Home, `File`, `Ctrl+N`) asks for a name and a
    slot (a shipped mission the new one replaces). It creates the project in the
    projects folder with a flat starter terrain of the slot's ground, the slot's
    mission emptied, and a free range of text IDs, then opens it. The project's
-   format is [editor-project-format.md](../plans/editor-project-format.md).
+   format is [editor-project-format.md](../reference/project-format.md).
 2. **Terrain and buildings.** **Edit in Blender** (the Map card in Properties,
    `Build`, or the status bar's Blender item) starts Blender with the CSF
    add-on and the project set, making `terrain.blend` from the starter terrain
@@ -156,7 +156,7 @@ tools edit it; **Ctrl+S** saves the edits into a mission project (by default
 the package, each with a `.changes.json` manifest of the operations applied.
 **File > Export mission archive (.pak)...** (`Ctrl+E`) rebuilds the complete
 archive from the shipped one and optionally installs it, backing up the
-original. `rws-man --project <folder>` reopens a project.
+original. `csf-editor --project <folder>` reopens a project.
 
 ## What can be edited
 
@@ -356,7 +356,7 @@ operations and presets, one per line (`new-mission`, `actor`, `prop`,
 `--components` makes each recipe a component. `csf-mod mission-components
 <workspace> <scene> list|check` lists a workspace's components and checks
 that each regenerates identically. Hello world is built this way by
-`tools/hello_world/ops.py`, and `tools/hello_world/parity.sh [--components]
+`examples/hello-world/ops.py`, and `examples/hello-world/parity.sh [--components]
 <project>` checks that every mission file matches the `scene.py` build byte
 for byte.
 
@@ -385,7 +385,7 @@ appended. With no replacements the output is byte-identical to the original
 (checked on `C47_Cut.pak` and `Ransom.pak`). The result is fully verified before it
 is published, and a `.package.json` beside it records its hash and the original's.
 
-`rws-man` links pak-man's `pakman_core` when the sibling `../pak-man` checkout is
+`csf-editor` links pak-man's `pakman_core` when the sibling `../pak-man` checkout is
 present (`RWSMAN_PAKMAN_DIR` selects another); otherwise it runs `pakman-cli` from
 `PATH`.
 
@@ -401,9 +401,9 @@ example an authoring project's `build/` map) stays where it is: saving copies it
 into `authored/` only when an edit in the editor changed it. `csf-mod validate`,
 `conflicts`, `build` and `package` work on it as on any project.
 
-An [authoring project](../plans/editor-project-format.md) keeps its mission
+An [authoring project](../reference/project-format.md) keeps its mission
 workspace in `mission/`; open the project folder itself (**File > Open mission
-project**, or `rws-man --project <folder>`). While it is open, rws-man checks
+project**, or `csf-editor --project <folder>`). While it is open, csf-editor checks
 the Blender exports every second: when one changes, it rebuilds the map in the
 background and reloads the mission (after you save, if the mission has unsaved
 edits). Height findings appear in **Problems** (and the **Height report**)
@@ -443,7 +443,7 @@ and updates the workspace's records of it.
 ## Not yet supported
 
 - New map geometry and collision are made in Blender and built by an
-  [authoring project](../plans/editor-project-format.md) (see
+  [authoring project](../reference/project-format.md) (see
   [blender-authoring.md](blender-authoring.md)), not in this editor.
 - Updating `.phd` physics descriptors for imported classes, and editing particles (`.sp`), UI
   (`.fbs`), audio (`.wad`) and localization.

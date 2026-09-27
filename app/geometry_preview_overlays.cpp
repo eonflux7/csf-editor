@@ -920,7 +920,7 @@ bool GeometryPreview::create_overlay_program() {
         if (!okay) {
             std::array<char, 1024> log{};
             gl.get_shader_log(shader, static_cast<GLsizei>(log.size()), nullptr, log.data());
-            std::fprintf(stderr, "rws-man: overlay shader compile failed: %s\n", log.data());
+            std::fprintf(stderr, "csf-editor: overlay shader compile failed: %s\n", log.data());
             gl.delete_shader(shader);
             return 0;
         }
@@ -944,7 +944,7 @@ bool GeometryPreview::create_overlay_program() {
     if (!linked) {
         std::array<char, 1024> log{};
         gl.get_program_log(overlay_program_, static_cast<GLsizei>(log.size()), nullptr, log.data());
-        std::fprintf(stderr, "rws-man: overlay shader link failed: %s\n", log.data());
+        std::fprintf(stderr, "csf-editor: overlay shader link failed: %s\n", log.data());
         destroy_overlay_program();
         overlay_program_failed_ = true;
         return false;

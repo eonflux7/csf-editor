@@ -1,4 +1,4 @@
-// The Outliner (docs/plans/editor-ux-redesign.md, B2): the mission's content
+// The Outliner (docs/archive/editor/editor-ux-redesign.md, B2): the mission's content
 // grouped by what it is to an author (players, enemies, props, zones, routes,
 // objectives...), not by where it is stored. Rows select their record, double
 // clicks frame it, and the eye and lock toggles hide a record in the viewport

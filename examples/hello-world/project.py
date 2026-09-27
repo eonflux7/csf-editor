@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Write the hello-world authoring project files (docs/plans/editor-project-format.md).
+"""Write the hello-world authoring project files (docs/reference/project-format.md).
 
-    tools/hello_world/project.py PROJECT_DIR CORPUS_ROOT
+    examples/hello-world/project.py PROJECT_DIR CORPUS_ROOT
 
 Expects PROJECT_DIR/sources/world/terrain.csfworld (terrain.py). Writes
 project.csfproj (Convoy's slot, the objective text range, the terrain asset

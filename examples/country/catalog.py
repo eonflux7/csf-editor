@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""A first asset catalogue over the unpacked game (docs/plans/country-mission.md):
+"""A first asset catalogue over the unpacked game (examples/country/README.md):
 the tables Country was assembled from, as TSV, for an asset registry to grow from.
 
-    tools/country/catalog.py classes CORPUS OUT.tsv
-    tools/country/catalog.py anims CORPUS OUT.tsv
-    tools/country/catalog.py scripts CORPUS OUT.tsv
-    tools/country/catalog.py map CORPUS MISSION MAP.rws OUT.tsv   (e.g. Ransom Maps/FR01/FR01.rws)
-    tools/country/catalog.py objects CORPUS MISSION MAP.rws OUT.tsv
+    examples/country/catalog.py classes CORPUS OUT.tsv
+    examples/country/catalog.py anims CORPUS OUT.tsv
+    examples/country/catalog.py scripts CORPUS OUT.tsv
+    examples/country/catalog.py map CORPUS MISSION MAP.rws OUT.tsv   (e.g. Ransom Maps/FR01/FR01.rws)
+    examples/country/catalog.py objects CORPUS MISSION MAP.rws OUT.tsv
 
 - classes: every mission's Objetos.bdd class (ID, name, type, rank, behaviour, model).
 - anims: every Anims.bdd clip (IDs are the same clip in every mission), its

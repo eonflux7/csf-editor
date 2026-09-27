@@ -827,7 +827,7 @@ void export_animation_gltf(const AnimationClip& clip, const FrameListInfo& frame
     auto bin_path = output_path;
     bin_path.replace_extension(".bin");
     std::ostringstream json;
-    json << "{\n  \"asset\": {\"version\": \"2.0\", \"generator\": \"rws-man\"},\n  \"buffers\": "
+    json << "{\n  \"asset\": {\"version\": \"2.0\", \"generator\": \"csf-editor\"},\n  \"buffers\": "
             "[{\"uri\": \""
          << escape(bin_path.filename().string()) << "\", \"byteLength\": " << bin.size()
          << "}],\n  \"bufferViews\": [\n";

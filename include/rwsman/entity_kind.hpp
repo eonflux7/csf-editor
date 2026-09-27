@@ -13,7 +13,7 @@ struct MissionActor;
 
 // What a mission record or project placement is to a mission author: the
 // Outliner groups by it, and the UI gives each kind one colour and one icon
-// (docs/plans/editor-ux-redesign.md, B2 and V1).
+// (docs/archive/editor/editor-ux-redesign.md, B2 and V1).
 namespace rwsman {
 
 enum class EntityKind : std::uint8_t {

@@ -21,7 +21,7 @@ inline constexpr std::string_view default_idle_slot = "DISTRAIDO_IDLE";
 // How a soldier holds his weapon, which decides the animations that fit him:
 // across the shipped missions `SF*` clips are played only by rifle classes,
 // `SM*` by submachine-gun classes, and `SP*` (weapon away: smoking, the
-// radio, a map) by any (docs/plans/country-mission.md).
+// radio, a map) by any (examples/country/README.md).
 enum class WeaponStance : unsigned char { unknown, rifle, smg, pistol };
 // A weapon by its Armas.bdd name: Mauser and Springfield are rifles, Mp40 and
 // Thompson submachine guns, Luger a pistol.

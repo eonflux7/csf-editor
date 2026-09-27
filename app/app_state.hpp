@@ -78,7 +78,7 @@ enum class Panel : std::uint8_t {
     references,
     changes,
     missions,
-    // Mission mode (docs/plans/editor-ux-redesign.md, §3 B).
+    // Mission mode (docs/archive/editor/editor-ux-redesign.md, §3 B).
     outliner,
     properties,
     assets,
@@ -175,7 +175,7 @@ struct AuthoringSession {
     std::unique_ptr<csf::AuthoringProject> project;
     // Export modification times the last build saw, to notice new exports.
     std::map<std::filesystem::path, std::filesystem::file_time_type> export_times;
-    // project.csfproj as rws-man last read or wrote it; another writer (the
+    // project.csfproj as csf-editor last read or wrote it; another writer (the
     // Blender add-on registering an asset) makes it reload the project.
     std::filesystem::file_time_type project_time;
     // project.csfproj's text as last saved: edits stay in memory until Save
@@ -202,7 +202,7 @@ struct AuthoringSession {
     bool show_heights{};
 
     // Project edits (placements, texts, resnaps) as undo steps beside the
-    // mission editor's (docs/plans/editor-ux-redesign.md, E2). Each keeps the
+    // mission editor's (docs/archive/editor/editor-ux-redesign.md, E2). Each keeps the
     // project text before and after, and the mission editor's history
     // position it followed: undo takes whichever step is newest.
     struct Step {
@@ -417,7 +417,7 @@ struct FrameStats {
     double fps{};    // Average over recent frames that were drawn back to back.
     double cpu_ms{}; // CPU time of the latest frame, event handling to buffer swap.
     bool idle{};     // The loop is waiting for input between frames.
-    // The performance budget (docs/plans/editor-ux-redesign.md, T12): the
+    // The performance budget (docs/archive/editor/editor-ux-redesign.md, T12): the
     // last frames' CPU times, and how long the latest Outliner rows and
     // Problems list took to build.
     std::array<double, 120> recent_ms{};

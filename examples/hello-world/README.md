@@ -5,12 +5,12 @@ resources at `../CSF_unpacks`, and untouched original archives:
 
 ```bash
 ./build.sh
-bash tools/hello_world/build.sh ~/dev/csf-mods/hello-world-project \
+bash examples/hello-world/build.sh ~/dev/csf-mods/hello-world-project \
   ~/dev/csf-mods/Convoy.original.pak ~/dev/csf-mods/GlobalEK.original.pak
 ```
 
 The project directory must be new. It is an
-[authoring project](../plans/editor-project-format.md):
+[authoring project](../../docs/reference/project-format.md):
 
 - `project.csfproj` and `local.csfproj`: the slot, the terrain asset and the
   house, tree and plant placements; the corpus path.
@@ -29,7 +29,7 @@ well as the mission archive.
 Open the built project with:
 
 ```bash
-./build/Release/rws-man --project ~/dev/csf-mods/hello-world-project
+./build/Release/csf-editor --project ~/dev/csf-mods/hello-world-project
 ```
 
 Deploy into the separate test install (each command prints a rollback state
@@ -78,4 +78,4 @@ This replaces v11's decorative radio and separate invisible class 241 target.
 The user confirmed v12 works in-game. The v13 camera update adds slow travelling
 movement within the five shots; the user confirmed v13 works in-game as well
 (camera movement, aim and return to player control). The planned editor
-workflow is in [the editor/Blender plan](../plans/editor-blender-authoring.md).
+workflow is in [the editor/Blender plan](../../docs/archive/editor/editor-blender-authoring.md).

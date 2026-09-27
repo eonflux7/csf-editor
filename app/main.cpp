@@ -60,7 +60,7 @@ struct LaunchOptions {
     // buffer to a new PNG, and exit. The window stays hidden unless --show is passed.
     std::optional<std::filesystem::path> screenshot;
     std::vector<std::string> commands;
-    // A UI scenario script (docs/plans/editor-ux-redesign.md, T2) and where its
+    // A UI scenario script (docs/archive/editor/editor-ux-redesign.md, T2) and where its
     // screenshots, references and failure reports go.
     std::optional<std::filesystem::path> script;
     std::optional<std::filesystem::path> output_dir, golden_dir, dump_state;
@@ -187,7 +187,7 @@ int run_app(const LaunchOptions& options) {
     glfwWindowHint(GLFW_STENCIL_BITS, 8); // Selection outline mask.
     glfwWindowHint(GLFW_MAXIMIZED, options.maximize ? GLFW_TRUE : GLFW_FALSE);
     if (scripted && !options.show) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    auto* window = glfwCreateWindow(options.width, options.height, "CSF RWS Tools - rws-man",
+    auto* window = glfwCreateWindow(options.width, options.height, "CSF Mission Editor",
                                     nullptr, nullptr);
     if (!window) {
         std::fprintf(stderr, "cannot create an OpenGL 3.3 window\n");
@@ -217,7 +217,12 @@ int run_app(const LaunchOptions& options) {
 
         // Per-user configuration: settings, layouts, and the debug log all live in
         // one directory. Nothing is written to the working directory.
-        state.config_dir = options.config_dir ? *options.config_dir : rwsman::config_directory();
+        // The folder was csf-rws-tools before the rename to CSF Mission Editor: move it once.
+        std::string migrated;
+        state.config_dir = options.config_dir ? *options.config_dir
+                                              : rwsman::migrate_config_directory(rwsman::legacy_config_directory(),
+                                                                                 rwsman::config_directory(), &migrated);
+        if (!migrated.empty()) state.info(migrated);
         const auto settings_path = state.config_dir.empty() ? std::filesystem::path{}
                                                             : state.config_dir / "settings.ini";
         if (!state.config_dir.empty()) {

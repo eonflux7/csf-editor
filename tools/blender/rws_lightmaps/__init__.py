@@ -4,7 +4,7 @@ bl_info = {
     "version": (0, 15, 0),
     "blender": (4, 0, 0),
     "location": "3D View > Sidebar > RWS Lightmaps",
-    "description": "Configure CSF RWS Tools glTF materials for base and lightmap preview",
+    "description": "Configure CSF Mission Editor glTF materials for base and lightmap preview",
     "category": "Material",
 }
 
@@ -1096,7 +1096,7 @@ class RWS_OT_configure(bpy.types.Operator):
             with manifest_path.open("r", encoding="utf-8") as stream:
                 manifest = json.load(stream)
             if manifest.get("format") != "rws-man-scene-manifest-v1":
-                raise ValueError("This is not a CSF RWS Tools scene manifest")
+                raise ValueError("This is not a CSF Mission Editor scene manifest")
             entries = manifest.get("materials", [])
             lookup = _texture_index(texture_directory)
             tagged_materials, material_uv_names = _scene_material_indexes()
@@ -1823,7 +1823,7 @@ class RWS_PT_lightmaps(bpy.types.Panel):
         layout.label(text="RWS Lightmaps 0.15.0")
 
         column = layout.column(align=True)
-        column.label(text="CSF RWS Tools Scene")
+        column.label(text="CSF Mission Editor Scene")
         column.prop(scene, "rws_lightmap_manifest", text="Manifest")
         column.prop(scene, "rws_lightmap_texture_directory", text="Textures")
         column.operator("rws_lightmaps.configure", icon="NODE_MATERIAL")

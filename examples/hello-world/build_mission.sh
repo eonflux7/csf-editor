@@ -5,7 +5,7 @@
 # databases are reused; the doberman is imported from Ransom and the
 # radio's ghost behavior and supporting crate from Escape.
 #
-#   tools/hello_world/build_mission.sh PROJECT_DIR ORIGINAL_CONVOY_PAK OUT_PAK [CORPUS_ROOT]
+#   examples/hello-world/build_mission.sh PROJECT_DIR ORIGINAL_CONVOY_PAK OUT_PAK [CORPUS_ROOT]
 #
 # PROJECT_DIR comes from build_world.sh; its mission workspace PROJECT_DIR/mission
 # is created (it must not exist). Deploy the archive with
@@ -19,7 +19,7 @@ scene="$corpus/Convoy/Maps/FR03/Convoy.scn"
 [ ! -e "$ws" ] || { echo "workspace exists: $ws" >&2; exit 1; }
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 "$csfmod" decompile "$scene" "$tmp/convoy.scn.txt" >/dev/null
-python3 tools/hello_world/scene.py "$tmp/convoy.scn.txt" "$project/sources/world/terrain.csfworld" "$tmp/scene"
+python3 examples/hello-world/scene.py "$tmp/convoy.scn.txt" "$project/sources/world/terrain.csfworld" "$tmp/scene"
 cat "$tmp/scene/anchors.csfproj" >> "$project/project.csfproj"
 "$csfmod" compile "$tmp/scene/Convoy.scn.txt" "$scene" "$tmp/Convoy.scn"
 "$csfmod" compile "$tmp/scene/Convoy.csc.txt" "${scene%.scn}.csc" "$tmp/Convoy.csc"

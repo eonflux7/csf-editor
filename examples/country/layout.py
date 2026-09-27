@@ -1,4 +1,4 @@
-"""The Country map layout (docs/plans/country-mission.md), shared by terrain.py
+"""The Country map layout (examples/country/README.md), shared by terrain.py
 (inside Blender), lightmaps.py, project.py and ops.py. Positions are game
 units (cm): x east, z north, y up.
 
@@ -65,11 +65,11 @@ def building(ident, name, box, floor, ground, at=None, interior=True, props=True
 
 
 def prop(ident, groups, box, sink=5.0, at=None, donor="fr01", yaw=0.0):
-    """A yard prop (a single object of a group, tools/country/catalog.py objects), sunk a little."""
+    """A yard prop (a single object of a group, examples/country/catalog.py objects), sunk a little."""
     return Piece(ident, groups, box, box[1] + sink, at, donor, yaw)
 
 
-# Boxes: the groups' bounds from tools/country/catalog.py map (30 cm wider)
+# Boxes: the groups' bounds from examples/country/catalog.py map (30 cm wider)
 # and objects; floors: the lowest walkable floor (the _INTERIOR group's).
 FARMHOUSE = building("farmhouse", "EDIFICIO_1", (7423, 1070, 12685, 10757, 2123, 14820), 1080, FR01_VILLAGE_GROUND)
 RUIN = building("ruin", "EDIFICIO_2", (3845, 967, 11716, 6858, 2714, 16062), 1037, FR01_VILLAGE_GROUND)
@@ -121,7 +121,7 @@ LOGS = [prop("log-pile", ["ATREZZO_EXTERIOR_1"], (6584, 520, -609, 7640, 677, 24
 PIECES = [FARMHOUSE, RUIN, HOUSE, RADIO_HOUSE, WALLS, WELL, WOODSHED, BARN, OPEN_SHED, COW_SHED, WATER_TOWER,
           HAND_CART, PUMP, *BALES, *HEDGEHOGS, *LAMPS, *LOGS]
 
-# ---- Places inside the buildings (FR01 coordinates; tools/country/catalog.py objects) --
+# ---- Places inside the buildings (FR01 coordinates; examples/country/catalog.py objects) --
 # The radio house's ground floor (1094): a 3 m table with benches along it
 # (object 17, top 1175); its first floor (1506) has a writing desk (object 27).
 RADIO_FLOOR, RADIO_UPSTAIRS = RADIO_HOUSE.y_of(1094.0), RADIO_HOUSE.y_of(1506.0)

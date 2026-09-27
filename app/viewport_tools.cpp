@@ -1,4 +1,4 @@
-// Editing in the viewport (docs/plans/editor-ux-redesign.md, Phase 2).
+// Editing in the viewport (docs/archive/editor/editor-ux-redesign.md, Phase 2).
 #include "viewport_tools.hpp"
 
 #include "app_util.hpp"

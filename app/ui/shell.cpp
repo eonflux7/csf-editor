@@ -37,11 +37,11 @@ void update_window_title(AppState& state) {
                                     : state.mission.project ? path_utf8(state.mission.project->workspace_root.filename())
                                                             : std::string{};
         window_title = (project.empty() ? slot : project + " - " + slot + " slot") + (dirty ? " *" : "") +
-                       (mode_of(state.workspace) == Mode::inspect ? " - rws-man" : " - CSF Mission Editor");
+                       " - CSF Mission Editor";
     } else if (document) {
-        window_title = path_utf8(document->source_path().filename()) + (document->dirty() ? " *" : "") + " - rws-man";
+        window_title = path_utf8(document->source_path().filename()) + (document->dirty() ? " *" : "") + " - CSF Mission Editor";
     } else {
-        window_title = mode_of(state.workspace) == Mode::inspect ? "rws-man" : "CSF Mission Editor";
+        window_title = "CSF Mission Editor";
     }
     if (window_title != previous_window_title) {
         glfwSetWindowTitle(state.window, window_title.c_str());

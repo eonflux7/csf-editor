@@ -33,7 +33,7 @@ with the resource root set), and from the code.
 | # | Finding | Where |
 |---|---|---|
 | F1 | The start page describes the app as an inspector ("chunk browser, mission explorer, 3D preview"). It has no **New project**, and its Recent list holds `.scn` files, not projects. | `app/ui/start_page.cpp` |
-| F2 | Neither the GUI nor `csf-mod` can create an authoring project; only `tools/hello_world/project.py` can. A project folder passed as a positional argument or dropped on the window fails with "Cannot read complete RWS file"; only `--project` works. | `app/main.cpp`, `app/app_actions.cpp` |
+| F2 | Neither the GUI nor `csf-mod` can create an authoring project; only `examples/hello-world/project.py` can. A project folder passed as a positional argument or dropped on the window fails with "Cannot read complete RWS file"; only `--project` works. | `app/main.cpp`, `app/app_actions.cpp` |
 | F3 | Every authoring tool sits in the bottom dock's **Changes** panel: a save bar and 10 tabs (History, Files, Mission, Assets, Presets, Objectives, Cutscene, Flow, Texts, Import) in a strip about 150 px tall. **The bottom dock is hidden when a project opens**, so a new user sees no editing UI at all. "Changes" is the wrong name for it. | `app/ui/mission_editor.cpp` `draw_changes`, `app/ui/shell.cpp` |
 | F4 | Placing works "at the ground under the viewport centre". Route and cover points are added one at a time with **Add point at view**. The viewport cannot place anything by clicking, shows no preview of the object before it is placed, and does not support drag and drop. | `app/mission_authoring.cpp` `view_ground_point` |
 | F5 | Recipes can only create, never edit. The Objectives and Cutscene forms clear themselves after **Create**. To change an existing objective, patrol, route/script pairing or intro, the user edits raw script text or deletes the generated records by hand. | `create_objectives` (`tools.objectives.clear()`), `create_intro` |
@@ -46,7 +46,7 @@ with the resource root set), and from the code.
 | F12 | Commands have bugs, and the command palette misses things. `mission.flow`, `mission.objectives` and the other tab commands *toggle* the bottom panel, so calling one while the panel is open hides it; with the dock hidden, `mission.flow` shows the Missions tab. Presets are not palette entries: searching "guard" finds only the **Behaviour presets** tab. | `app/commands.cpp` `toggle_bottom_panel` |
 | F13 | Problems are spread over five places: 68 Diagnostics on hello world (mostly inspection-level), flow findings in the Flow tab, the Height report window, `project->check()` warnings in the log, and editor refusals as toasts. Nothing answers "what is wrong with my mission?" | |
 | F14 | Scripts are edited as plain text, with no highlighting, completion or inline errors. The checks on Apply are good. | `app/ui/script_view.cpp` |
-| F15 | Build and deploy is an **Export .pak** dialog where the user types paths. GlobalEK text is packaged only by `tools/hello_world/build_texts.sh`. The GUI has no deploy, rollback or playtest loop. | `draw_mission_dialogs` |
+| F15 | Build and deploy is an **Export .pak** dialog where the user types paths. GlobalEK text is packaged only by `examples/hello-world/build_texts.sh`. The GUI has no deploy, rollback or playtest loop. | `draw_mission_dialogs` |
 | F16 | The cutscene is a list of shots with Up/Remove buttons. It has no timeline, and camera paths are not drawn in the viewport. | `draw_cutscene` |
 | F17 | Nothing tests the UI. `--commands` has no assertions, ignores unknown commands and failed `goto:`, and refuses to overwrite its output PNG. | `app/main.cpp` |
 | F18 | Only one object can be selected at a time. There is no box select, copy/paste, align or group move. | |
@@ -342,7 +342,7 @@ Two more principles come from this journey:
   from `build_texts.sh` into the core (F15).
 - **E9. Creating a project, in the core.** `csf::create_authoring_project`
   (GUI-free), plus `csf-mod project-new <dir> --slot Convoy [--flat
-  8000x8000 | --blend file]`, handles what `tools/hello_world/project.py` and
+  8000x8000 | --blend file]`, handles what `examples/hello-world/project.py` and
   `build.sh` do for set-up. It picks a free text ID range by scanning the
   projects under `projects_root`, writes `project.csfproj` and `mission/`,
   runs `new_mission`, and writes a flat starter terrain (as `.csfworld`,
@@ -529,7 +529,7 @@ to script and check a GUI session without looking at screenshots.
   (local tier) creates a project in a temporary directory with
   `project-new`, places hello world's actors, props, routes, zones,
   objectives and shots **through viewport clicks and Properties fields**,
-  saves, and compares every mission file with `tools/hello_world/parity.sh`'s
+  saves, and compares every mission file with `examples/hello-world/parity.sh`'s
   output. It proves the GUI path, not just the operations. Explicit IDs come
   from the script where the recipe needs them.
 - **T10. Invariant and monkey tests.** A seeded random walk of commands,
@@ -573,7 +573,7 @@ These can land at any time, before the phases.
 ## 9. Delivery order
 
 Each phase ends with its acceptance check, `./test.sh` plus the new UI tests,
-`tools/hello_world/parity.sh`, and a Debug-build screenshot pass.
+`examples/hello-world/parity.sh`, and a Debug-build screenshot pass.
 
 ### Phase 0: the harness first, and the fixes
 
@@ -584,7 +584,7 @@ gizmo by `drag-world`, undoes, and asserts the files are unchanged, in CI
 (synthetic fixture) and locally (hello world).
 
 **Done (2026-09-26).** `rws-man --run-script` (`app/ui_script_runner.cpp`,
-parser `rwsman/ui_script.hpp`, guide [ui-tests.md](../guides/ui-tests.md)).
+parser `rwsman/ui_script.hpp`, guide [ui-tests.md](../../guides/ui-tests.md)).
 Widgets are addressed through ImGui's test-engine hooks
 (`IMGUI_ENABLE_TEST_ENGINE`, `app/imgui/`), so every widget can be
 addressed, not only the ones drawn by our helpers. ImGui assertions and ID

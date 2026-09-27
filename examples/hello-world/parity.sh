@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Builds hello world through the editor's operations (ops.py, `csf-mod
 # mission-ops`) and checks every mission file against the scene.py build in
-# PROJECT_DIR (tools/hello_world/build.sh output): byte for byte, or with the
+# PROJECT_DIR (examples/hello-world/build.sh output): byte for byte, or with the
 # decompiled difference when they differ.
 #
 # With --components every recipe becomes an editable component
 # (csf/mission_components.hpp), and each must regenerate identically.
 #
-#   tools/hello_world/parity.sh [--components] PROJECT_DIR [CORPUS_ROOT]
+#   examples/hello-world/parity.sh [--components] PROJECT_DIR [CORPUS_ROOT]
 set -euo pipefail
 components=()
 if [ "${1:-}" = --components ]; then components=(--components); shift; fi
 project=${1:?usage: parity.sh [--components] PROJECT_DIR [CORPUS_ROOT]}; corpus=${2:-../CSF_unpacks}
 csfmod=./build/Release/csf-mod
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-python3 tools/hello_world/ops.py "$project/sources/world/terrain.csfworld" "$corpus" "$tmp/ops" >/dev/null
+python3 examples/hello-world/ops.py "$project/sources/world/terrain.csfworld" "$corpus" "$tmp/ops" >/dev/null
 "$csfmod" mission-ops "$tmp/ws" "$corpus/Convoy/Maps/FR03/Convoy.scn" "$tmp/ops/hello.ops" "${components[@]}" > "$tmp/ops.log" || {
     grep -v '^applied' "$tmp/ops.log" >&2; exit 1;
 }

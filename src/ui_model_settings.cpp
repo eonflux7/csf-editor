@@ -107,22 +107,97 @@ std::string format_float(const float value) {
 
 } // namespace
 
-std::filesystem::path config_directory(const std::function<const char*(const char*)>& getenv_fn) {
+namespace {
+
+// The per-user folder under a name: "CSF Mission Editor" or "csf-editor".
+std::filesystem::path named_config_directory(const std::function<const char*(const char*)>& getenv_fn,
+                                             [[maybe_unused]] const char* windows_name,
+                                             [[maybe_unused]] const char* unix_name) {
     const auto env = [&](const char* name) -> const char* {
         return getenv_fn ? getenv_fn(name) : std::getenv(name);
     };
     const auto non_empty = [](const char* value) { return value && *value; };
 #ifdef _WIN32
-    if (const char* local = env("LOCALAPPDATA"); non_empty(local))
-        return std::filesystem::path(local) / "CSF RWS Tools";
+    if (const char* local = env("LOCALAPPDATA"); non_empty(local)) return std::filesystem::path(local) / windows_name;
     return {};
 #else
-    if (const char* xdg = env("XDG_CONFIG_HOME"); non_empty(xdg))
-        return std::filesystem::path(xdg) / "csf-rws-tools";
-    if (const char* home = env("HOME"); non_empty(home))
-        return std::filesystem::path(home) / ".config" / "csf-rws-tools";
+    if (const char* xdg = env("XDG_CONFIG_HOME"); non_empty(xdg)) return std::filesystem::path(xdg) / unix_name;
+    if (const char* home = env("HOME"); non_empty(home)) return std::filesystem::path(home) / ".config" / unix_name;
     return {};
 #endif
+}
+
+std::string utf8(const std::filesystem::path& path) {
+    const auto text = path.u8string();
+    return {text.begin(), text.end()};
+}
+
+// Replaces every "<from>/" (or "<from>\\") with the same under `to` in a text file; true when it changed.
+bool rebase_paths_in_file(const std::filesystem::path& file, const std::string& from, const std::string& to) {
+    std::ifstream input(file, std::ios::binary);
+    if (!input) return false;
+    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    input.close();
+    bool changed = false;
+    for (const char separator : {'/', '\\'}) {
+        const auto old_prefix = from + separator, new_prefix = to + separator;
+        for (auto at = text.find(old_prefix); at != std::string::npos; at = text.find(old_prefix, at + new_prefix.size())) {
+            text.replace(at, old_prefix.size(), new_prefix);
+            changed = true;
+        }
+    }
+    if (!changed) return false;
+    const auto temporary = std::filesystem::path(file).concat(".migrating");
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        output << text;
+        if (!output) return false;
+    }
+    std::error_code error;
+    std::filesystem::rename(temporary, file, error);
+    return !error;
+}
+
+} // namespace
+
+std::filesystem::path config_directory(const std::function<const char*(const char*)>& getenv_fn) {
+    return named_config_directory(getenv_fn, "CSF Mission Editor", "csf-editor");
+}
+
+std::filesystem::path legacy_config_directory(const std::function<const char*(const char*)>& getenv_fn) {
+    return named_config_directory(getenv_fn, "CSF RWS Tools", "csf-rws-tools");
+}
+
+std::filesystem::path migrate_config_directory(const std::filesystem::path& legacy, const std::filesystem::path& current,
+                                               std::string* report) {
+    std::error_code error;
+    if (legacy.empty() || current.empty() || std::filesystem::exists(current, error) ||
+        !std::filesystem::is_directory(legacy, error))
+        return current;
+    std::filesystem::rename(legacy, current, error);
+    if (error) {
+        if (report) *report = "Could not move " + utf8(legacy) + " to " + utf8(current) + " (" +
+                              error.message() + "); using the old folder";
+        return legacy;
+    }
+    // Settings name recent files in it, and mod workspaces name their files by
+    // absolute path: point both at the new folder.
+    std::size_t rewritten = 0;
+    const auto from = utf8(legacy), to = utf8(current);
+    rewritten += rebase_paths_in_file(current / "settings.ini", from, to);
+    for (auto it = std::filesystem::recursive_directory_iterator(current / "projects", error);
+         !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+        const auto name = it->path().filename();
+        if (it->is_directory() && (name == "build" || name == "dist" || name == "downloads")) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        if (name == ".csf-mod-state") rewritten += rebase_paths_in_file(it->path(), from, to);
+    }
+    if (report)
+        *report = "Moved the settings and projects folder from " + from + " to " + to + " (" +
+                  std::to_string(rewritten) + " files pointed at the new folder)";
+    return current;
 }
 
 void Settings::clamp() noexcept {
@@ -170,7 +245,7 @@ const CameraBookmark* Settings::bookmark(const std::string& signature, const int
 
 std::string serialize_settings(const Settings& settings) {
     std::ostringstream out;
-    out << "# CSF RWS Tools settings. Safe to edit; unknown lines are ignored.\n";
+    out << "# CSF Mission Editor settings. Safe to edit; unknown lines are ignored.\n";
     out << "version = " << Settings::current_version << '\n';
     out << "resource_root = " << escape(path_text(settings.resource_root)) << '\n';
     out << "game_root = " << escape(path_text(settings.game_root)) << '\n';

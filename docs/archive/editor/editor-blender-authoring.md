@@ -9,7 +9,7 @@ implemented yet.
 
 ## Goal and reference
 
-The reference is `tools/hello_world/` at the v13 commit. `terrain.py` builds
+The reference is `examples/hello-world/` at the v13 commit. `terrain.py` builds
 the map, `csf-mod sector-build` (formerly `build_sec.py`) the sector map, `scene.py` the scene and every script,
 `texts.py` the objective strings, and `build.sh` both archives. `scene.py` is
 the working specification of each recipe the editor needs.
@@ -180,7 +180,7 @@ project: textured crate and doberman, and the generated 16-sector collision.
 ### 2. Project manifest, World import and core geometry queries
 
 - Write the manifest specification (handoff item 1) and the asset/placement
-  identity rules above. **Done:** [editor-project-format.md](editor-project-format.md);
+  identity rules above. **Done:** [editor-project-format.md](../../reference/project-format.md);
   `csf::AuthoringProject` reads and writes it and builds `build/` incrementally
   (`csf-mod project-build`), merging terrain, building assets at their
   placements, pieces and props; `rws::build_map_files` holds the World build
@@ -188,7 +188,7 @@ project: textured crate and doberman, and the generated 16-sector collision.
 - Add World import/rebuild around `WorldModel`, `world_source` and
   `map_assembly`, applied between frames through the mission-editing boundary.
 - Move `piece`/`prop` records into project placements and migrate hello world.
-  **Done:** `tools/hello_world/layout.py` holds the map layout, `terrain.py`
+  **Done:** `examples/hello-world/layout.py` holds the map layout, `terrain.py`
   exports the terrain only (and saves `terrain.blend`), `project.py` writes the
   project, and `build.sh` creates it. The build's World, collision and sector
   map, and every packaged mission file, are identical to v13's. Actor `anchor`
@@ -253,7 +253,7 @@ placement keeps its position, and the height report lists what the hill now
 covers or lifts.
 
 **Done (2026-09-25).** `tools/blender/csf_authoring` (guide:
-[blender-authoring.md](../guides/blender-authoring.md)); the `.csfworld`
+[blender-authoring.md](../../guides/blender-authoring.md)); the `.csfworld`
 exporter moved into it (`export_csf_world.py` wraps it and exports hello
 world's terrain unchanged). rws-man adds `csf-mod project-reference` (built map
 glTF, actor class models, markers JSON) and `project-asset`, and reloads a
@@ -294,7 +294,7 @@ groups, areas and dummies (add, delete, kept in ID order), `new_mission` and
 `batch` (one undo step, all or nothing). `csf/mission_recipes` holds the
 presets (guard patrol and idle with cover, animal patrol, cover group, walk
 grid, link-to-nearest) and `csf/mission_ops` runs them from text
-(`csf-mod mission-ops`). `tools/hello_world/ops.py` + `parity.sh` build hello
+(`csf-mod mission-ops`). `examples/hello-world/ops.py` + `parity.sh` build hello
 world through these operations: **every mission file is byte-identical to the
 `scene.py` build** (scene, programs, databases, imports). The walk-grid preset
 reproduces hello world's grid (76 points, 130 links, heights within 0.05 cm).
@@ -347,7 +347,7 @@ equipment and tip forms; with an authoring project the text is typed and gets
 IDs automatically), **Flow** (findings, objectives and events, scripts open in
 the Script workspace) and **Texts** (the project's strings). Not yet: a
 graphical node view of the flow; the GUI builds the mission archive but not yet
-the GlobalEK one (`tools/hello_world/build_texts.sh` does).
+the GlobalEK one (`examples/hello-world/build_texts.sh` does).
 
 ### 6. Cutscene editor
 
@@ -420,7 +420,7 @@ class) has had no in-game spike. Characters, rigs and animation export need
 format and game-class compatibility work. Each gets a spike with a go/no-go
 gate before any editor work.
 
-**Started (2026-09-25)**: [editor-spikes.md](editor-spikes.md). Spike A1 (a
+**Started (2026-09-25)**: [editor-spikes.md](../../plans/editor-spikes.md). Spike A1 (a
 class with a new, scaled model file: `add_scaled_class`, `rws::scale_clump`) is
 built with a test archive and waits for its in-game gate; A2 (a new mesh) and
 B1 (a new animation clip on a vanilla skeleton) are planned behind it.

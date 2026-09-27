@@ -46,7 +46,7 @@ void highlighted_text(const std::string& text, const std::vector<std::uint32_t>&
 bool icon_row(const char* id, const char* icon, Token icon_token, const char* label,
               bool selected);
 
-// ---- Building blocks of the authoring panels (docs/plans/editor-ux-redesign.md, V3-V6) ----
+// ---- Building blocks of the authoring panels (docs/archive/editor/editor-ux-redesign.md, V3-V6) ----
 
 // A card: a raised, rounded block with a header row (an icon in its colour,
 // the title, a dim subtitle, a "?" help tooltip). Clicking the header folds

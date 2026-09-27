@@ -1,4 +1,4 @@
-// The Problems panel (docs/plans/editor-ux-redesign.md, E7) and the Mission
+// The Problems panel (docs/archive/editor/editor-ux-redesign.md, E7) and the Mission
 // bar (B1): what is wrong with the mission, and how far along it is.
 #include "app_state.hpp"
 #include "ui/ui.hpp"

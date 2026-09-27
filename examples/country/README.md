@@ -8,16 +8,16 @@ pulling buildings, props, actors, animations, scripts and textures from
 other missions and importing two free models, to find out what it takes to
 assemble a mission "like LEGO" and what the editor should offer.
 
-Project: `~/.config/csf-rws-tools/projects/Country` (so rws-man lists it);
+Project: `~/.config/csf-editor/projects/Country` (so csf-editor lists it);
 the first version is kept beside it as `Country-v1` (its deployment and
-rollback records stay with it). Recipe: `tools/country/build.sh PROJECT
+rollback records stay with it). Recipe: `examples/country/build.sh PROJECT
 ORIGINAL_CONVOY_PAK ORIGINAL_GLOBALEK_PAK [CORPUS] [DOWNLOADS]` creates it
 from nothing in about 20 seconds: `layout.py` (the map), `terrain.py` and
 `assets.py` (Blender, headless), `lightmaps.py`, `textures.py`, `project.py`
 (project.csfproj), `ops.py` (the mission as mission operations, kept as
 components). Text IDs are offsets into whatever range `project-new`
 reserves. **State:** v2 built (`dist/20260927-145525`), validated, 0 problems
-in rws-man; not yet played. v1 was played once (below).
+in csf-editor; not yet played. v1 was played once (below).
 
 ## The mission (v2)
 
@@ -58,10 +58,10 @@ actors, 36 components, 108k visual / 79k collision triangles.
 
 ```bash
 # First take v1 out of the test install (it is deployed there), then deploy v2:
-./build/Release/csf-mod project-rollback ~/.config/csf-rws-tools/projects/Country-v1 20260927-122744
-./build/Release/csf-mod project-deploy ~/.config/csf-rws-tools/projects/Country 20260927-145525 ~/dev/csf_game
+./build/Release/csf-mod project-rollback ~/.config/csf-editor/projects/Country-v1 20260927-122744
+./build/Release/csf-mod project-deploy ~/.config/csf-editor/projects/Country 20260927-145525 ~/dev/csf_game
 # and afterwards
-./build/Release/csf-mod project-rollback ~/.config/csf-rws-tools/projects/Country 20260927-145525
+./build/Release/csf-mod project-rollback ~/.config/csf-editor/projects/Country 20260927-145525
 ```
 
 What to check in game, in order of risk:
@@ -102,7 +102,7 @@ What to check in game, in order of risk:
 v2: the intro recipe's zone cutscenes take `arm=<event>` (the setup script
 waits for that mission event instead of START_GAME), and zone cutscenes,
 zone objectives and zone triggers disarm their zone with
-`DEACT_BICHO_EVENT_ZONA` and turn themselves off. `tools/country/catalog.py
+`DEACT_BICHO_EVENT_ZONA` and turn themselves off. `examples/country/catalog.py
 objects` splits a map's lightmap groups into single objects (a lamp, a rock,
 a hedgehog, a table) with their boxes.
 
@@ -147,7 +147,7 @@ glTF export (`rws-info --export-scene-gltf`, material extras
 props into single objects. A registry entry for a building should record: map,
 groups, bounds, floor height (most common low y) and the ground height around
 it (to sink it correctly), interior floors (up-facing triangles), door actors,
-and a rendered thumbnail. `tools/country/fr01_catalog.py` does this for FR01.
+and a rendered thumbnail. `catalog.py map` and `catalog.py objects` do this for FR01.
 
 FR01 (Ransom, Resist and Parachut share it) is a farm village: `EDIFICIO_1`
 farmhouse and cow stable (Ransom's cows stand inside), `EDIFICIO_2` ruin with a
@@ -178,7 +178,7 @@ SMG classes, `SP*` by any class (weapon away: smoking, radio, maps, drunk,
 cards). A behaviour preset must pick the variant matching the class, or
 filter the picker by it. Animation IDs are global (the same ID is the same
 clip in every mission's `Anims.bdd`), so a registry can key them by ID and list
-the missions that carry each one (`tools/country/catalog.py anims`; `classes`
+the missions that carry each one (`examples/country/catalog.py anims`; `classes`
 and `scripts` list the other two tables: 1175 classes, 1217 clips and 5946
 scripts across the corpus).
 
@@ -292,12 +292,12 @@ Still open from the lists below: the building library and object browser
 (with thumbnails), texture import, pulling a shipped script with its IDs
 remapped, door actors (`.DOOR_BOX`), the occupancy overlay, floor-aware
 pieces in the height report, the scatter tool, the vehicle arrival recipe,
-animal idle presets and recipe text IDs as range offsets. The Timeline
-panel is still titled "Intro cutscene".
+animal idle presets and recipe text IDs as range offsets; they are tracked
+in the [roadmap](../../docs/plans/roadmap.md).
 
 ## GUI parity
 
-Opening the finished project in rws-man (UI scripts, screenshots): it shows
+Opening the finished project in csf-editor (UI scripts, screenshots): it shows
 0 problems; the Outliner lists every FR01 piece as a "donor piece" and the
 imported models as project buildings with their counts; actors made by
 recipes are editable components (the officer's idle animations are picked by
@@ -315,7 +315,7 @@ except for:
 (Zone cutscenes and Go to for placements such as `radio-house` were on this
 list; see "Editor changes from this feedback".)
 
-## Editor wishlist (show these in rws-man)
+## Editor wishlist (show these in csf-editor)
 
 - **Building library**: browse other maps' buildings by lightmap group with
   thumbnails, drop one onto the terrain (a `piece` with `donor=` and

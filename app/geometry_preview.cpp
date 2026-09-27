@@ -3866,7 +3866,7 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
             return ImGui::BeginPopup(id);
         };
 
-        // Three labelled menus (docs/plans/editor-ux-redesign.md, C2): View
+        // Three labelled menus (docs/archive/editor/editor-ux-redesign.md, C2): View
         // (shading, projection, framing, options), Show (layers, clipping) and
         // Markers; then the quick toggles and the marker filter.
         if (popup_button("view", std::string(ui::icons::LC_EYE) + " View " + chevron,
@@ -3985,7 +3985,7 @@ bool GeometryPreview::draw_viewport_toolbar(const ImVec2 origin, const ImVec2 si
 }
 
 void GeometryPreview::draw_tool_strip(const ImVec2 origin) {
-    // The editing tools (docs/plans/editor-ux-redesign.md, C1), a column on
+    // The editing tools (docs/archive/editor/editor-ux-redesign.md, C1), a column on
     // the viewport's left edge under the toolbar.
     const float scale = ui::ui_scale();
     ImGui::SetCursorScreenPos({origin.x + 8.0F * scale, toolbar_bottom_ + 8.0F * scale});

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Write hello world as mission operations (include/csf/mission_ops.hpp).
 
-    tools/hello_world/ops.py TERRAIN.csfworld CORPUS_ROOT OUT_DIR
+    examples/hello-world/ops.py TERRAIN.csfworld CORPUS_ROOT OUT_DIR
 
 Writes OUT_DIR/hello.ops from scene.py's own data: every record and script
-comes from an editor operation or preset, none from raw script text. tools/hello_world/parity.sh runs it with `csf-mod mission-ops` and
+comes from an editor operation or preset, none from raw script text. examples/hello-world/parity.sh runs it with `csf-mod mission-ops` and
 checks the result against the scene.py build, file for file.
 """
 
@@ -42,7 +42,7 @@ def main(argv: list[str]) -> int:
     hw.TERRAIN = hw.Terrain(argv[1])
     corpus, out = Path(argv[2]).resolve(), Path(argv[3])
     out.mkdir(parents=True, exist_ok=True)
-    ops = ["# hello world through the editor's operations (tools/hello_world/ops.py)", "new-mission"]
+    ops = ["# hello world through the editor's operations (examples/hello-world/ops.py)", "new-mission"]
     ops += [f"import-class donor={quote(str(corpus / 'Ransom'))} class={hw.DOG_CLASS}",
             f"import-anim donor={quote(str(corpus / 'Ransom'))} anim=2383",
             f"import-anim donor={quote(str(corpus / 'Ransom'))} anim=2384",

@@ -167,7 +167,7 @@ std::filesystem::path next_screenshot_path(const AppState& state) {
     std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &local);
     std::string stem = state.mission.graph ? path_utf8(state.mission.graph->scene_path().stem())
                        : state.document    ? path_utf8(state.document->source_path().stem())
-                                           : std::string("rws-man");
+                                           : std::string("csf-editor");
     auto path = directory / (stem + "-" + stamp + ".png");
     for (int suffix = 1; std::filesystem::exists(path, error); ++suffix)
         path = directory / (stem + "-" + stamp + "-" + std::to_string(suffix) + ".png");

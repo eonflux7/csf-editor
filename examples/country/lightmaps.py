@@ -4,7 +4,7 @@ the shipped maps. Convoy's (FR03) ground lightmaps average about RGB 25/25/24
 and Ransom's (FR01) 18/23/26 (the game doubles them); brighter ground reads as
 day in game while the actors stay lit by the scene's night ambient.
 
-    tools/country/lightmaps.py OUT_DIR
+    examples/country/lightmaps.py OUT_DIR
 
 Writes OUT_DIR/COUNTRY_Lm.png (512x512 over the whole terrain, see terrain.py's
 second UV set: moonlight by slope, soft shadows of the buildings and trees) and

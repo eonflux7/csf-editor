@@ -34,11 +34,11 @@ std::filesystem::path mission_debug_log_path() {
                                            static_cast<DWORD>(executable.size()));
     if (length > 0 && length < executable.size())
         return std::filesystem::path(executable.data(), executable.data() + length).parent_path() /
-               "rws-man-debug.log";
+               "csf-editor-debug.log";
 #endif
     std::error_code error;
     const auto directory = std::filesystem::current_path(error);
-    return (error ? std::filesystem::path{} : directory) / "rws-man-debug.log";
+    return (error ? std::filesystem::path{} : directory) / "csf-editor-debug.log";
 }
 
 void debug_log_conversion_failure(const std::string_view context,

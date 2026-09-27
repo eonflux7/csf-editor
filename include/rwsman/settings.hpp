@@ -14,12 +14,21 @@
 
 namespace rwsman {
 
-// Per-user directory that holds settings.ini, the per-workspace layouts, and the
-// debug log: %LOCALAPPDATA%\CSF RWS Tools on Windows, $XDG_CONFIG_HOME/csf-rws-tools
-// (or ~/.config/csf-rws-tools) elsewhere. `getenv` is injectable for tests.
-// Returns an empty path when no suitable base directory exists.
+// Per-user directory that holds settings.ini, the per-workspace layouts, the
+// projects and the debug log: %LOCALAPPDATA%\CSF Mission Editor on Windows,
+// $XDG_CONFIG_HOME/csf-editor (or ~/.config/csf-editor) elsewhere. `getenv` is
+// injectable for tests. Returns an empty path when no suitable base directory exists.
 [[nodiscard]] std::filesystem::path
 config_directory(const std::function<const char*(const char*)>& getenv_fn = {});
+// Where it was before the rename to CSF Mission Editor: "CSF RWS Tools", csf-rws-tools.
+[[nodiscard]] std::filesystem::path
+legacy_config_directory(const std::function<const char*(const char*)>& getenv_fn = {});
+// Moves `legacy` to `current` once, when only the legacy folder exists, and
+// rewrites its absolute path in settings.ini and in the projects' mod
+// workspace state (.csf-mod-state). Returns the folder to use: `legacy` when
+// the move failed. `report` says what happened, when anything did.
+std::filesystem::path migrate_config_directory(const std::filesystem::path& legacy, const std::filesystem::path& current,
+                                               std::string* report = nullptr);
 
 struct RecentFile {
     std::filesystem::path path;

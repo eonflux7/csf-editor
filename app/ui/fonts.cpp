@@ -20,7 +20,7 @@ namespace {
 
 // Sizes at 100% UI scale. IosevkaTerm is narrow, so it matches Inter's line
 // height at the same size while fitting more hex and IDs per column. The type
-// scale (docs/plans/editor-ux-redesign.md, V2) is caption, body (and the bold
+// scale (docs/archive/editor/editor-ux-redesign.md, V2) is caption, body (and the bold
 // body for headings) and title.
 constexpr float sans_size = 15.0F;
 constexpr float mono_size = 14.0F;

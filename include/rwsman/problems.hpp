@@ -17,7 +17,7 @@ struct LightmapFinding;
 } // namespace csf
 
 // "What is wrong with my mission": one list gathered from every check the
-// editor runs (docs/plans/editor-ux-redesign.md, E7). Each problem names its
+// editor runs (docs/archive/editor/editor-ux-redesign.md, E7). Each problem names its
 // subject so the UI can select it, and many name a command that fixes it.
 namespace rwsman {
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the Country mission as editor operations (include/csf/mission_ops.hpp).
 
-    tools/country/ops.py CORPUS_ROOT CONVOY_GSC_TEXT RANSOM_GSC_TEXT OUT_DIR [FIRST_TEXT]
+    examples/country/ops.py CORPUS_ROOT CONVOY_GSC_TEXT RANSOM_GSC_TEXT OUT_DIR [FIRST_TEXT]
 
 The two texts are `csf-mod decompile` output of Convoy's and Ransom's mission
 programs (Ransom's cow script is pulled from it); FIRST_TEXT is the first ID
@@ -10,7 +10,7 @@ offsets into. Writes OUT_DIR/country.ops
 and the hand-written scripts beside it; run it with `csf-mod mission-ops
 <workspace> <Convoy.scn> country.ops --components --ground <terrain.csfworld>`.
 
-The mission (docs/plans/country-mission.md):
+The mission (examples/country/README.md):
 - 35 German soldiers: guards standing or working at their posts (radio and
   telephone operators at their tables, men inside the farmhouse and the
   house, mechanics at the Panzer, a lookout, an MG nest, a barrier guard),
@@ -291,7 +291,7 @@ def main(argv: list[str]) -> int:
         return quote(str(corpus / mission))
 
     # No new-mission: `csf-mod project-new` already emptied the slot's mission.
-    ops = ["# Country (tools/country/ops.py): Convoy's slot, assembled from other missions"]
+    ops = ["# Country (examples/country/ops.py): Convoy's slot, assembled from other missions"]
     # Classes and animations from other missions.
     for mission, classes in (("Escape", [20, GHOST_CLASS, CRATE_CLASS, 198]), ("Gestapo", [19, 473, 201, 200, 264]),
                              ("Ransom", [239, 431, 290, 199, 337, 213, 278]), ("Bridge", [30, 384]),

@@ -2,7 +2,7 @@
 """Textures of Country's own that no other map has: the Panzer III's painted
 hull (the downloaded model is untextured).
 
-    tools/country/textures.py OUT_DIR
+    examples/country/textures.py OUT_DIR
 
 Writes OUT_DIR/PZ3_HULL.png: 256x256, tiling, a worn panzer-grey steel plate
 (RAL 7021 dark grey, rust and dirt streaks, faint plate seams), dark enough for

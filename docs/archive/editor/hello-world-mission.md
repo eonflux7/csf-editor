@@ -1,9 +1,9 @@
 # Plan: the hello-world mission
 
 > **Active plan** (drafted 2026-09-25). This page is the plan for rws-man's first
-> *new-world* mission. When it ships, move it to [`../archive/`](../archive/) and
-> describe the as-built behavior in [`../guides/`](../guides/) and
-> [`../game-knowledge/`](../game-knowledge/).
+> *new-world* mission. When it ships, move it to [`../archive/`](../) and
+> describe the as-built behavior in [`../guides/`](../../guides/) and
+> [`../game-knowledge/`](../../game-knowledge/).
 
 ## Progress (2026-09-25)
 
@@ -14,8 +14,8 @@
 | Phase 3 | done: `rws::WorldModel` parse/write (`include/rws/world_model.hpp`); `csf-mod world-audit` rewrites all 42 shipped Worlds byte for byte, and with `--rebuild` a new BSP over each World's triangles recovers `complete` |
 | Phase 4 | tooling done: `tools/blender/export_csf_world.py`, `make_test_terrain.py`, `csf-mod world-build`; awaiting the in-game spikes below |
 | Spike 1 | built (was deployed; rolled back for spike 2): Convoy with both Worlds rebuilt by `csf-mod world-rebuild` (new BSP, sectors and plug-ins, same triangles). Expect Convoy to look and play exactly as shipped |
-| Hello world | **v13 deployed and works in-game** in the Convoy slot; archives and projects in `~/dev/csf-mods/hello-world-v13-ready/`; rollback to working v12: `~/dev/csf_game/.csf-mod-backups/1790333101776881280/deployment.state`. GlobalEK remains v12 (the generated FLI is byte-identical). [Build/playtest guide](../guides/hello-world-mission.md) |
-| Phase 5 | tooling done: `.csfworld` `prop` (donor scene instances, collision cut from the donor `_col.rws`) and `piece` (donor World triangles in a box) records; `tools/hello_world/build_world.sh` builds the hello-world map (100 m terrain with a hill, Convoy's house, two Convoy trees) |
+| Hello world | **v13 deployed and works in-game** in the Convoy slot; archives and projects in `~/dev/csf-mods/hello-world-v13-ready/`; rollback to working v12: `~/dev/csf_game/.csf-mod-backups/1790333101776881280/deployment.state`. GlobalEK remains v12 (the generated FLI is byte-identical). [Build/playtest guide](../../../examples/hello-world/README.md) |
+| Phase 5 | tooling done: `.csfworld` `prop` (donor scene instances, collision cut from the donor `_col.rws`) and `piece` (donor World triangles in a box) records; `examples/hello-world/build_world.sh` builds the hello-world map (100 m terrain with a hill, Convoy's house, two Convoy trees) |
 | Spike 2 | works in-game (with Coll Trees): Convoy's scene and props on a generated 340 m flat World at game height 505 (`~/dev/csf-mods/convoy-flat.pak`) |
 
 Spike commands (from the repository root; workspaces and PAKs live in
@@ -46,7 +46,7 @@ walk (spike 2: on the plane; props have no collision); any crash, with the
 | 2026-09-25 | hello world v4 (v3 prototype placement + effects fix; rollback `.csf-mod-backups/1790325368115369428`) | **works**: no stray effects or trees | remaining: own objective text, intro cutscene, scene built from the minimal section set (KB-scn-7) |
 | 2026-09-25 | hello world v5: own text `Texts/HelloWorld.fli` inside the mission archive, `.FLIS_ESCENARIO` pointed at it, objective label `0900` "Reach the building." (rollback `.csf-mod-backups/1790326286370258324`) | objective text **empty**: a new `.fli` named by `.FLIS_ESCENARIO` is not found in the mission archive (or new ids are not read) | v6 probe |
 | 2026-09-25 | hello world v6: modified `Texts/Convoy.fli` in the mission archive (`0039` → "Reach the building.", new `0901`); objective 1 = `0039`, objective 2 = `0901` (rollback `.csf-mod-backups/1790326498042519860`) | objective 1 shows Convoy's original `0039` ("ALARM WARNING…"), objective 2 empty: a `Texts/*.fli` in the mission archive is ignored; text comes only from `GlobalEK.pak` | obj 1 new text → archive overrides GlobalEK; obj 1 Convoy text → edit `GlobalEK.pak`; obj 2 → whether new ids work |
-| 2026-09-25 | hello world v7 + `GlobalEK.pak` with the hello-world `Texts/Convoy.fli` (`tools/hello_world/build_texts.sh`; rollbacks `.csf-mod-backups/1790326594809809712` mission, `1790326596128306931` GlobalEK) | **both objectives show their new text**: text comes from `GlobalEK.pak`, and new ids work |
+| 2026-09-25 | hello world v7 + `GlobalEK.pak` with the hello-world `Texts/Convoy.fli` (`examples/hello-world/build_texts.sh`; rollbacks `.csf-mod-backups/1790326594809809712` mission, `1790326596128306931` GlobalEK) | **both objectives show their new text**: text comes from `GlobalEK.pak`, and new ids work |
 | 2026-09-25 | hello world v8: one objective, new id `0900` "Reach the building.", Convoy's `0039` restored (rollbacks `.csf-mod-backups/1790326838650056524` mission, `1790326839926391553` GlobalEK) | works: the single objective reads "Reach the building."; Convoy's own text is unchanged | |
 | 2026-09-25 | hello world v9: generated scene, scripts and `.sec` (no Convoy leftovers); objectives "Reach the building." and "Kill the officer." (success TRUE, mission success when both are done); officer idling at a camp of prop actors (burnt truck, wood piles, radio), a camp guard on a 4-point loop, a north guard on a 2-point route, a house guard; `.TIPO 3` cover group behind the props, selected by every guard; MP40 pickup near the start; Convoy's intro cutscene still runs on placeholder camera dummies (rollbacks `.csf-mod-backups/1790328019122887200` mission, `1790328020455534289` GlobalEK) | **works** | |
 | 2026-09-25 | hello world v10: v9 plus the doberman (imported from Ransom), a five-shot intro cutscene and the new terrain (grass, dirt path, rock slopes, edge hills, 14 trees, 15 plants) (rollback `.csf-mod-backups/1790329006361140547` mission; GlobalEK as v9) | **works** (intro, dog, terrain); the guards do not patrol | `INIT` is a mission event, not a built-in one (KB-scripting-14), and nothing sent it, so no actor script ran (patrols, idles, cover selection, the dog's walk). Convoy's intro sends it |
@@ -59,11 +59,11 @@ defines ownership, reimport behavior, implementation order and acceptance checks
 
 ### Reproducible build and current limits
 
-Use the [combined build command](../guides/hello-world-mission.md) to build both
+Use the [combined build command](../../../examples/hello-world/README.md) to build both
 archives and record hashes, revision, tool version and the mission recipe.
 Mission editing failures now stop the build. Since the authoring project
 migration (2026-09-25) the build output is an
-[authoring project](editor-project-format.md): the map and sector files are
+[authoring project](../../reference/project-format.md): the map and sector files are
 built into its `build/` by `csf-mod project-build` from the terrain export and
 the project's placements, identical to v13's.
 
@@ -129,8 +129,8 @@ separate in-game test.
 
 | Stage | Content | Basis |
 |---|---|---|
-| v9: generated scene | the `.scn`, `.gsc` and `.sec` written from scratch by `tools/hello_world/scene.py` and `build_sec.py` (no Convoy leftovers); objective 1 "Reach the building" (zone enter, `SET_OBJETIVO_SUCCESS … (BOOL TRUE)`; v1–v8 passed `FALSE`, which marks it failed, KB-scripting objective table); objective 2 "Kill the officer" (`MUERTO` event); mission success when both are done; two guards patrolling nav routes; prop actors (crates, wood piles, a burnt truck, a weapon pickup); a `.TIPO 3` cover group next to the props that the guards take in combat (`SELECT_GRUPO_PARAPETO`) | KB-scn-7, 8, 10, 11, 12 |
-| v10: intro and terrain | the doberman (`--import-class` 431, walk animations 2383/2384 from Ransom) walking a loop round the camp; a `START_GAME` intro in the Convoy/Ransom pattern (fade, `CUTSCENE_NO_INTERACTIVA`, `CUTSCENE_EXE` of a generated `Convoy.csc` that cuts between five camera dummies aimed with `.ROT = atan2(dx, dz)`, positive `.ROT_X` down, checked against Ransom's intro cameras); terrain from `tools/hello_world/terrain.py`: grass (`FFLRA11B`), a dirt path (`FFLRA14I`, UVs across the path), rock (`FDET_05B`, `Piedra`) on slopes over 24°, hills closing the edges, flat pads under the house, camp and start, 14 trees and 15 ground plants; actor, nav and camera heights sampled from the exported terrain | Convoy/Ransom scripts; `CAMARA_EN_DUMMY` 0x00465310; R14 for camera paths |
+| v9: generated scene | the `.scn`, `.gsc` and `.sec` written from scratch by `examples/hello-world/scene.py` and `build_sec.py` (no Convoy leftovers); objective 1 "Reach the building" (zone enter, `SET_OBJETIVO_SUCCESS … (BOOL TRUE)`; v1–v8 passed `FALSE`, which marks it failed, KB-scripting objective table); objective 2 "Kill the officer" (`MUERTO` event); mission success when both are done; two guards patrolling nav routes; prop actors (crates, wood piles, a burnt truck, a weapon pickup); a `.TIPO 3` cover group next to the props that the guards take in combat (`SELECT_GRUPO_PARAPETO`) | KB-scn-7, 8, 10, 11, 12 |
+| v10: intro and terrain | the doberman (`--import-class` 431, walk animations 2383/2384 from Ransom) walking a loop round the camp; a `START_GAME` intro in the Convoy/Ransom pattern (fade, `CUTSCENE_NO_INTERACTIVA`, `CUTSCENE_EXE` of a generated `Convoy.csc` that cuts between five camera dummies aimed with `.ROT = atan2(dx, dz)`, positive `.ROT_X` down, checked against Ransom's intro cameras); terrain from `examples/hello-world/terrain.py`: grass (`FFLRA11B`), a dirt path (`FFLRA14I`, UVs across the path), rock (`FDET_05B`, `Piedra`) on slopes over 24°, hills closing the edges, flat pads under the house, camp and start, 14 trees and 15 ground plants; actor, nav and camera heights sampled from the exported terrain | Convoy/Ransom scripts; `CAMARA_EN_DUMMY` 0x00465310; R14 for camera paths |
 | v11: patrols and a secondary objective | the intro sends `SEND_EVENT (EVENT INIT)` so the actor scripts (patrols, idles, cover selection, the dog's walk) start; secondary objective 3 "Sabotage the camp radio.": Escape's ghost use point (`--import-class` 241) in front of the radio, labelled with `BICHO_SET_CONTEXT_LABEL`, enabled with `HABILITAR_GHOST`, completed on `EVT_GHOST_USADO` | KB-scripting-14 (`INIT` is a mission event); Escape's ghost scripts |
 
 The `.sec` covers every walkable terrain triangle as one sector, with
@@ -172,7 +172,7 @@ and collision World triangles inside a box, with their donor materials.
 Props and pieces are both placed by the bottom centre of their donor bounds.
 Original text: A map `.rws` contains its
 own prop models: the Clumps first, then the `0x16FC0` scene-instance records
-that place them, then the World ([rws-format.md](../game-knowledge/rws-format.md#csf-scene-instance-record-0x00016fc0)).
+that place them, then the World ([rws-format.md](../../game-knowledge/rws-format.md#csf-scene-instance-record-0x00016fc0)).
 An instance finds its model by number (`prototype id − 1000` = the Clump's
 first Pyro Atomic index, `FUN_006C3C60`). To place a vanilla building, the
 tools copy its Clump chunk from the source map into the new map `.rws` and
@@ -347,7 +347,7 @@ and the event/objective model recovered by the scripting workstream (done).
   commands go in `app/commands.cpp`.
 
 Its first job is teaching: read Convoy, Ransom and Ambush in it and write down
-the idioms they use (below). [`ransom-script-flow.html`](../game-knowledge/ransom-script-flow.html)
+the idioms they use (below). [`ransom-script-flow.html`](../../game-knowledge/ransom-script-flow.html)
 is the hand-made prototype of this view.
 
 **Exit:** all 21 shipped scenes build a flow graph with no unresolved
@@ -540,7 +540,7 @@ and lifecycle (scripting, done), and the object/ID model (done).
 **Running it.** From `docs/format-reversal`: add the item to the workstream's
 `## Now`, then `tools/research-loop.py --workstream <ws>` (or `--max N` for the
 tier-ordered queue). Read an answer with `tools/kb.py about <subject>`; a
-stable one is promoted to [`../game-knowledge/`](../game-knowledge/) before a
+stable one is promoted to [`../game-knowledge/`](../../game-knowledge/) before a
 tool depends on it.
 
 ## Validation ladder

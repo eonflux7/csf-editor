@@ -639,13 +639,45 @@ void test_settings_model() {
     const auto xdg = config_directory([](const char* name) -> const char* {
         return std::string_view(name) == "XDG_CONFIG_HOME" ? "/cfg" : nullptr;
     });
-    CHECK(xdg == std::filesystem::path("/cfg/csf-rws-tools"));
+    CHECK(xdg == std::filesystem::path("/cfg/csf-editor"));
     const auto home = config_directory([](const char* name) -> const char* {
         return std::string_view(name) == "HOME" ? "/home/u" : "";
     });
-    CHECK(home == std::filesystem::path("/home/u/.config/csf-rws-tools"));
+    CHECK(home == std::filesystem::path("/home/u/.config/csf-editor"));
     CHECK(config_directory([](const char*) -> const char* { return nullptr; }).empty());
+    CHECK(legacy_config_directory([](const char* name) -> const char* {
+              return std::string_view(name) == "HOME" ? "/home/u" : "";
+          }) == std::filesystem::path("/home/u/.config/csf-rws-tools"));
 #endif
+    {
+        // The rename to CSF Mission Editor moves the old folder once and points
+        // settings and the projects' mod workspaces at the new one.
+        const auto base = std::filesystem::temp_directory_path() / "csf-editor-config-migration";
+        std::filesystem::remove_all(base);
+        const auto legacy = base / "csf-rws-tools", current = base / "csf-editor";
+        std::filesystem::create_directories(legacy / "projects" / "P" / "mission");
+        std::filesystem::create_directories(legacy / "projects" / "P" / "build");
+        const auto old_file = (legacy / "projects" / "P" / "mission" / "a.gsc").string();
+        std::ofstream(legacy / "settings.ini") << "recent_file = mission\t" << (legacy / "projects" / "P").string() << "\n";
+        std::ofstream(legacy / "projects" / "P" / "mission" / ".csf-mod-state") << "file \"a\" \"" << old_file << "\"\n";
+        std::ofstream(legacy / "projects" / "P" / "build" / ".csf-mod-state") << old_file << "\n";  // generated: left alone
+        std::string report;
+        CHECK(migrate_config_directory(legacy, current, &report) == current);
+        CHECK(!std::filesystem::exists(legacy) && report.find("2 files") != std::string::npos);
+        const auto read = [](const std::filesystem::path& path) {
+            std::ifstream input(path);
+            return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        };
+        CHECK(read(current / "settings.ini").find((current / "projects" / "P").string()) != std::string::npos);
+        CHECK(read(current / "projects" / "P" / "mission" / ".csf-mod-state").find("csf-editor/projects/P/mission/a.gsc") !=
+              std::string::npos);
+        CHECK(read(current / "projects" / "P" / "build" / ".csf-mod-state").find("csf-rws-tools") != std::string::npos);
+        // Once moved, nothing happens again.
+        std::filesystem::create_directories(legacy);
+        report.clear();
+        CHECK(migrate_config_directory(legacy, current, &report) == current && report.empty());
+        std::filesystem::remove_all(base);
+    }
 }
 
 void test_log_buffer() {
@@ -980,7 +1012,7 @@ void write_text_file(const std::filesystem::path& path, const std::string_view t
 }
 
 void test_actor_look() {
-    const auto root = std::filesystem::temp_directory_path() / "rws-man-actor-look-tests";
+    const auto root = std::filesystem::temp_directory_path() / "csf-editor-actor-look-tests";
     std::filesystem::remove_all(root);
     const auto package = root / "Mission";
     const auto map = package / "Maps" / "M1";
@@ -1065,7 +1097,7 @@ void test_actor_look() {
 }
 
 void test_mission_editor() {
-    const auto root = std::filesystem::temp_directory_path() / "rws-man-mission-editor-tests";
+    const auto root = std::filesystem::temp_directory_path() / "csf-editor-mission-editor-tests";
     std::filesystem::remove_all(root);
     const auto package = root / "Mission";
     const auto donor = root / "Donor";
@@ -2427,7 +2459,7 @@ int main() {
     }
     const auto mission_test_root =
         std::filesystem::temp_directory_path() /
-        ("rws-man-phase2-" +
+        ("csf-editor-phase2-" +
          std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(mission_test_root);
     {
@@ -3647,7 +3679,7 @@ int main() {
         CHECK(measurement.distance == 13 && measurement.absolute_delta.y == 4);
         CHECK(std::equal(original.begin(), original.end(), document.bytes().begin()));
 
-        const auto directory = std::filesystem::temp_directory_path() / "rws-man-s02-tests";
+        const auto directory = std::filesystem::temp_directory_path() / "csf-editor-s02-tests";
         std::filesystem::create_directories(directory);
         const auto gltf = directory / "collision.gltf";
         const auto obj = directory / "collision.obj";
@@ -3747,7 +3779,7 @@ int main() {
             return value.code == "duplicate-object-class";
         }));
         const auto directory =
-            std::filesystem::temp_directory_path() / "rws-man-p04-association-tests";
+            std::filesystem::temp_directory_path() / "csf-editor-p04-association-tests";
         write_bytes(directory / "Models" / "Guard.rpc", {std::byte{1}});
         write_bytes(directory / "Models" / "Guard.cmo", {std::byte{2}});
         write_bytes(directory / "Models" / "Guard.rws", {std::byte{3}});
@@ -3950,7 +3982,7 @@ int main() {
         CHECK(partial_skinned.size() == 1 && std::abs(partial_skinned[0].position.x - 4) < 1e-5F &&
               std::abs(partial_skinned[0].position.y) < 1e-5F);
         const auto directory =
-            std::filesystem::temp_directory_path() / "rws-man-p05-animation-tests";
+            std::filesystem::temp_directory_path() / "csf-editor-p05-animation-tests";
         std::filesystem::create_directories(directory);
         const auto output = directory / "clip.gltf";
         rws::export_animation_gltf(clip, frames, hierarchy, {}, output);
@@ -4919,7 +4951,7 @@ int main() {
         put_u32(0xFF0000FF);  // blue
         put_u32(0x80FFFF00);  // translucent yellow
         const auto path =
-            std::filesystem::temp_directory_path() / "rws-man-texture-tests" / "sample.dds";
+            std::filesystem::temp_directory_path() / "csf-editor-texture-tests" / "sample.dds";
         write_bytes(path, dds);
         int width = 0, height = 0;
         std::vector<std::uint8_t> rgba;

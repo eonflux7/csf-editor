@@ -9,10 +9,10 @@ project) and
 <out dir>/scripts/<id>.txt, one `csf-mod mission-edit --add-script` file per
 script. Only the donor's `.MUNDOVIS` environment (sky, fog, textures, minimap)
 is kept; actors, navigation, dummies, areas and lights are all written here
-(docs/plans/hello-world-mission.md, "Extended hello world").
+(docs/archive/editor/hello-world-mission.md, "Extended hello world").
 
 Coordinates are game units (cm, Y up); heights come from the terrain faces of
-the `.csfworld` that build_world.sh exported (tools/hello_world/terrain.py).
+the `.csfworld` that build_world.sh exported (examples/hello-world/terrain.py).
 """
 
 from __future__ import annotations
@@ -498,7 +498,7 @@ def cutscene() -> str:
 
 
 def anchors() -> str:
-    """Project `anchor` records (docs/plans/editor-project-format.md): every
+    """Project `anchor` records (docs/reference/project-format.md): every
     actor and prop actor stands on the ground, the radio on its crate. Camera
     helpers keep their absolute heights."""
     crate = next(30 + k for k, (_, name, *_rest) in enumerate(PROPS) if name == "RADIO_CRATE")

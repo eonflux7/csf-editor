@@ -20,7 +20,7 @@ sets in the mission graph.
 
 ## RPC model laboratory
 
-`.rpc` is treated as a first-class RenderWare Clump container by `rws-man`,
+`.rpc` is treated as a first-class RenderWare Clump container by `csf-editor`,
 `rws-info`, and `rws-corpus`. Opening an RPC directly enters the model laboratory.
 The root must be a Clump (`0x10`); a differently typed root is rejected. Rest-pose
 HAnim bones are drawn in green and bone IDs can be enabled from the viewport

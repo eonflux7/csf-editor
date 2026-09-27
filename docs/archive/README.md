@@ -23,3 +23,13 @@ the record of how it was decided.
   - [Phase 07: mod staging and ecosystem](great-shift/phase-07-mod-staging-and-ecosystem.md)
   - [Format sprint 01: mission programs](great-shift/format-sprint-1.md)
   - [UI sprint: workbench redesign](great-shift/sprint-redesign.md)
+- The mission editor (2026-09-25 to 09-27), which turned the workbench into
+  CSF Mission Editor; what they left open is in the
+  [roadmap](../plans/roadmap.md):
+  - [Hello-world mission](editor/hello-world-mission.md): the first new-world
+    mission, v1 to v13 (now an [example](../../examples/hello-world/README.md))
+  - [Editor/Blender authoring](editor/editor-blender-authoring.md): authoring
+    projects, mission operations, recipes, stages 1-8
+  - [UI/UX redesign](editor/editor-ux-redesign.md): Mission, Script and
+    Inspect modes, components, triggers, the timeline and the UI test harness
+    (phases 0-7)

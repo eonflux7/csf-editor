@@ -1,4 +1,4 @@
-// The Script mode source editor (docs/plans/editor-ux-redesign.md, S2): an
+// The Script mode source editor (docs/archive/editor/editor-ux-redesign.md, S2): an
 // InputTextMultiline whose own text is hidden and drawn again on top in
 // syntax colours, with the error line marked, Tab completion of opcodes and
 // operand tags from the signature table, the signature of the current line's

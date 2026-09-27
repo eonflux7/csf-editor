@@ -1,88 +1,81 @@
-# csf-rws-tools
+# CSF Mission Editor
 
-csf-rws-tools is a Windows and Linux inspection and reverse-engineering toolkit
-for RenderWare Binary Stream (`.rws`) assets from *Commandos: Strike Force*. It
-provides the `rws-man` graphical chunk browser and 3D scene preview, command-line
-analysis tools, OBJ/glTF export, and a Blender add-on for inspecting and rebaking
-the game's lightmaps.
+CSF Mission Editor (`csf-editor`) makes new missions for *Commandos: Strike
+Force* on Windows and Linux. Build the map in Blender or assemble it from
+pieces of the shipped missions, place soldiers, animals, vehicles and props,
+give them behaviours, write objectives, triggers and cutscenes without typing
+script text, and build a replacement mission archive that it deploys to a test
+copy of the game and rolls back again. It grew out of a RenderWare `.rws`
+inspection toolkit, which lives on as its Inspect mode and the command-line
+tools.
 
-![The rws-man workbench: Explorer, 3D viewport, and Inspector showing a Commandos: Strike Force mission](docs/images/csf-rws-tools-scene-preview.png)
+![CSF Mission Editor in Mission mode: the Country example's village, a guard's behaviour card and the intro cutscene timeline](docs/images/csf-editor-mission-mode.png)
 
-The project is under active development. It understands many structures used by
-*Commandos: Strike Force*, but it is not a general-purpose RenderWare editor and
-does not claim complete format support. Unknown and truncated data is preserved so
-that partially understood assets can still be inspected safely.
+The project is under active development. Two missions made with it,
+[hello world](examples/hello-world/README.md) and
+[Country](examples/country/README.md), are kept as worked examples; hello world
+plays in the game. No game files are included: the editor reads the unpacked
+game from your own installation. This project is not affiliated with Pyro
+Studios, Eidos Interactive, or the RenderWare rights holders.
 
 ## Features
 
-- Bounds-checked parsing of little-endian RenderWare chunk streams.
-- Read-only, bounds-checked parsing of generic `CSFFBS` documents with retained
-  raw tables, source offsets, diagnostics, and validated group/array trees.
-- Schema-aware inspection of Clumps, Geometry, Materials, Worlds, Frame Lists,
-  Atomics, Skin, HAnim, User Data, Bin Mesh, MatFX, and other common plugins.
-- ANM `0x1B` decoding, track recovery, pose evaluation, selected-actor CPU
-  skinning, playback controls, root motion, and animation glTF export.
-- Typed `Anims.bdd` catalogs and conservative CSC cutscene basic-block lanes
-  with explicit branches and runtime waits. A dedicated Animation workspace
-  traces SCN actor script IDs through GSC `PLAY_ANMBDD*` actions to exact BDD
-  records and highlights cutscene camera dummies.
-- Decoding of game-specific Pyro Studios metadata, Physics Body/Ragdoll data, and
-  CSF scene-instance records.
-- A Dear ImGui desktop application with a chunk tree, typed inspectors, hex
-  editing, drag-and-drop loading, and save-to-copy behavior.
-- Depth-tested OpenGL previews for individual geometry and assembled scenes,
-  including DDS and PNG base textures, secondary-UV lightmaps, material
-  diagnostics, and wireframe modes. Map previews automatically discover a
-  same-directory
-  `_col.rws` sibling and can show its recovered level collision as a translucent,
-  surface-colored, wireframe, or X-ray overlay.
-- Shared, range-checked World-sector and validated BSP topology recovery used by the GUI, glTF exporter,
-  `rws-info`, and `rws-corpus`, while the conservative parsed chunk tree remains
-  unchanged.
-- Wavefront OBJ export for individual geometry and collision-only Worlds.
-- glTF 2.0 export for Clumps and assembled scenes, with two UV channels,
-  materials, world sectors, CSF placements, and a texture/source manifest.
-- Corpus-wide inventory and validation tools for reverse-engineering collections
-  of `.rws` files.
-- A Blender 4.0+ add-on for resolving exported materials, previewing lightmaps,
-  preparing Cycles bakes, and staging game-ready DXT1/DXT3 DDS files.
-- A mission editor: move, turn, duplicate, add and delete actors, dummies, lights,
-  navigation points and map props with viewport gizmos; change an actor's class
-  (model) and animation overrides; edit mission properties and scripts as
-  recompilable text; import classes and animations from other missions; undo and
-  redo everything; save into a mod project; and export a complete replacement
-  `maps/<Mission>.pak` that keeps every unchanged archive record byte-for-byte.
+**Making missions** (Mission and Script modes):
 
-No game files are included. You must supply assets from your own installation.
-This project is not affiliated with Pyro Studios, Eidos Interactive, or the
-RenderWare rights holders.
+- **Projects**: a new mission in a shipped mission's slot, its own text range,
+  sources and build outputs (`project.csfproj`); saved with one undo history
+  for the mission and the project.
+- **Maps**: terrain and buildings from Blender (the CSF authoring add-on sends
+  them to the editor, which rebuilds the map, collision and sector map), pieces
+  of other missions' maps with their textures and lightmaps, props, baked
+  lightmaps, and a height report that keeps everything on the ground.
+- **Actors and behaviours**: place any class of any mission by name, then make
+  it guard a post (idle animations picked by name and previewed), patrol a
+  route, take cover, or start on an event; animals walk routes.
+- **Logic**: objectives that complete themselves, When/If/Do triggers (zones,
+  deaths, used objects, timers, alerts, bodies found), starting kits and tips,
+  and a Script mode with a source editor and the mission's flow graph.
+- **Cutscenes**: the intro and zone cutscenes as timelines of travelling camera
+  shots, framed and played in the viewport.
+- **Checks and delivery**: a Problems list (flow, heights, texts, lighting,
+  zones), then build, deploy to a test install, roll back and log playtests.
+- Every recipe stays an editable **component**; the same operations run from
+  the command line (`csf-mod mission-ops`) and from UI test scripts.
+
+**Inspecting the game** (Inspect mode and command-line tools):
+
+- Bounds-checked parsing of RenderWare chunk streams and of the generic
+  `CSFFBS` documents behind missions, scripts and databases, preserving unknown
+  and truncated data.
+- Typed inspectors, a hex editor, 3D scene and collision previews with
+  lightmaps, animation playback with skinning, and mission graphs.
+- OBJ and glTF export, corpus-wide inventories, and a Blender add-on for
+  rebaking the game's lightmaps.
 
 ## Project layout
 
 | Component | Purpose |
 | --- | --- |
-| `rws-man` | Desktop chunk inspector, hex editor, and 3D preview |
-| `rws-info` | Inspect, validate, and export one `.rws` or Clump `.rpc` file |
-| `rws-corpus` | Recursively inventory a directory of `.rws` and `.rpc` files |
-| `rws_core` | Parser, typed decoders, and export library used by all tools |
+| `csf-editor` | CSF Mission Editor: Mission, Script and Inspect modes |
+| `csf-mod` | Projects and missions from the command line: `project-*`, `mission-ops`, `mission-components`, `mission-flow`, recompilable CSFFBS text (`decompile`/`compile`), packaging, deployment and rollback |
 | `csf-info` | Summarize, validate, search, and inspect one `CSFFBS` document |
-| `csf-mod` | Mission editing (`mission-edit`), full mission archive export (`export-mission`), recompilable CSFFBS text (`decompile`/`compile`), guarded field edits, staging, PAK packaging, deployment, and rollback |
-| `csf_core` | Generic `CSFFBS` parser, canonical tree writer, source text, typed views, mission editor, and mod-project model |
-| `tools/blender/rws_lightmaps` | Blender material, bake, and DDS staging add-on |
+| `rws-info`, `rws-corpus` | Inspect, validate and export one `.rws`/`.rpc` file, or inventory a directory of them |
+| `csf_core`, `rws_core` | The libraries all of them use: CSFFBS and mission model, mission editor and recipes, authoring projects; RenderWare parsing, Worlds and export |
+| `tools/blender` | The CSF authoring add-on (terrain and buildings) and the lightmap add-on |
+| `examples/` | Hello world and Country, each rebuilt from nothing by its script |
 
 ## Documentation
 
 Full documentation lives in [docs/index.md](docs/index.md). The most useful
 starting points:
 
-- [Command-line usage](docs/guides/cli.md) and
-  [GUI usage](docs/guides/gui.md).
-- [Mission editor](docs/guides/mission-editor.md) and
-  [guarded authoring and mods](docs/guides/guarded-authoring-and-mods.md).
-- Format notes in [docs/game-knowledge/rws-format.md](docs/game-knowledge/rws-format.md)
-  and [docs/game-knowledge/csffbs-format.md](docs/game-knowledge/csffbs-format.md);
-  corpus results in [docs/game-knowledge/rws-corpus.md](docs/game-knowledge/rws-corpus.md)
-  and [docs/game-knowledge/resources.md](docs/game-knowledge/resources.md).
+- [Mission editor](docs/guides/mission-editor.md): a mission from start to
+  finish; [GUI usage](docs/guides/gui.md) and
+  [command-line usage](docs/guides/cli.md).
+- [Blender authoring](docs/guides/blender-authoring.md) and the
+  [authoring project format](docs/reference/project-format.md).
+- The [examples](examples/README.md) and the [roadmap](docs/plans/roadmap.md).
+- Format notes in [docs/game-knowledge/](docs/game-knowledge/).
 
 ## Requirements
 
@@ -133,7 +126,7 @@ Windows:
 ```powershell
 .\build.ps1
 .\test.ps1
-.\build\Release\rws-man.exe "C:\path\to\asset.rws"
+.\build\Release\csf-editor.exe
 ```
 
 Linux:
@@ -141,11 +134,13 @@ Linux:
 ```bash
 ./build.sh
 ./test.sh
-./build/Release/rws-man "/path/to/asset.rws"
+./build/Release/csf-editor
 ```
 
-You can also start the GUI without an argument and drag an `.rws` or `.rpc` file onto
-the window.
+Home then offers **New project...** (pick a shipped mission's slot) and your
+recent projects; set the resource root (the unpacked game) in
+`Edit > Preferences...`. A project folder, a mission `.scn`, or an `.rws` or `.rpc`
+file can also be given on the command line or dropped onto the window.
 
 Both scripts build **Release** by default. They use the checked-in CMake presets,
 perform parallel incremental builds, and configure a build tree only when it is
@@ -157,7 +152,7 @@ missing. Useful variants are:
 .\test.ps1 -Config Debug
 
 # Build only the GUI and its dependencies
-.\build.ps1 -Target rws-man
+.\build.ps1 -Target csf-editor
 
 # Build the parser, command-line tools, and tests without GUI dependencies
 .\build.ps1 -CoreOnly
@@ -176,7 +171,7 @@ missing. Useful variants are:
 ./test.sh --config Debug
 
 # Build only the GUI and its dependencies
-./build.sh --target rws-man
+./build.sh --target csf-editor
 
 # Build the parser, command-line tools, and tests without GUI dependencies
 ./build.sh --core-only
@@ -198,8 +193,8 @@ written to `build-core/<Config>`.
   Strike Force* corpus; other RenderWare games and versions may differ.
 - Several game-specific fields and chunk types remain unidentified.
 - RWS hex edits remain structural byte edits. Mission edits are validated against
-  the shipped data, but no edited mission has been played in the game yet; see
-  the untested points in [docs/guides/mission-editor.md](docs/guides/mission-editor.md).
+  the shipped data; hello world plays in the game, and what is not yet
+  confirmed there is listed in the [roadmap](docs/plans/roadmap.md).
 - Scene glTF export does not package or convert external DDS textures.
 - Modified assets are not guaranteed to load in the game.
 
@@ -209,8 +204,8 @@ building new decoders or export behavior.
 
 ## Development
 
-Keep parsing and export logic in `rws_core`; the GUI and console programs should
-remain clients of that library. Parser, decoder, or exporter changes should add or
+Keep parsing and export logic in `rws_core` and `csf_core`; the editor and console
+programs should remain clients of those libraries. Parser, decoder, or exporter changes should add or
 update coverage in `tests/document_tests.cpp` and pass:
 
 Windows:
@@ -235,4 +230,4 @@ redistribute it.
 
 ## License
 
-csf-rws-tools is available under the [MIT License](LICENSE).
+CSF Mission Editor is available under the [MIT License](LICENSE).

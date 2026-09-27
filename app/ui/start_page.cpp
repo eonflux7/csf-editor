@@ -193,7 +193,7 @@ void draw_missions(AppState& state) {
 }
 
 void draw_start_page(AppState& state) {
-    // Home (docs/plans/editor-ux-redesign.md, A2): projects first, then a
+    // Home (docs/archive/editor/editor-ux-redesign.md, A2): projects first, then a
     // shipped mission to start from, then setup and keys.
     const float scale = ui_scale();
     const float content_width = std::min(ImGui::GetContentRegionAvail().x - 24.0F, 1100.0F * scale);
@@ -288,9 +288,9 @@ void draw_start_page(AppState& state) {
 #define RWSMAN_VERSION "dev"
 #endif
     if (state.ui.deterministic) {
-        ImGui::Text("rws-man %s | Dear ImGui %s", RWSMAN_VERSION, IMGUI_VERSION);
+        ImGui::Text("csf-editor %s | Dear ImGui %s", RWSMAN_VERSION, IMGUI_VERSION);
     } else {
-        ImGui::Text("rws-man %s | %s | Dear ImGui %s | built %s", RWSMAN_VERSION, build_type, IMGUI_VERSION,
+        ImGui::Text("csf-editor %s | %s | Dear ImGui %s | built %s", RWSMAN_VERSION, build_type, IMGUI_VERSION,
                     __DATE__);
         if (!state.config_dir.empty()) ImGui::Text("settings: %s", path_utf8(state.config_dir).c_str());
     }

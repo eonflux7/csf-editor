@@ -750,7 +750,7 @@ static SceneExportStats export_gltf(const std::vector<Chunk>& chunks,
 
     std::ostringstream json;
     json << std::setprecision(9)
-         << "{\n  \"asset\": {\"version\": \"2.0\", \"generator\": \"CSF RWS Tools\", "
+         << "{\n  \"asset\": {\"version\": \"2.0\", \"generator\": \"CSF Mission Editor\", "
          << "\"extras\": {\"rws_units_per_meter\": 100}},\n"
          << "  \"scene\": 0,\n  \"scenes\": [{\"name\": \"RWS Scene\", \"nodes\": [";
     for (std::size_t i = 0; i < meshes.size(); ++i) {

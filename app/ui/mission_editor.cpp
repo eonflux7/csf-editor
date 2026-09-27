@@ -1225,7 +1225,7 @@ void texts_body(AppState& state) {
     auto* project = state.authoring.project.get();
     if (!project || !project->texts) {
         dim_text("Mission text belongs to an authoring project with a texts record (see "
-                 "docs/plans/editor-project-format.md).");
+                 "docs/reference/project-format.md).");
         return;
     }
     dim_text("%s in %s, IDs %d-%d. Changes rebuild the text file; package it with the project's GlobalEK "

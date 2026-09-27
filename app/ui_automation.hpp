@@ -27,7 +27,7 @@ struct UiItem {
     [[nodiscard]] bool visible() const { return clip.Contains(center()) && rect.GetWidth() > 0 && rect.GetHeight() > 0; }
 };
 
-// The UI test harness's view of ImGui (docs/plans/editor-ux-redesign.md, T3,
+// The UI test harness's view of ImGui (docs/archive/editor/editor-ux-redesign.md, T3,
 // T4, T7): records every widget each frame so scripts can address them by
 // label, injects mouse, keyboard and text input as the platform backend
 // would, and collects ImGui assertion failures and ID conflicts.

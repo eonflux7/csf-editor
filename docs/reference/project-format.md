@@ -1,19 +1,19 @@
 # Spec: authoring project format
 
-2026-09-25. Stage 2 of the [editor/Blender plan](editor-blender-authoring.md)
+2026-09-25. Stage 2 of the [editor/Blender plan](../archive/editor/editor-blender-authoring.md)
 builds on this: it records what a project is made of, which files are sources
 and which are generated, and how placements keep their identity through a
 terrain reimport.
 
 **Implemented:** `csf::AuthoringProject` (`include/csf/authoring_project.hpp`)
 reads and writes both files and builds the World, collision and sector map
-(`csf-mod project-build`); hello world is migrated (`tools/hello_world/build.sh`).
+(`csf-mod project-build`); hello world is migrated (`examples/hello-world/build.sh`).
 Height resolution, the height report and resnap (`csf-mod project-heights`),
 and mission text (`text` records; `project-build` writes
 `build/<archive stem>/<file>`, e.g. `build/GlobalEK/Texts/Convoy.fli`).
 Pieces of other missions' maps (`donor`, `piece ... donor= lightmaps=`) and
 textures of the project's own (`texture`) came with Country
-([country-mission.md](country-mission.md)); `AuthoringProject::packaged_textures`
+([country-mission.md](../../examples/country/README.md)); `AuthoringProject::packaged_textures`
 lists every texture the mission must package.
 **Not yet:** `.csfworld` version 2
 `object` lines, and building the archives into `dist/` from C++ (the
@@ -155,7 +155,7 @@ object terrain
 
 A version-1 file has no `object` lines and is one asset with the ID in its
 `asset` record. The compiler still builds one World from all of them. Asset kinds follow the
-map structure described in the [editor plan](editor-blender-authoring.md#map-structure-and-asset-kinds);
+map structure described in the [editor plan](../archive/editor/editor-blender-authoring.md#map-structure-and-asset-kinds);
 the Blender add-on (stage 3) sets the kind and ID when it tags an object. Asset
 identity is used for change summaries ("terrain: 5000 → 5200 faces"), for
 invalidation and for the placements' reference errors. The reference errors
