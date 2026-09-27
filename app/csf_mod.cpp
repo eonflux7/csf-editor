@@ -13,20 +13,26 @@
 #include "rws/document.hpp"
 #include "rws/map_assembly.hpp"
 #include "rws/scene_export.hpp"
+#include "rws/texture_image.hpp"
 #include "rws/world_model.hpp"
 #include "rws/world_queries.hpp"
 #include "rws/world_source.hpp"
 #include "rws/world_recovery.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <ranges>
+#include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -44,6 +50,9 @@ void usage() {
            "  csf-mod world-rebuild <map.rws> <new-map.rws> [--max-sector-triangles N] [--overwrite]\n"
            "  csf-mod world-build <source.csfworld> <donor-map.rws> <new-map.rws>\n"
            "                      [--keep-props] [--max-sector-triangles N] [--overwrite]\n"
+           "                      [--texture <name> <image.png|dds> <like-donor-texture>]...\n"
+           "                      [--lightmap <name> <image.png|dds>]...\n"
+           "  csf-mod world-source <map.rws> <new.csfworld> [--check] [--overwrite]\n"
            "  csf-mod mission-ops <workspace> <scene.scn> <ops-file> [--package <root>] [--ground <source.csfworld>]\n"
            "                      [--components]\n"
            "  csf-mod mission-components <workspace> <scene.scn> [--package <root>] [--ground <source.csfworld>] list | check\n"
@@ -138,6 +147,27 @@ std::vector<std::byte> read_bytes(const std::filesystem::path& path) {
     input.read(reinterpret_cast<char*>(result.data()), static_cast<std::streamsize>(result.size()));
     if (!input && !result.empty()) throw std::runtime_error("Cannot read complete file");
     return result;
+}
+
+// <map>_col.rws next to a map, matched without regard to case as the shipped
+// folders spell it either way.
+std::filesystem::path collision_path(const std::filesystem::path& map) {
+    auto wanted = map.stem().string() + "_col" + map.extension().string();
+    const auto fold = [](std::string text) {
+        std::ranges::transform(text, text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return text;
+    };
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(map.parent_path().empty() ? "." : map.parent_path(), error))
+        if (fold(entry.path().filename().string()) == fold(wanted)) return entry.path();
+    return map.parent_path() / wanted;
+}
+
+void write_file(const std::filesystem::path& path, const std::span<const std::byte> bytes) {
+    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!file) throw std::runtime_error("Cannot write " + path.generic_string());
 }
 
 // An authoring project's mission, opened through its workspace (mission/), if it
@@ -581,51 +611,207 @@ int main(int argc, char** argv) try {
         const std::filesystem::path source_path = argv[2], donor_path = argv[3], output = argv[4];
         bool keep_props = false, overwrite = false;
         rws::WorldCompileOptions options;
+        const auto donor_collision = collision_path(donor_path);
+        const auto output_collision =
+            output.parent_path() / (output.stem().string() + "_col" + output.extension().string());
+        // Textures and lightmaps of the map's own: DDS files in <output dir>/Textures/,
+        // listed in a copy of the donor's texture list (<map folder>.txl).
+        struct OwnImage {
+            std::string name;
+            std::filesystem::path image;
+        };
+        std::vector<OwnImage> images;
         for (int i = 5; i < argc; ++i) {
             const std::string_view option = argv[i];
             if (option == "--keep-props") keep_props = true;
             else if (option == "--overwrite") overwrite = true;
             else if (option == "--max-sector-triangles" && i + 1 < argc) options.max_sector_triangles = u32(argv[++i]);
-            else throw std::runtime_error("Unknown world-build option: " + std::string(option));
+            else if (option == "--texture" && i + 3 < argc) {
+                std::string name = argv[++i];
+                images.push_back({name, argv[++i]});
+                std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                options.new_textures[name] = argv[++i];
+            } else if (option == "--lightmap" && i + 2 < argc) {
+                images.push_back({argv[i + 1], argv[i + 2]});
+                i += 2;
+            } else throw std::runtime_error("Unknown world-build option: " + std::string(option));
         }
-        const auto collision_name = [](const std::filesystem::path& map) {
-            return map.parent_path() / (map.stem().string() + "_col" + map.extension().string());
-        };
-        std::filesystem::path donor_collision = collision_name(donor_path);
-        for (const auto& entry : std::filesystem::directory_iterator(donor_path.parent_path())) {
-            auto name = entry.path().filename().string(), wanted = donor_collision.filename().string();
-            const auto fold = [](std::string& text) {
-                std::ranges::transform(text, text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            };
-            fold(name);
-            fold(wanted);
-            if (name == wanted) donor_collision = entry.path();
-        }
-        const auto output_collision = collision_name(output);
-        if (!overwrite && (std::filesystem::exists(output) || std::filesystem::exists(output_collision)))
-            throw std::runtime_error("Output exists (pass --overwrite): " + output.generic_string());
+        const auto donor_txl = [&] {
+            auto path = donor_path;
+            path.replace_extension(".txl");
+            std::error_code error;
+            for (const auto& entry : std::filesystem::directory_iterator(donor_path.parent_path().empty() ? "." : donor_path.parent_path(), error)) {
+                auto name = entry.path().filename().string(), wanted = path.filename().string();
+                for (auto* text : {&name, &wanted})
+                    std::ranges::transform(*text, text->begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (name == wanted) return entry.path();
+            }
+            return path;
+        }();
+        const auto output_txl = output.parent_path() / donor_txl.filename();
+        std::vector<std::filesystem::path> outputs{output, output_collision};
+        for (const auto& image : images) outputs.push_back(output.parent_path() / "Textures" / (image.name + ".dds"));
+        if (!images.empty()) outputs.push_back(output_txl);
+        if (!overwrite)
+            for (const auto& path : outputs)
+                if (std::filesystem::exists(path))
+                    throw std::runtime_error("Output exists (pass --overwrite): " + path.generic_string());
         std::ifstream input(source_path, std::ios::binary);
         if (!input) throw std::runtime_error("Cannot read " + source_path.generic_string());
         const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
         const auto source = rws::parse_world_source(text);
         if (!source) throw std::runtime_error(source_path.generic_string() + ": " + source.error);
+        // Read the texture list before writing anything: the output may replace it.
+        std::string txl;
+        if (!images.empty()) {
+            if (!std::filesystem::is_regular_file(donor_txl))
+                throw std::runtime_error("Own textures need the donor's texture list: " + donor_txl.generic_string() +
+                                         " is missing");
+            const auto bytes = read_bytes(donor_txl);
+            txl.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        }
         const auto built = rws::build_map_files(*source.value, read_bytes(donor_path), read_bytes(donor_collision),
                                                 options, keep_props);
         if (!built) throw std::runtime_error(built.error);
-        if (!output.parent_path().empty()) std::filesystem::create_directories(output.parent_path());
-        const auto write = [](const std::filesystem::path& path, const std::vector<std::byte>& bytes) {
-            std::ofstream file(path, std::ios::binary | std::ios::trunc);
-            file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-            if (!file) throw std::runtime_error("Cannot write " + path.generic_string());
-        };
-        write(output, built.value->map);
-        write(output_collision, built.value->collision);
+        std::vector<std::pair<std::filesystem::path, std::vector<std::byte>>> dds;
+        for (const auto& image : images) {
+            auto source_bytes = read_bytes(image.image);
+            auto extension = image.image.extension().string();
+            std::ranges::transform(extension, extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (extension != ".dds") {
+                int width{}, height{};
+                std::vector<std::uint8_t> rgba;
+                std::string problem;
+                if (!rws::decode_png(source_bytes, width, height, rgba, problem))
+                    throw std::runtime_error(image.image.generic_string() + ": " + problem);
+                if ((width & (width - 1)) != 0 || (height & (height - 1)) != 0)
+                    throw std::runtime_error(image.image.generic_string() + ": width and height must be powers of two");
+                source_bytes = rws::encode_dds_dxt1(width, height, rgba);
+            }
+            dds.emplace_back(output.parent_path() / "Textures" / (image.name + ".dds"), std::move(source_bytes));
+        }
+        write_file(output, built.value->map);
+        write_file(output_collision, built.value->collision);
+        for (const auto& [path, bytes] : dds) {
+            write_file(path, bytes);
+            std::cout << "texture\t" << path.generic_string() << '\n';
+        }
+        if (!images.empty()) {
+            // Entries are game paths: Maps\<map folder>\Textures\<name>.dds.
+            const auto folder = std::filesystem::absolute(donor_path).parent_path().filename().string();
+            auto present = txl;
+            std::ranges::transform(present, present.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            for (const auto& image : images) {
+                const auto entry = "Maps\\" + folder + "\\Textures\\" + image.name + ".dds";
+                auto folded = entry;
+                std::ranges::transform(folded, folded.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (present.find(folded) != std::string::npos) continue;
+                if (!txl.empty() && txl.back() != '\n') txl += "\r\n";
+                txl += entry + "\r\n";
+            }
+            write_file(output_txl, std::as_bytes(std::span(txl)));
+            std::cout << "texture-list\t" << output_txl.generic_string() << '\n';
+        }
         for (const auto& note : built.value->notes) std::cout << "note\t" << note << '\n';
         std::cout << "visual\t" << output.generic_string() << '\t' << built.value->visual_triangles << " triangles\t"
                   << built.value->visual_sectors << " sectors\n"
                   << "collision\t" << output_collision.generic_string() << '\t' << built.value->collision_triangles
                   << " triangles\t" << built.value->collision_sectors << " sectors\n";
         return 0;
+    }
+    if (command == "world-source") {
+        // Decompiles a map and its _col.rws into .csfworld, the source that
+        // Blender imports and world-build (with the map as donor) compiles.
+        if (argc < 4) { usage(); return 1; }
+        const std::filesystem::path map_path = argv[2], output = argv[3];
+        bool check = false, overwrite = false;
+        for (int i = 4; i < argc; ++i) {
+            const std::string_view option = argv[i];
+            if (option == "--check") check = true;
+            else if (option == "--overwrite") overwrite = true;
+            else throw std::runtime_error("Unknown world-source option: " + std::string(option));
+        }
+        if (!overwrite && std::filesystem::exists(output))
+            throw std::runtime_error("Output exists (pass --overwrite): " + output.generic_string());
+        const auto collision_file = collision_path(map_path);
+        const auto map_bytes = read_bytes(map_path), collision_bytes = read_bytes(collision_file);
+        const auto load = [](const std::vector<std::byte>& bytes, const std::filesystem::path& path) {
+            const auto offset = rws::find_map_world(bytes);
+            if (!offset) throw std::runtime_error(path.generic_string() + " has no World");
+            auto parsed = rws::parse_world_model(bytes, *offset);
+            if (!parsed) throw std::runtime_error(path.generic_string() + ": " + parsed.error);
+            return std::move(*parsed.value);
+        };
+        const auto visual = load(map_bytes, map_path), collision = load(collision_bytes, collision_file);
+        const auto source = rws::world_source_from_map(visual, collision);
+        if (!source) throw std::runtime_error(map_path.generic_string() + ": " + source.error);
+        // The map's path in UTF-8 (the names below are the game's own bytes).
+        const auto map_name = std::filesystem::absolute(map_path).generic_u8string();
+        const auto text = "# world-source " + std::string(reinterpret_cast<const char*>(map_name.data()), map_name.size()) +
+                          "\n" + rws::write_world_source(*source.value);
+        // The header must stay the first line.
+        const auto header = text.find("csfworld 1\n");
+        const auto ordered = text.substr(header, 11) + text.substr(0, header) + text.substr(header + 11);
+        write_file(output, std::as_bytes(std::span(ordered)));
+        std::size_t visual_faces{}, collision_faces{};
+        for (const auto& face : source.value->faces) (face.visual ? visual_faces : collision_faces)++;
+        std::cout << "source\t" << output.generic_string() << '\t' << visual_faces << " visual faces\t"
+                  << collision_faces << " collision faces\t" << source.value->materials.size() << " materials\n";
+        if (!check) return 0;
+        // --check: built again with the map as donor, every triangle must come
+        // back with the same corners, UVs and material chunk (collision: and Pyro byte).
+        const auto reparsed = rws::parse_world_source(ordered);
+        if (!reparsed) throw std::runtime_error("written source: " + reparsed.error);
+        const auto compiled = rws::compile_world_source(*reparsed.value, visual, collision);
+        if (!compiled) throw std::runtime_error("build: " + compiled.error);
+        const auto signatures = [](const rws::WorldModel& world, const bool with_uv) {
+            const auto list = rws::split_material_list(world.material_list, world.library_id);
+            std::multiset<std::string> result;
+            for (const auto& triangle : rws::world_build_triangles(world)) {
+                std::array<std::string, 3> corners;
+                for (std::size_t c = 0; c < 3; ++c) {
+                    const auto& v = triangle.vertices[c];
+                    std::array<float, 7> values{v.position.x, v.position.y, v.position.z, 0, 0, 0, 0};
+                    if (with_uv) {
+                        values[3] = v.texcoords[0][0];
+                        values[4] = v.texcoords[0][1];
+                        values[5] = v.texcoords[1][0];
+                        values[6] = v.texcoords[1][1];
+                    }
+                    // Text keeps a NaN (some shipped UVs) but not its payload.
+                    for (auto& value : values)
+                        if (std::isnan(value)) value = std::numeric_limits<float>::quiet_NaN();
+                    corners[c].assign(reinterpret_cast<const char*>(values.data()), sizeof(values));
+                }
+                // The same winding from its smallest corner.
+                const auto first = static_cast<std::size_t>(std::ranges::min_element(corners) - corners.begin());
+                std::string key;
+                for (std::size_t c = 0; c < 3; ++c) key += corners[(first + c) % 3];
+                if (list && triangle.material < list.value->size()) {
+                    const auto& chunk = (*list.value)[triangle.material];
+                    key.append(reinterpret_cast<const char*>(chunk.data()), chunk.size());
+                }
+                key += static_cast<char>(with_uv ? 0 : triangle.pyro);
+                result.insert(std::move(key));
+            }
+            return result;
+        };
+        const auto kept = [](const std::multiset<std::string>& before, const std::multiset<std::string>& after) {
+            std::vector<std::string> common;
+            std::ranges::set_intersection(before, after, std::back_inserter(common));
+            return common.size();
+        };
+        const auto visual_before = signatures(visual, true), visual_after = signatures(compiled.value->visual, true);
+        const auto collision_before = signatures(collision, false),
+                   collision_after = signatures(compiled.value->collision, false);
+        const auto visual_kept = kept(visual_before, visual_after), collision_kept = kept(collision_before, collision_after);
+        std::cout << "check\tvisual\t" << visual_kept << " of " << visual_before.size() << " triangles unchanged\n"
+                  << "check\tcollision\t" << collision_kept << " of " << collision_before.size()
+                  << " triangles unchanged\n";
+        return visual_kept == visual_before.size() && visual_after.size() == visual_before.size() &&
+                       collision_kept == collision_before.size() && collision_after.size() == collision_before.size()
+                   ? 0
+                   : 2;
     }
     if (command == "world-audit") {
         // Every World in a map .rws must survive parse -> write byte for byte,

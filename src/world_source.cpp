@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <tuple>
 
 namespace rws {
 namespace {
@@ -56,6 +57,14 @@ std::vector<std::string_view> fields(std::string_view line) {
         const auto start = line.find_first_not_of(" \t\r");
         if (start == std::string_view::npos) break;
         line.remove_prefix(start);
+        if (line.front() == '"') {
+            // A quoted name may hold spaces (shipped lightmaps do).
+            const auto close = line.find('"', 1);
+            result.push_back(line.substr(1, close == std::string_view::npos ? std::string_view::npos : close - 1));
+            if (close == std::string_view::npos) break;
+            line.remove_prefix(close + 1);
+            continue;
+        }
         const auto end = line.find_first_of(" \t\r");
         result.push_back(line.substr(0, end));
         if (end == std::string_view::npos) break;
@@ -202,6 +211,21 @@ DecodeResult<std::vector<std::byte>> replace_material_texture(const std::span<co
     }
     return rename_texture(holder.bytes(), static_cast<std::size_t>(found->offset),
                           {static_cast<std::size_t>(found->offset), static_cast<std::size_t>(chunk->offset)}, texture);
+}
+
+std::string material_color_name(const std::span<const std::byte> material) {
+    Document holder;
+    const auto chunk = material_chunk(material, holder);
+    if (!chunk) return {};
+    const auto decoded = decode_material(*chunk, holder.bytes());
+    if (!decoded) return {};
+    std::string out;
+    for (const auto component : decoded.value->color) {
+        constexpr char digits[] = "0123456789ABCDEF";
+        out += digits[component >> 4U];
+        out += digits[component & 15U];
+    }
+    return out;
 }
 
 std::string material_surface_name(const std::span<const std::byte> material) {
@@ -373,9 +397,24 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
                 // A texture of the World's own copies its template's material.
                 const auto own = options.new_textures.find(lower(material.texture));
                 const auto donor_texture = own == options.new_textures.end() ? material.texture : own->second;
-                const auto found = std::ranges::find_if(*visual_materials.value, [&](const auto& chunk) {
+                // `-` is an untextured donor material, `-#RRGGBBAA` the one of that colour.
+                const auto untextured = donor_texture.starts_with('-');
+                const auto uses_texture = [&](const auto& chunk) {
+                    if (untextured)
+                        return material_texture_name(chunk).empty() &&
+                               (donor_texture.size() < 2 || lower("-#" + material_color_name(chunk)) == lower(donor_texture));
                     return lower(material_texture_name(chunk)) == lower(donor_texture);
-                });
+                };
+                // Prefer the donor material already lit by that lightmap (a
+                // decompiled map names its own), else the first with the texture.
+                auto found = material.lightmap.empty()
+                                 ? visual_materials.value->end()
+                                 : std::ranges::find_if(*visual_materials.value, [&](const auto& chunk) {
+                                       return uses_texture(chunk) &&
+                                              lower(material_lightmap_name(chunk)) == lower(material.lightmap);
+                                   });
+                if (found == visual_materials.value->end())
+                    found = std::ranges::find_if(*visual_materials.value, uses_texture);
                 if (found == visual_materials.value->end()) {
                     result.error = "no donor visual material uses texture '" + donor_texture + "'";
                     return result;
@@ -739,6 +778,10 @@ DecodeResult<BuiltMap> build_map_files(const WorldSource& source, const std::spa
 
 namespace {
 
+std::string quoted(const std::string& name) {
+    return std::ranges::any_of(name, [](const unsigned char c) { return std::isspace(c); }) ? '"' + name + '"' : name;
+}
+
 template <typename T>
 void put(std::string& out, const T value) {
     std::array<char, 32> buffer{};
@@ -752,9 +795,9 @@ void put(std::string& out, const T value) {
 std::string write_world_source(const WorldSource& source) {
     std::string out = "csfworld 1\n";
     for (const auto& material : source.materials) {
-        out += "material " + material.texture + ' ' + material.surface;
+        out += "material " + quoted(material.texture) + ' ' + quoted(material.surface);
         put(out, static_cast<unsigned>(material.shade));
-        if (!material.lightmap.empty()) out += ' ' + material.lightmap;
+        if (!material.lightmap.empty()) out += ' ' + quoted(material.lightmap);
         out += '\n';
     }
     for (std::size_t i = 0; i < source.vertices.size(); ++i) {
@@ -796,6 +839,84 @@ std::string write_world_source(const WorldSource& source) {
         out += '\n';
     }
     return out;
+}
+
+DecodeResult<WorldSource> world_source_from_map(const WorldModel& visual, const WorldModel& collision) {
+    DecodeResult<WorldSource> result;
+    const auto visual_materials = split_material_list(visual.material_list, visual.library_id);
+    const auto collision_materials = split_material_list(collision.material_list, collision.library_id);
+    if (!visual_materials || !collision_materials) {
+        result.error = "Material List: " + (visual_materials ? collision_materials.error : visual_materials.error);
+        return result;
+    }
+    // A .csfworld name is one token, quoted when it holds spaces.
+    const auto token = [](const std::string& name) {
+        return !name.empty() && std::ranges::none_of(name, [](const unsigned char c) {
+                   return c == '"' || c == '\n' || c == '\t' || c == '\r';
+               });
+    };
+    WorldSource source;
+    std::map<std::tuple<std::string, std::string, std::uint8_t, std::string>, std::uint32_t> material_index;
+    const auto material_of = [&](WorldSourceMaterial material) {
+        const auto [it, added] = material_index.try_emplace(
+            {material.texture, material.surface, material.shade, material.lightmap},
+            static_cast<std::uint32_t>(source.materials.size()));
+        if (added) source.materials.push_back(std::move(material));
+        return it->second;
+    };
+    const auto add = [&](const WorldModel& world, const std::vector<std::vector<std::byte>>& list, const bool is_visual) {
+        const auto sets = world_texcoord_sets(world.format);
+        for (const auto& triangle : world_build_triangles(world)) {
+            if (triangle.material >= list.size()) {
+                result.error = std::string(is_visual ? "visual" : "collision") + " triangle names a missing material";
+                return false;
+            }
+            const auto& chunk = list[triangle.material];
+            WorldSourceMaterial material;
+            if (is_visual) {
+                material.texture = material_texture_name(chunk);
+                material.lightmap = material_lightmap_name(chunk);
+                material.surface = material_surface_name(chunk);
+                if (!token(material.surface)) material.surface = "Tierra";
+                if (material.texture.empty()) material.texture = "-#" + material_color_name(chunk);
+                for (const auto* name : {&material.texture, &material.lightmap})
+                    if (!name->empty() && !token(*name)) {
+                        result.error = "visual material " + std::to_string(triangle.material) + " name '" + *name +
+                                       "' cannot be written";
+                        return false;
+                    }
+            } else {
+                material.surface = material_surface_name(chunk);
+                if (!token(material.surface)) {
+                    result.error = "collision material " + std::to_string(triangle.material) +
+                                   (material.surface.empty() ? " has no surface name"
+                                                             : " surface '" + material.surface + "' cannot be written");
+                    return false;
+                }
+                material.texture = material_texture_name(chunk);
+                if (!token(material.texture)) material.texture = "-";
+                material.shade = triangle.pyro;
+            }
+            WorldSourceFace face;
+            face.material = material_of(std::move(material));
+            face.visual = is_visual;
+            face.collision = !is_visual;
+            for (std::size_t c = 0; c < 3; ++c) {
+                const auto& vertex = triangle.vertices[c];
+                face.vertices[c] = static_cast<std::uint32_t>(source.vertices.size());
+                WorldBuildVertex copy = vertex;
+                if (!is_visual) copy.normal = {};
+                source.vertices.push_back(copy);
+                source.exact_positions.push_back({vertex.position.x, vertex.position.y, vertex.position.z});
+                source.has_second_uv.push_back(is_visual && sets >= 2U);
+            }
+            source.faces.push_back(face);
+        }
+        return true;
+    };
+    if (!add(visual, *visual_materials.value, true) || !add(collision, *collision_materials.value, false)) return result;
+    result.value = std::move(source);
+    return result;
 }
 
 void append_world_source(WorldSource& target, const WorldSource& part,

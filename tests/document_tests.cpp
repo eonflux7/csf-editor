@@ -4647,6 +4647,59 @@ int run_tests() {
             copied.close();  // Windows cannot delete an open file
             std::filesystem::remove_all(donor_root);
         }
+        {
+            // A built map decompiles to a source that builds it again with
+            // itself as donor: same materials, and the collision shades per face.
+            const auto decompiled = rws::world_source_from_map(visual, collision);
+            CHECK(decompiled && decompiled.value->faces.size() == 4);
+            const auto& materials_back = decompiled.value->materials;
+            CHECK(std::ranges::any_of(materials_back, [](const auto& m) {
+                return m.texture == "ground" && m.surface == "Tierra" && m.lightmap.empty();
+            }));
+            CHECK(std::ranges::count_if(materials_back, [](const auto& m) { return m.texture == "-" && m.shade == 90; }) == 1);
+            const auto reparsed = rws::parse_world_source(rws::write_world_source(*decompiled.value));
+            CHECK(reparsed && reparsed.value->faces.size() == 4);
+            const auto rebuilt = rws::compile_world_source(*reparsed.value, visual, collision);
+            CHECK(rebuilt && rebuilt.value->visual.triangle_count == 2 && rebuilt.value->collision.triangle_count == 2);
+            CHECK(rebuilt.value->visual.material_list == visual.material_list);
+            CHECK(rebuilt.value->collision.material_list == collision.material_list);
+            const auto& rebuilt_sector = rebuilt.value->collision.sectors[0];
+            const auto rebuilt_shades =
+                rws::decode_pyro_sector_metadata(rebuilt_sector.plugins.back(), rebuilt_sector.triangles.size());
+            CHECK(rebuilt_shades && std::ranges::count(rebuilt_shades.value->triangle_bytes, std::uint8_t{90}) == 1);
+
+            // Names with spaces are quoted; `-#RRGGBBAA` picks the untextured
+            // donor material of that colour, `-` the first untextured one.
+            const auto quoted = rws::parse_world_source("csfworld 1\nmaterial \"A B\" Tierra 228 \"C D_Lm\"\n");
+            CHECK(quoted && quoted.value->materials[0].texture == "A B" && quoted.value->materials[0].lightmap == "C D_Lm");
+            CHECK(rws::write_world_source(*quoted.value).find("material \"A B\" Tierra 228 \"C D_Lm\"") != std::string::npos);
+            const auto untextured = [&](const std::uint32_t rgba) {
+                std::vector<std::byte> body;
+                append_header(body, 0x01, 28);
+                append_u32(body, 0);
+                append_u32(body, rgba);
+                append_u32(body, 0);
+                append_u32(body, 0);
+                for (int i = 0; i < 3; ++i) append_u32(body, 0x3F800000U);
+                append_header(body, 0x03, 0);
+                return finish(0x07, body);
+            };
+            const std::vector<std::vector<std::byte>> plain_list{untextured(0xFF0000FFU), untextured(0x44332211U)};
+            CHECK(rws::material_color_name(plain_list[1]) == "11223344");
+            rws::WorldModel plain_visual = donor_visual;
+            plain_visual.material_list = rws::compose_material_list(plain_list, 0x1C020037);
+            auto coloured = *source.value;
+            coloured.materials[0].texture = "-#11223344";
+            const auto second = rws::compile_world_source(coloured, plain_visual, donor_collision);
+            CHECK(second && rws::split_material_list(second.value->visual.material_list, 0x1C020037).value->at(0) ==
+                                plain_list[1]);
+            coloured.materials[0].texture = "-";
+            const auto first = rws::compile_world_source(coloured, plain_visual, donor_collision);
+            CHECK(first && rws::split_material_list(first.value->visual.material_list, 0x1C020037).value->at(0) ==
+                               plain_list[0]);
+            coloured.materials[0].texture = "-#00000000";
+            CHECK(!rws::compile_world_source(coloured, plain_visual, donor_collision));
+        }
 
         // An authoring project builds the same source into build/, incrementally.
         const auto root = std::filesystem::temp_directory_path() / "rwsman-authoring-project-test";

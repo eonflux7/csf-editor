@@ -38,7 +38,10 @@ namespace rws {
 // so the ground and fences around a building stay behind.
 //
 // Lines starting with '#' and blank lines are ignored. Texture names select a
-// donor visual material, surfaces a donor collision material by its Pyro name.
+// donor visual material (`-`: an untextured one, `-#RRGGBBAA` the one of
+// that colour; one naming a lightmap
+// prefers the donor material lit by it), surfaces a donor collision material
+// by its Pyro name. A name with spaces is written in double quotes.
 
 struct WorldSourceMaterial {
     std::string texture;
@@ -151,6 +154,16 @@ struct BuiltMap {
 // keep their exact values).
 [[nodiscard]] std::string write_world_source(const WorldSource& source);
 
+// The source of an existing map (its visual World and _col.rws collision
+// World), so it can be edited and built again with the map as donor: visual
+// faces name their material's texture, lightmap and surface (default Tierra),
+// collision faces their surface and, as the material's shade, the triangle's
+// Pyro byte. Vertices
+// are per face corner; props and scene instances stay in the map (build it
+// with keep_donor_props). An untextured material is texture `-#RRGGBBAA`
+// (visual) or `-` (collision).
+[[nodiscard]] DecodeResult<WorldSource> world_source_from_map(const WorldModel& visual, const WorldModel& collision);
+
 // Appends `part` to `target`: its vertices, faces (materials merged by
 // texture, surface and shade), props and pieces. With `placed`, the part's
 // vertices and normals are turned `yaw_degrees` about +Y (as props and pieces
@@ -174,5 +187,7 @@ void append_world_source(WorldSource& target, const WorldSource& part,
 // Texture name of a Material (0x07) chunk, or its Pyro surface name.
 [[nodiscard]] std::string material_texture_name(std::span<const std::byte> material);
 [[nodiscard]] std::string material_surface_name(std::span<const std::byte> material);
+// Its colour as RRGGBBAA hex.
+[[nodiscard]] std::string material_color_name(std::span<const std::byte> material);
 
 } // namespace rws

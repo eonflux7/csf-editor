@@ -158,7 +158,7 @@ add_executable(csf-info app/csf_info.cpp)
 target_link_libraries(csf-info PRIVATE csf::core)
 
 add_executable(csf-mod app/csf_mod.cpp)
-target_link_libraries(csf-mod PRIVATE csf::core rws::core)
+target_link_libraries(csf-mod PRIVATE csf::core rws::core rws::image)
 
 if(RWSMAN_BUILD_GUI)
     set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)

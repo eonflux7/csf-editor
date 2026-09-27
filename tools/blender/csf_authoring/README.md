@@ -8,3 +8,8 @@ view-only reference. See `docs/guides/blender-authoring.md` in csf-editor.
 Install `csf_authoring.zip` from **Edit > Preferences > Add-ons > Install from
 Disk**, then set the **csf-mod** executable in the add-on's preferences
 (csf-editor's `build/Release/csf-mod`).
+
+Without a project, **Import map** (sidebar, or File > Import > CSF map) opens a
+shipped map (`.rws`, through `csf-mod world-source`) or a `.csfworld` with its
+visual and collision geometry, and **Export .csfworld** (File > Export) writes
+it back for `csf-mod world-build`; see "A map without a project" in the guide.

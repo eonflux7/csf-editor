@@ -229,7 +229,13 @@ blender --background --factory-startup --python tools/blender/make_test_terrain.
     out/terrain.csfworld --size 100 --hill-height 4
 blender --background scene.blend --python tools/blender/export_csf_world.py -- out/scene.csfworld
 ./build/Release/csf-mod world-build out/terrain.csfworld \
-    ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.rws [--keep-props]
+    ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.rws [--keep-props] \
+    [--texture <name> <image.png|dds> <like-donor-texture>]... [--lightmap <name> <image.png|dds>]...
+
+# A shipped map as .csfworld (visual and collision, materials, collision shades),
+# to edit in Blender and build again with the map as donor and --keep-props.
+# --check builds it back and compares every triangle.
+./build/Release/csf-mod world-source ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.csfworld [--check]
 
 # An authoring project (docs/reference/project-format.md): build its map,
 # collision map and sector map into <project>/build/ when they are stale. A
@@ -285,5 +291,8 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 ```
 
 `--keep-props` keeps the donor's Clumps and scene-instance records in the new
-map. `.csfworld` is documented in `include/rws/world_source.hpp`; the exporter's
+map. `--texture` and `--lightmap` add textures of the map's own: DXT1 DDS files
+in `Textures/` next to the new map and a copy of the donor's `.txl` listing
+them (see [blender-authoring.md](blender-authoring.md), "A map without a
+project"). `.csfworld` is documented in `include/rws/world_source.hpp`; the exporter's
 conventions (units, axes, custom properties) are in its module docstring.

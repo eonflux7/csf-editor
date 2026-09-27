@@ -14,6 +14,10 @@ Blender owns mesh sources; csf-editor owns placements and mission records
   navigation routes, areas and dummies in a locked "CSF reference" collection.
   It is view-only and never exported.
 * Import donor model: a vanilla .rpc as an editable mesh, to start an asset.
+* Map without a project (also File > Import/Export): import a shipped map
+  (.rws, through `csf-mod world-source`) or a .csfworld with its visual and
+  collision geometry, and export the scene as a .csfworld that
+  `csf-mod world-build` compiles with the original map as donor.
 """
 
 from __future__ import annotations
@@ -119,7 +123,8 @@ def project_dir(context) -> Path:
 
 
 def run(context, *arguments) -> str:
-    result = subprocess.run([csf_mod(context), *map(str, arguments)], capture_output=True, text=True)
+    result = subprocess.run([csf_mod(context), *map(str, arguments)], capture_output=True, text=True,
+                            errors="replace")
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout).strip() or f"csf-mod {arguments[0]} failed")
     return result.stdout
@@ -535,6 +540,72 @@ class CSF_OT_import_model(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class CSF_OT_import_map(bpy.types.Operator):
+    """Import a map (.rws, decompiled by csf-mod) or a .csfworld: visual and collision geometry"""
+    bl_idname = "csf.import_map"
+    bl_label = "Import map"
+    bl_options = {"REGISTER", "UNDO"}
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.rws;*.csfworld", options={"HIDDEN"})
+    textures: StringProperty(name="Textures", subtype="DIR_PATH",
+                             description="Folder of the map's DDS textures; empty: Textures next to the map")
+
+    def invoke(self, context, event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        path = Path(self.filepath)
+        textures = bpy.path.abspath(self.textures) if self.textures else None
+        try:
+            if path.suffix.lower() == ".rws":
+                # Kept next to the .blend (or in the temp folder) so it can be reread.
+                folder = Path(bpy.path.abspath("//")) if bpy.data.filepath else Path(tempfile.gettempdir())
+                source = folder / f"{path.stem}.csfworld"
+                run(context, "world-source", path, source, "--overwrite")
+            else:
+                source = path
+            stats = csfworld.load(str(source), textures)
+        except (RuntimeError, OSError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{stats['faces']} faces, {stats['materials']} materials in {stats['objects']} objects")
+        return {"FINISHED"}
+
+
+class CSF_OT_export_world(bpy.types.Operator):
+    """Export the visible meshes as a .csfworld (csf-mod world-build compiles it)"""
+    bl_idname = "csf.export_world"
+    bl_label = "Export .csfworld"
+    filepath: StringProperty(subtype="FILE_PATH")
+    filter_glob: StringProperty(default="*.csfworld", options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        if not self.filepath:
+            stem = Path(bpy.data.filepath).stem if bpy.data.filepath else "map"
+            self.filepath = str(Path(bpy.path.abspath("//") or ".") / f"{stem}.csfworld")
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, context):
+        path = Path(self.filepath).with_suffix(".csfworld")
+        try:
+            stats = csfworld.export(str(path), context.scene, precise=True)
+        except (RuntimeError, OSError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{stats['faces']} faces, {stats['materials']} materials -> {path.name}")
+        return {"FINISHED"}
+
+
+def menu_import(self, context):
+    self.layout.operator(CSF_OT_import_map.bl_idname, text="CSF map (.rws, .csfworld)")
+
+
+def menu_export(self, context):
+    self.layout.operator(CSF_OT_export_world.bl_idname, text="CSF World (.csfworld)")
+
+
 # ---- Panel -----------------------------------------------------------------------
 
 
@@ -566,20 +637,29 @@ class CSF_PT_authoring(bpy.types.Panel):
         row.operator("csf.load_reference", icon="LINKED")
         row.operator("csf.clear_reference", text="", icon="TRASH")
         layout.operator("csf.import_model", icon="IMPORT")
+        box = layout.box()
+        box.label(text="Map without a project")
+        row = box.row(align=True)
+        row.operator("csf.import_map", icon="IMPORT")
+        row.operator("csf.export_world", icon="EXPORT")
 
 
 CLASSES = (CsfPreferences, CSF_OT_tag_asset, CSF_OT_untag_asset, CSF_OT_bake, CSF_OT_send, CSF_OT_load_reference,
-           CSF_OT_clear_reference, CSF_OT_import_model, CSF_PT_authoring)
+           CSF_OT_clear_reference, CSF_OT_import_model, CSF_OT_import_map, CSF_OT_export_world, CSF_PT_authoring)
 
 
 def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
+    bpy.types.TOPBAR_MT_file_import.append(menu_import)
+    bpy.types.TOPBAR_MT_file_export.append(menu_export)
     bpy.types.Scene.csf_project = StringProperty(name="Project", subtype="DIR_PATH",
                                                  description="The authoring project folder (with project.csfproj)")
 
 
 def unregister():
+    bpy.types.TOPBAR_MT_file_export.remove(menu_export)
+    bpy.types.TOPBAR_MT_file_import.remove(menu_import)
     del bpy.types.Scene.csf_project
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
