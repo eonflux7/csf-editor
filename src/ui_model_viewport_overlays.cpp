@@ -92,8 +92,8 @@ MarkerFadeRange marker_fade_range(const float camera_to_scene_center, const floa
 }
 
 float marker_distance_fade(const MarkerFadeRange range, const float distance) noexcept {
-    if (!(range.far > range.near) || !(distance > range.near)) return 1.0F;
-    const float t = std::min((distance - range.near) / (range.far - range.near), 1.0F);
+    if (!(range.far_distance > range.near_distance) || !(distance > range.near_distance)) return 1.0F;
+    const float t = std::min((distance - range.near_distance) / (range.far_distance - range.near_distance), 1.0F);
     return (1.0F - t) + marker_fade_floor * t;
 }
 

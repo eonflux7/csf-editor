@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.24)
 
 project(csf-editor VERSION 0.1.0 LANGUAGES CXX)
 
+# Sources are UTF-8, and narrow literals such as "\u00b7" must stay UTF-8 on MSVC too.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 option(RWSMAN_BUILD_GUI "Build the Dear ImGui desktop application" ON)
 option(RWSMAN_BUILD_TESTS "Build parser tests" ON)
 

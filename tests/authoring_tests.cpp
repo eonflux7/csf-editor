@@ -58,7 +58,9 @@ std::vector<std::byte> read(const std::filesystem::path& path) {
 
 } // namespace
 
-int main(int argc, char** argv) {
+namespace {
+
+int run(int argc, char** argv) {
     const auto bytes = sample();
     CHECK(csf::sha256(std::as_bytes(std::span("abc",3))) ==
           "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
@@ -197,4 +199,17 @@ int main(int argc, char** argv) {
     CHECK(!stale.validate().passed);
     std::filesystem::remove_all(root);
     std::cout << "Authoring and mod staging tests passed\n";
+    return 0;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    // An exception escaping the tests names itself instead of ending the process silently.
+    try {
+        return run(argc, argv);
+    } catch (const std::exception& error) {
+        std::cerr << "uncaught exception: " << error.what() << '\n';
+        return 1;
+    }
 }

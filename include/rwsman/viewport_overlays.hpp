@@ -62,7 +62,7 @@ struct OverlayOptions {
 // `occluded_opacity`. Markers dim rather than vanish unless that opacity is 0.
 inline constexpr float marker_fade_floor = 0.3F;
 struct MarkerFadeRange {
-    float near{}, far{}; // Distances from the camera; far <= near disables fading.
+    float near_distance{}, far_distance{}; // From the camera; far_distance <= near_distance disables fading.
 };
 [[nodiscard]] MarkerFadeRange marker_fade_range(float camera_to_scene_center, float scene_radius,
                                                 float fade_distance) noexcept;

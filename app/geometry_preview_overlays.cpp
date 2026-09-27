@@ -1023,7 +1023,7 @@ void GeometryPreview::render_overlays_gpu(const int viewport_width, const int vi
     // Pixel sizes are in ImGui points; the framebuffer may be scaled.
     gl.uniform_2f(location("uViewport"), canvas_width_, canvas_height_);
     const auto fade = overlay_fade_range();
-    gl.uniform_2f(location("uFade"), fade.near, fade.far);
+    gl.uniform_2f(location("uFade"), fade.near_distance, fade.far_distance);
     gl.uniform_1f(location("uFadeFloor"), rwsman::marker_fade_floor);
     const auto outline = ui::unpack_rgba(ui::viewport_color(ui::Viewport::marker_outline));
     gl.uniform_4f(location("uOutline"), outline[0] / 255.0F, outline[1] / 255.0F, outline[2] / 255.0F,

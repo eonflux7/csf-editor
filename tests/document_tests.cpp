@@ -1923,13 +1923,13 @@ void test_viewport_overlay_model() {
 
     // Distance dimming starts at the scene's near side, or at the camera inside it.
     const auto outside = marker_fade_range(500.0F, 100.0F, 3.0F);
-    CHECK(outside.near == 400.0F && outside.far == 700.0F);
+    CHECK(outside.near_distance == 400.0F && outside.far_distance == 700.0F);
     CHECK(marker_distance_fade(outside, 390.0F) == 1.0F);
     CHECK(marker_distance_fade(outside, 700.0F) == marker_fade_floor);
     CHECK(marker_distance_fade(outside, 5000.0F) == marker_fade_floor);
     CHECK(marker_distance_fade(outside, 450.0F) > marker_distance_fade(outside, 600.0F));
     const auto inside = marker_fade_range(20.0F, 100.0F, 3.0F);
-    CHECK(inside.near == 0.0F && inside.far == 300.0F);
+    CHECK(inside.near_distance == 0.0F && inside.far_distance == 300.0F);
     CHECK(marker_distance_fade(marker_fade_range(500.0F, 100.0F, 0.0F), 5000.0F) == 1.0F);
     // Walls: none leaves a marker alone, each further one dims toward the limit.
     CHECK(marker_wall_fade(0, 0.25F) == 1.0F);
