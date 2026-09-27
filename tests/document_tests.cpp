@@ -2329,7 +2329,7 @@ void test_authoring_ui_models() {
     CHECK(contrast_ratio(0x878E9A, 0x1C2027) >= 4.5 && contrast_ratio(0x7D8490, 0x1C2027) < 4.5);
 }
 
-int main() {
+int run_tests() {
     test_fuzzy_matcher();
     test_viewport_overlay_model();
     test_command_registry();
@@ -4965,4 +4965,15 @@ int main() {
         std::filesystem::remove(path);
     }
     return 0;
+}
+
+int main() {
+    // An exception escaping the tests names itself instead of ending the process
+    // silently (MSVC reports only 0xc0000409).
+    try {
+        return run_tests();
+    } catch (const std::exception& error) {
+        std::cerr << "uncaught exception: " << error.what() << '\n';
+        return 1;
+    }
 }
