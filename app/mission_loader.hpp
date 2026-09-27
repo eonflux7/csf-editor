@@ -73,7 +73,9 @@ public:
                std::optional<std::filesystem::path> project = std::nullopt);
     void cancel();
     [[nodiscard]] LoadProgress progress() const;
-    [[nodiscard]] bool busy() const noexcept { return running_.load(); }
+    // Running, or finished with an outcome poll() has not taken yet: until the
+    // app applies it, the mission is not loaded (UI scripts wait on this).
+    [[nodiscard]] bool busy() const noexcept { return running_.load() || finished_.load(); }
 
     using Outcome = std::variant<std::monostate, MissionLoadResult, MissionLoadFailure>;
     // Takes the finished outcome, or monostate while running or idle.

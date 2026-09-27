@@ -389,8 +389,9 @@ void MissionLoader::run(std::filesystem::path path, std::filesystem::path debug_
         const std::lock_guard lock(mutex_);
         outcome_ = MissionLoadFailure{path, stage, error.what(), false};
     }
-    running_ = false;
+    // Finished first: there is never a moment when neither flag is set.
     finished_ = true;
+    running_ = false;
 }
 
 } // namespace rwsman
