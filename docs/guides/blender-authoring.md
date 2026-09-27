@@ -91,8 +91,11 @@ csf-mod world-build work/FR03-edited.csfworld ../CSF_unpacks/Convoy/Maps/FR03/FR
 `.rws` itself (it runs `csf-mod world-source` and keeps the `.csfworld` next to
 the saved `.blend`) or a `.csfworld`. It makes one object per role:
 *visual* (textures from the map's `Textures` folder, base and `Lightmap` UVs,
-the shipped normals) and *collision* (drawn as wire, a colour per surface).
-Materials carry `csf_texture`, `csf_surface` and `csf_lightmap`; each collision
+the shipped normals) and *collision* (drawn as wire, each surface in the
+colour the game gives it in `Materiales.bdd`: Intangible, the invisible walls,
+is red, Madera brown, Tierra lavender; switch Viewport Shading's colour to
+*Material* to see them). Materials carry `csf_texture`, `csf_surface`,
+`csf_lightmap` and, on collision, `csf_surface_color`; each collision
 face keeps its shade (the per-triangle byte the game bakes from lighting) in
 the face attribute `csf_shade`, which new faces inherit from their
 neighbours. Keep the collision object visible: hidden objects are not exported.

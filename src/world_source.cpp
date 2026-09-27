@@ -272,6 +272,20 @@ DecodeResult<WorldSource> parse_world_source(const std::string_view text) {
             }
             if (parts.size() == 5) material.lightmap = std::string(parts[4]);
             source.materials.push_back(std::move(material));
+        } else if (parts[0] == "surface") {
+            std::array<std::uint8_t, 4> color{};
+            const auto hex = parts.size() == 3 ? parts[2] : std::string_view{};
+            const auto digit = [](const char c) {
+                return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            };
+            bool valid = hex.size() == 8;
+            for (std::size_t i = 0; valid && i < 4; ++i) {
+                const auto high = digit(hex[2 * i]), low = digit(hex[2 * i + 1]);
+                valid = high >= 0 && low >= 0;
+                color[i] = static_cast<std::uint8_t>(high * 16 + low);
+            }
+            if (!valid) return fail("surface <surface> <RRGGBBAA>");
+            source.surface_colors[std::string(parts[1])] = color;
         } else if (parts[0] == "v") {
             if (parts.size() != 9 && parts.size() != 11) return fail("v needs 8 or 10 numbers");
             std::array<float, 10> values{};
@@ -800,6 +814,15 @@ std::string write_world_source(const WorldSource& source) {
         if (!material.lightmap.empty()) out += ' ' + quoted(material.lightmap);
         out += '\n';
     }
+    for (const auto& [surface, color] : source.surface_colors) {
+        out += "surface " + quoted(surface) + ' ';
+        for (const auto component : color) {
+            constexpr char digits[] = "0123456789ABCDEF";
+            out += digits[component >> 4U];
+            out += digits[component & 15U];
+        }
+        out += '\n';
+    }
     for (std::size_t i = 0; i < source.vertices.size(); ++i) {
         const auto& vertex = source.vertices[i];
         out += 'v';
@@ -896,6 +919,10 @@ DecodeResult<WorldSource> world_source_from_map(const WorldModel& visual, const 
                 material.texture = material_texture_name(chunk);
                 if (!token(material.texture)) material.texture = "-";
                 material.shade = triangle.pyro;
+                if (!source.surface_colors.contains(material.surface))
+                    if (Document holder; const auto found = material_chunk(chunk, holder))
+                        if (const auto decoded = decode_material(*found, holder.bytes()))
+                            source.surface_colors[material.surface] = decoded.value->color;
             }
             WorldSourceFace face;
             face.material = material_of(std::move(material));
@@ -964,6 +991,7 @@ void append_world_source(WorldSource& target, const WorldSource& part,
     }
     target.props.insert(target.props.end(), part.props.begin(), part.props.end());
     target.pieces.insert(target.pieces.end(), part.pieces.begin(), part.pieces.end());
+    target.surface_colors.insert(part.surface_colors.begin(), part.surface_colors.end());
 }
 
 } // namespace rws

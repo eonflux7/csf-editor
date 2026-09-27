@@ -22,6 +22,7 @@ Blender owns mesh sources; csf-editor owns placements and mission records
 
 from __future__ import annotations
 
+import importlib
 import json
 import math
 import os
@@ -36,10 +37,14 @@ from bpy.props import EnumProperty, StringProperty
 
 from . import csfworld
 
+# Installing a new version over an enabled one reloads this module but not
+# csfworld, which Python keeps: reload it too (restarting Blender is not needed).
+csfworld = importlib.reload(csfworld)
+
 bl_info = {
     "name": "CSF authoring",
     "author": "csf-editor",
-    "version": (0, 1, 0),
+    "version": (0, 3, 0),
     "blender": (4, 2, 0),
     "location": "3D View > Sidebar > CSF",
     "description": "Terrain and building assets for csf-editor authoring projects",

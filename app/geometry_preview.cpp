@@ -254,29 +254,6 @@ ImU32 material_color(const std::uint16_t material, const float shade) {
                         static_cast<int>(255.0F * color[2] * shade), 255);
 }
 
-std::array<std::uint8_t, 4> collision_surface_color(std::string name,
-                                                    const std::uint16_t material) {
-    std::transform(name.begin(), name.end(), name.begin(), [](const unsigned char value) {
-        return static_cast<char>(std::tolower(value));
-    });
-    const auto contains = [&](const std::string_view value) {
-        return name.find(value) != std::string::npos;
-    };
-    if (contains("metal")) return {75, 135, 210, 255};
-    if (contains("madera") || contains("wood")) return {205, 137, 72, 255};
-    if (contains("veget") || contains("grass")) return {78, 155, 80, 255};
-    if (contains("barro") || contains("tierra") || contains("mud") || contains("earth"))
-        return {145, 100, 62, 255};
-    if (contains("cristal") || contains("glass")) return {75, 205, 220, 255};
-    if (contains("escal") || contains("stair")) return {235, 205, 65, 255};
-    if (contains("piedra") || contains("cement") || contains("concrete") || contains("baldosa") ||
-        contains("stone") || contains("tile"))
-        return {145, 150, 155, 255};
-    const auto packed = material_color(material, 1.0F);
-    const auto channels = ui::unpack_rgba(packed);
-    return {channels[0], channels[1], channels[2], 255};
-}
-
 unsigned int upload_texture(const int width, const int height, const std::uint8_t* rgba) {
     GLuint texture{};
     auto& gl = gl_api();
@@ -2402,9 +2379,11 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
             material_lightmap_texture_names_.resize(material_base + material_count);
             auto& surface_labels = collision_surface_labels_[world_index];
             surface_labels.assign(material_count, "Unknown");
-            for (std::size_t slot = 0; slot < material_count; ++slot)
-                material_colors_[material_base + slot] =
-                    collision_surface_color({}, static_cast<std::uint16_t>(slot));
+            // A slot without a readable Material keeps a colour of its own.
+            for (std::size_t slot = 0; slot < material_count; ++slot) {
+                const auto channels = ui::unpack_rgba(material_color(static_cast<std::uint16_t>(slot), 1.0F));
+                material_colors_[material_base + slot] = {channels[0], channels[1], channels[2], 255};
+            }
 
             if (const auto* list_chunk = rws::find_child(*collision_world, 0x08)) {
                 const auto list = rws::decode_material_list(*list_chunk, collision.bytes());
@@ -2421,7 +2400,12 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                         continue;
                     }
                     if (next_material >= materials.size()) continue;
-                    const auto* extension = rws::find_child(*materials[next_material++], 0x03);
+                    const auto& material_chunk = *materials[next_material++];
+                    // The Material's colour is the one Materiales.bdd gives its
+                    // surface (Intangible is red).
+                    if (const auto material = rws::decode_material(material_chunk, collision.bytes()))
+                        material_colors_[material_base + slot] = material.value->color;
+                    const auto* extension = rws::find_child(material_chunk, 0x03);
                     const auto* pyro =
                         extension ? rws::find_child(*extension, 0xFFFFFF00U) : nullptr;
                     const auto metadata =
@@ -2432,8 +2416,6 @@ bool GeometryPreview::load_scene(const std::vector<rws::Chunk>& chunks,
                     const auto surface = metadata.value->material_surface_type();
                     surface_labels[slot] = name.empty() ? "Unknown" : name;
                     if (surface) surface_labels[slot] += " (ID " + std::to_string(*surface) + ')';
-                    material_colors_[material_base + slot] =
-                        collision_surface_color(name, static_cast<std::uint16_t>(slot));
                 }
             }
 

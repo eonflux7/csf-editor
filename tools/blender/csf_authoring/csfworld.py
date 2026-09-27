@@ -19,6 +19,9 @@ Conventions
 * Per object, ``csf_role`` is ``both`` (default), ``visual`` or ``collision``.
 * A face attribute ``csf_shade`` (integer, per face) overrides the material's
   shade for that face: the collision byte a decompiled map keeps per triangle.
+* ``csf_surface_color`` (``RRGGBBAA``), which Import map sets from the map's
+  collision Materials (the colours of Materiales.bdd), is written back as the
+  surface's ``surface`` line.
 * Materials a glTF import made from ``rws-info --export-scene-gltf`` fall back
   to their ``rws_base_texture``, ``rws_surface_name`` and
   ``rws_lightmap_texture`` properties; that glTF's props (Clumps and scene
@@ -30,7 +33,8 @@ Conventions
 
 `load()` is the other direction: a `.csfworld` (``csf-mod world-source`` of a
 shipped map) as one object per role, with the names above as properties, the
-per-triangle collision shade as ``csf_shade`` and, when found, the textures.
+per-triangle collision shade as ``csf_shade``, each collision surface in its
+game colour (``surface`` lines; Intangible is red) and, when found, the textures.
 """
 
 from __future__ import annotations
@@ -103,6 +107,7 @@ def export(path: str, scene=None, objects=None, local: bool = False, precise: bo
     depsgraph = bpy.context.evaluated_depsgraph_get()
     materials: dict[tuple, int] = {}
     material_lines: list[str] = []
+    surface_colors: dict[str, str] = {}
     vertex_lines: list[str] = []
     face_lines: list[str] = []
     for obj in (exportable(scene) if objects is None else objects):
@@ -128,6 +133,8 @@ def export(path: str, scene=None, objects=None, local: bool = False, precise: bo
                 if shades is not None:
                     shade = min(max(shades.data[triangle.polygon_index].value, 0), 255)
                 key = (material_texture(slot), material_surface(slot), shade, material_lightmap(slot))
+                if slot is not None and slot.get("csf_surface_color"):
+                    surface_colors.setdefault(key[1], str(slot["csf_surface_color"]))
                 if key not in materials:
                     materials[key] = len(materials)
                     material_lines.append(f"material {quoted(key[0])} {quoted(key[1])} {key[2]}" +
@@ -149,7 +156,8 @@ def export(path: str, scene=None, objects=None, local: bool = False, precise: bo
     if not face_lines:
         raise ValueError("no visible mesh faces to export")
     try:
-        body = "\n".join(material_lines + vertex_lines + face_lines).encode("latin-1")
+        surface_lines = [f"surface {quoted(name)} {color}" for name, color in sorted(surface_colors.items())]
+        body = "\n".join(material_lines + surface_lines + vertex_lines + face_lines).encode("latin-1")
     except UnicodeEncodeError as error:
         raise ValueError(f"a material name has a character the game cannot hold: {error.object[error.start:error.end]!r}")
     with open(path, "wb") as out:
@@ -193,14 +201,25 @@ def find_texture(directory: str, name: str) -> str | None:
     return None
 
 
-def surface_color(name: str) -> tuple:
-    """A stable colour per collision surface."""
+def hex_color(rrggbbaa: str) -> tuple:
+    """An RRGGBBAA colour (sRGB) as Blender's linear RGBA."""
+    def linear(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    values = [int(rrggbbaa[2 * k:2 * k + 2], 16) / 255.0 for k in range(4)]
+    return (*(linear(c) for c in values[:3]), values[3])
+
+
+def surface_color(name: str, colors: dict | None = None) -> tuple:
+    """A collision surface's colour: its `surface` line (the game's own,
+    Intangible red), else a stable one made up from the name."""
+    if colors and name in colors:
+        return hex_color(colors[name])
     import colorsys
     hue = (sum(ord(c) * 31 ** i for i, c in enumerate(name.lower())) % 360) / 360.0
     return (*colorsys.hsv_to_rgb(hue, 0.55, 0.9), 1.0)
 
 
-def make_material(key: tuple, textures: str, collision: bool):
+def make_material(key: tuple, textures: str, collision: bool, surface_colors: dict | None = None):
     texture, surface, lightmap = key
     name = f"{surface} (collision)" if collision else texture + (f" [{lightmap}]" if lightmap else "")
     material = bpy.data.materials.new(name)
@@ -208,11 +227,13 @@ def make_material(key: tuple, textures: str, collision: bool):
     material["csf_surface"] = surface
     if lightmap:
         material["csf_lightmap"] = lightmap
+    if surface_colors and surface in surface_colors:
+        material["csf_surface_color"] = surface_colors[surface]
     material.use_nodes = True
     shader = material.node_tree.nodes.get("Principled BSDF")
-    color = surface_color(surface) if collision else (0.8, 0.8, 0.8, 1.0)
+    color = surface_color(surface, surface_colors) if collision else (0.8, 0.8, 0.8, 1.0)
     if not collision and texture.startswith("-#") and len(texture) == 10:
-        color = tuple(int(texture[2 + 2 * k:4 + 2 * k], 16) / 255.0 for k in range(4))
+        color = hex_color(texture[2:])
     material.diffuse_color = color
     if shader:
         shader.inputs["Base Color"].default_value = color
@@ -232,6 +253,7 @@ def load(path: str, textures: str | None = None, collection=None) -> dict:
     Textures folder next to the map a `# world-source <map>` comment names.
     """
     materials, vertices, faces = [], [], []
+    surface_colors: dict[str, str] = {}
     source_map = None
     with open(path, "rb") as source:
         for raw in source:
@@ -245,6 +267,8 @@ def load(path: str, textures: str | None = None, collection=None) -> dict:
             if parts[0] == "material":
                 materials.append((parts[1], parts[2], int(parts[3]) if len(parts) > 3 else DEFAULT_SHADE,
                                   parts[4] if len(parts) > 4 else ""))
+            elif parts[0] == "surface":
+                surface_colors[parts[1]] = parts[2].upper()
             elif parts[0] == "v":
                 values = [float(v) for v in parts[1:]]
                 vertices.append(values if len(values) == 10 else values + [None, None])
@@ -304,7 +328,7 @@ def load(path: str, textures: str | None = None, collection=None) -> dict:
         if not collision and any(any(n) for n in loop_normals):
             mesh.normals_split_custom_set(loop_normals)
         for key in sorted(slots, key=slots.get):
-            mesh.materials.append(make_material(key, textures, collision))
+            mesh.materials.append(make_material(key, textures, collision, surface_colors))
         obj = bpy.data.objects.new(f"{stem} {role}", mesh)
         obj["csf_role"] = role
         if collision:

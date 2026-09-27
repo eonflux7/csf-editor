@@ -232,7 +232,8 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
     ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.rws [--keep-props] \
     [--texture <name> <image.png|dds> <like-donor-texture>]... [--lightmap <name> <image.png|dds>]...
 
-# A shipped map as .csfworld (visual and collision, materials, collision shades),
+# A shipped map as .csfworld (visual and collision, materials, collision shades
+# and surface colours),
 # to edit in Blender and build again with the map as donor and --keep-props.
 # --check builds it back and compares every triangle.
 ./build/Release/csf-mod world-source ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws out/FR03.csfworld [--check]

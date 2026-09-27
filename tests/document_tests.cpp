@@ -4659,6 +4659,15 @@ int run_tests() {
             CHECK(std::ranges::count_if(materials_back, [](const auto& m) { return m.texture == "-" && m.shade == 90; }) == 1);
             const auto reparsed = rws::parse_world_source(rws::write_world_source(*decompiled.value));
             CHECK(reparsed && reparsed.value->faces.size() == 4);
+            // Each collision surface keeps its Material's colour (these are white).
+            CHECK(!decompiled.value->surface_colors.empty());
+            for (const auto& face : decompiled.value->faces) {
+                if (face.visual) continue;
+                const auto found = decompiled.value->surface_colors.find(materials_back[face.material].surface);
+                CHECK((found != decompiled.value->surface_colors.end() &&
+                       found->second == std::array<std::uint8_t, 4>{255, 255, 255, 255}));
+            }
+            CHECK(reparsed.value->surface_colors == decompiled.value->surface_colors);
             const auto rebuilt = rws::compile_world_source(*reparsed.value, visual, collision);
             CHECK(rebuilt && rebuilt.value->visual.triangle_count == 2 && rebuilt.value->collision.triangle_count == 2);
             CHECK(rebuilt.value->visual.material_list == visual.material_list);
@@ -4673,6 +4682,18 @@ int run_tests() {
             const auto quoted = rws::parse_world_source("csfworld 1\nmaterial \"A B\" Tierra 228 \"C D_Lm\"\n");
             CHECK(quoted && quoted.value->materials[0].texture == "A B" && quoted.value->materials[0].lightmap == "C D_Lm");
             CHECK(rws::write_world_source(*quoted.value).find("material \"A B\" Tierra 228 \"C D_Lm\"") != std::string::npos);
+            const auto colored = rws::parse_world_source("csfworld 1\nsurface Intangible ff0000FF\nsurface \"A B\" 10203040\n");
+            CHECK((colored && colored.value->surface_colors.at("Intangible") == std::array<std::uint8_t, 4>{255, 0, 0, 255} &&
+                   colored.value->surface_colors.at("A B") == std::array<std::uint8_t, 4>{0x10, 0x20, 0x30, 0x40}));
+            CHECK(rws::write_world_source(*colored.value) ==
+                  "csfworld 1\nsurface \"A B\" 10203040\nsurface Intangible FF0000FF\n");
+            CHECK(!rws::parse_world_source("csfworld 1\nsurface Intangible FF0000\n"));
+            CHECK(!rws::parse_world_source("csfworld 1\nsurface Intangible FF0000GG\n"));
+            auto merged_colors = *colored.value;
+            rws::append_world_source(merged_colors, *rws::parse_world_source(
+                "csfworld 1\nsurface Intangible 000000FF\nsurface Metal FFB923FF\n").value);
+            CHECK(merged_colors.surface_colors.size() == 3 &&
+                  merged_colors.surface_colors.at("Intangible")[0] == 255 && merged_colors.surface_colors.contains("Metal"));
             const auto untextured = [&](const std::uint32_t rgba) {
                 std::vector<std::byte> body;
                 append_header(body, 0x01, 28);

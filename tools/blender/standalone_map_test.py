@@ -92,11 +92,28 @@ def main(argv: list[str]) -> int:
     check(all("csf_texture" in m and "csf_surface" in m for m in visual.data.materials), "materials carry names")
     textured = [m for m in visual.data.materials if any(n.type == "TEX_IMAGE" for n in m.node_tree.nodes)]
     check(len(textured) > 0, f"textures found ({len(textured)} of {len(visual.data.materials)} materials)")
+    # Collision surfaces come in the game's colours (Materiales.bdd: Intangible red).
+    colors = {parts[1]: parts[2] for parts in map(csfworld.fields, source.read_text(encoding="latin-1").splitlines())
+              if parts and parts[0] == "surface"}
+    check(len(colors) > 0 and all(m["csf_surface"] in colors for m in collision.data.materials),
+          f"world-source gives every collision surface a colour ({len(colors)})")
+    for material in collision.data.materials:
+        expected = csfworld.hex_color(colors[material["csf_surface"]])
+        base = tuple(material.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value)
+        if not all(abs(a - b) < 1e-4 for a, b in zip(base, expected)) or material["csf_surface_color"] != colors[
+                material["csf_surface"]]:
+            check(False, f"{material.name} has its surface colour")
+    intangible = [m for m in collision.data.materials if m["csf_surface"] == "Intangible"]
+    if intangible:
+        check(tuple(round(c, 3) for c in intangible[0].diffuse_color) == (1.0, 0.0, 0.0, 1.0), "Intangible is red")
+    check(True, "collision materials have their surface colours")
 
     exported = out / "unchanged.csfworld"
     csfworld.export(str(exported), bpy.context.scene, precise=True)
     before = faces_of(source)
     check(same_faces(before, faces_of(exported)), f"unchanged export keeps all {len(before)} faces, materials and shades")
+    check(all(f"surface {csfworld.quoted(name)} {color}" in exported.read_text(encoding="latin-1")
+              for name, color in colors.items()), "the export keeps the surface colours")
 
     # Raise one visual vertex by 1 m, export and build with the map as donor.
     visual.data.vertices[0].co.z += 1.0
@@ -130,6 +147,9 @@ def main(argv: list[str]) -> int:
         bpy.data.objects.remove(obj)
     check(bpy.ops.csf.import_map(filepath=str(map_path)) == {"FINISHED"}, "Import map reads the .rws")
     check(bpy.context.scene.get("csf_source_map") == str(map_path), "the scene remembers the map")
+    imported = [m for obj in bpy.data.objects if obj.get("csf_role") == "collision" for m in obj.data.materials]
+    check(all(m.get("csf_surface_color") == colors[m["csf_surface"]] for m in imported),
+          "Import map colours the collision surfaces")
     operator_export = out / "operator.csfworld"
     check(bpy.ops.csf.export_world(filepath=str(operator_export)) == {"FINISHED"}, "Export writes a .csfworld")
     check(same_faces(before, faces_of(operator_export)), "the operators round-trip the map")

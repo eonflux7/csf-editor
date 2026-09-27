@@ -21,6 +21,7 @@ namespace rws {
 //
 //   csfworld 1
 //   material <texture> <surface> [<shade 0-255> [<lightmap>]]   (declaration order = index)
+//   surface <surface> <RRGGBBAA>
 //   v <x> <y> <z> <nx> <ny> <nz> <u0> <v0> [<u1> <v1>]
 //   f <a> <b> <c> <material> <visual|collision|both>
 //   prop <donor-instance-id>[,<id>...] <x> <y> <z> [<yaw-degrees>]
@@ -42,6 +43,11 @@ namespace rws {
 // that colour; one naming a lightmap
 // prefers the donor material lit by it), surfaces a donor collision material
 // by its Pyro name. A name with spaces is written in double quotes.
+//
+// A surface line gives the colour of a collision surface: its donor collision
+// Material's RGBA, which is the colour Materiales.bdd lists for that surface
+// (Intangible is red). It is for viewers only; the build copies the donor's
+// material as it is.
 
 struct WorldSourceMaterial {
     std::string texture;
@@ -93,6 +99,7 @@ struct WorldSource {
     std::vector<WorldSourceFace> faces;
     std::vector<PlacedProp> props;
     std::vector<WorldPiece> pieces;
+    std::map<std::string, std::array<std::uint8_t, 4>> surface_colors;  // RGBA by surface name
 };
 
 [[nodiscard]] DecodeResult<WorldSource> parse_world_source(std::string_view text);
@@ -158,14 +165,15 @@ struct BuiltMap {
 // World), so it can be edited and built again with the map as donor: visual
 // faces name their material's texture, lightmap and surface (default Tierra),
 // collision faces their surface and, as the material's shade, the triangle's
-// Pyro byte. Vertices
+// Pyro byte, and each collision surface its colour. Vertices
 // are per face corner; props and scene instances stay in the map (build it
 // with keep_donor_props). An untextured material is texture `-#RRGGBBAA`
 // (visual) or `-` (collision).
 [[nodiscard]] DecodeResult<WorldSource> world_source_from_map(const WorldModel& visual, const WorldModel& collision);
 
 // Appends `part` to `target`: its vertices, faces (materials merged by
-// texture, surface and shade), props and pieces. With `placed`, the part's
+// texture, surface and shade), props, pieces and the surface colours `target`
+// does not have yet. With `placed`, the part's
 // vertices and normals are turned `yaw_degrees` about +Y (as props and pieces
 // are) and moved by `offset`.
 struct WorldSourcePlacement {
