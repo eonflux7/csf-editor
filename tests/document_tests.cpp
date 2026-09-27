@@ -669,8 +669,8 @@ void test_settings_model() {
             return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
         };
         CHECK(read(current / "settings.ini").find((current / "projects" / "P").string()) != std::string::npos);
-        CHECK(read(current / "projects" / "P" / "mission" / ".csf-mod-state").find("csf-editor/projects/P/mission/a.gsc") !=
-              std::string::npos);
+        CHECK(read(current / "projects" / "P" / "mission" / ".csf-mod-state")
+                  .find((current / "projects" / "P" / "mission" / "a.gsc").string()) != std::string::npos);
         CHECK(read(current / "projects" / "P" / "build" / ".csf-mod-state").find("csf-rws-tools") != std::string::npos);
         // Once moved, nothing happens again.
         std::filesystem::create_directories(legacy);

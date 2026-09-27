@@ -137,6 +137,29 @@ bool below(const std::filesystem::path& child, const std::filesystem::path& pare
 
 std::string timestamp();
 
+#ifdef _WIN32
+// One argument as the C runtime's command-line parser reads it back:
+// _wspawnvp joins the arguments with spaces and quotes none of them, so a path
+// with a space ("CSF Mission Editor\\projects") would split.
+std::wstring command_line_argument(const std::wstring& argument) {
+    if (!argument.empty() && argument.find_first_of(L" \t\n\v\"") == std::wstring::npos) return argument;
+    std::wstring quoted = L"\"";
+    for (auto it = argument.begin();; ++it) {
+        std::size_t backslashes = 0;
+        for (; it != argument.end() && *it == L'\\'; ++it) ++backslashes;
+        if (it == argument.end()) {
+            quoted.append(backslashes * 2, L'\\');  // before the closing quote
+            break;
+        }
+        if (*it == L'"') quoted.append(backslashes * 2 + 1, L'\\');
+        else quoted.append(backslashes, L'\\');
+        quoted.push_back(*it);
+    }
+    quoted.push_back(L'"');
+    return quoted;
+}
+#endif
+
 void run_process(const std::vector<std::string>& arguments) {
     if (arguments.empty()) throw std::runtime_error("Cannot run an empty command");
 #ifdef _WIN32
@@ -151,11 +174,14 @@ void run_process(const std::vector<std::string>& arguments) {
                             static_cast<int>(argument.size()), wide.data(), needed);
         storage.push_back(std::move(wide));
     }
+    std::vector<std::wstring> quoted;
+    quoted.reserve(storage.size());
+    for (const auto& value : storage) quoted.push_back(command_line_argument(value));
     std::vector<const wchar_t*> argv;
-    argv.reserve(storage.size() + 1);
-    for (const auto& value : storage) argv.push_back(value.c_str());
+    argv.reserve(quoted.size() + 1);
+    for (const auto& value : quoted) argv.push_back(value.c_str());
     argv.push_back(nullptr);
-    const auto status = _wspawnvp(_P_WAIT, argv.front(), argv.data());
+    const auto status = _wspawnvp(_P_WAIT, storage.front().c_str(), argv.data());
     if (status == -1) throw std::runtime_error("Cannot start pakman-cli");
     if (status != 0) throw std::runtime_error("pakman-cli failed with exit code " +
                                               std::to_string(status));
