@@ -4644,6 +4644,7 @@ int run_tests() {
             std::ifstream copied(donor_project / "build" / "Maps" / "X" / "Textures" / "D2_roof.dds", std::ios::binary);
             CHECK(std::string(std::istreambuf_iterator<char>(copied), {}) == "donor roof");
             CHECK(!pieces.build_world().rebuilt);
+            copied.close();  // Windows cannot delete an open file
             std::filesystem::remove_all(donor_root);
         }
 
@@ -4773,6 +4774,7 @@ int run_tests() {
         std::ifstream merged_file(project_dir / "build" / "world.csfworld", std::ios::binary);
         const auto merged = rws::parse_world_source(
             std::string((std::istreambuf_iterator<char>(merged_file)), std::istreambuf_iterator<char>()));
+        merged_file.close();  // the builds below replace the file, and Windows cannot while it is open
         // The terrain as modelled, then the hut turned 90 degrees and moved to each placement.
         CHECK(merged && merged.value->vertices.size() == 3 * source.value->vertices.size());
         const auto& corner = merged.value->vertices[source.value->vertices.size() + 1].position;  // hut (0 0 100)
