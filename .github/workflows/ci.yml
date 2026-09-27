@@ -11,6 +11,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # pak-man (eonflux7/csf-pak-man) builds mission archives into the packaged
+  # editor; the packages check it out beside this repository at this commit.
+  PAKMAN_REF: 6ff3310a9b4444d22627c6d49db3762e41ff3908
+  PACKAGE_TARGETS: csf-editor csf-mod csf-info rws-info rws-corpus
+
 jobs:
   core-tests:
     name: Core tests
@@ -71,3 +77,106 @@ jobs:
         with:
           name: ui-test-output
           path: build/ui-tests/out
+
+  package-linux:
+    name: Package (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          path: csf-editor
+
+      - name: Check out pak-man
+        uses: actions/checkout@v7
+        with:
+          repository: eonflux7/csf-pak-man
+          ref: ${{ env.PAKMAN_REF }}
+          path: pak-man
+
+      - name: Install build tools and GLFW dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y ninja-build
+          libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev
+          libwayland-dev libxkbcommon-dev wayland-protocols
+
+      - name: Build Release
+        working-directory: csf-editor
+        # The C++ runtime is linked in, so the build runs on distributions older than the runner.
+        run: |
+          cmake --preset linux -DRWSMAN_BUILD_TESTS=OFF -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+          cmake --build --preset linux-release --target $PACKAGE_TARGETS
+
+      - name: Package
+        working-directory: csf-editor
+        run: python3 tools/package_release.py build build/Release "csf-editor-${GITHUB_SHA::7}-linux-x64" dist
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: csf-editor-linux-x64
+          path: csf-editor/dist/*.tar.gz
+          if-no-files-found: error
+
+  package-windows:
+    name: Package (Windows)
+    runs-on: windows-2025-vs2026
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          path: csf-editor
+
+      - name: Check out pak-man
+        uses: actions/checkout@v7
+        with:
+          repository: eonflux7/csf-pak-man
+          ref: ${{ env.PAKMAN_REF }}
+          path: pak-man
+
+      - name: Build Release
+        working-directory: csf-editor
+        shell: pwsh
+        run: |
+          cmake --preset default -DRWSMAN_BUILD_TESTS=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset release --target $env:PACKAGE_TARGETS.Split(' ')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Package
+        working-directory: csf-editor
+        shell: pwsh
+        run: python tools/package_release.py build build/Release "csf-editor-$($env:GITHUB_SHA.Substring(0, 7))-windows-x64" dist
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: csf-editor-windows-x64
+          path: csf-editor/dist/*.zip
+          if-no-files-found: error
+
+  publish-latest:
+    name: Publish the latest build
+    # Only main, and only once every test and both packages passed.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [core-tests, gui-build, linux-core-tests, linux-ui-tests, package-linux, package-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: csf-editor-*
+          path: dist
+          merge-multiple: true
+
+      - name: Replace the "latest" pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/* --prerelease --target "$GITHUB_SHA" \
+            --title "Latest build (main, ${GITHUB_SHA::7})" \
+            --notes "Built from main at $GITHUB_SHA by CI; replaced on every push to main. Linux (x64, X11 or Wayland with OpenGL) and Windows (x64). Unpack and run csf-editor; see the README for setup."

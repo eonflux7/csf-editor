@@ -3,8 +3,11 @@ cmake_minimum_required(VERSION 3.24)
 project(csf-editor VERSION 0.1.0 LANGUAGES CXX)
 
 # Sources are UTF-8, and narrow literals such as "\u00b7" must stay UTF-8 on MSVC too.
+# One static C++ runtime for every target and dependency (pak-man and GLFW
+# follow it): the Windows executables run without the VC++ redistributable.
 if(MSVC)
     add_compile_options(/utf-8)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
 option(RWSMAN_BUILD_GUI "Build the Dear ImGui desktop application" ON)
@@ -162,6 +165,7 @@ if(RWSMAN_BUILD_GUI)
     set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+    set(USE_MSVC_RUNTIME_LIBRARY_DLL OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(glfw
         GIT_REPOSITORY https://github.com/glfw/glfw.git
         GIT_TAG 3.4

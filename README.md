@@ -18,6 +18,17 @@ plays in the game. No game files are included: the editor reads the unpacked
 game from your own installation. This project is not affiliated with Pyro
 Studios, Eidos Interactive, or the RenderWare rights holders.
 
+## Download
+
+The [latest build](https://github.com/eonflux7/csf-editor/releases/tag/latest)
+of `main` is on the Releases page: `csf-editor-<commit>-windows-x64.zip`
+(Windows 10 or later, x64) and `csf-editor-<commit>-linux-x64.tar.gz` (x64,
+X11 or Wayland with OpenGL). Each holds the editor, the command-line tools and
+the Blender add-ons in `tools/blender`. CI replaces it after every push to
+`main` that passes the tests; every CI run also keeps the same packages as
+workflow artifacts. You still need the game's unpacked resources and Blender
+(for map authoring); see [Mission editor](docs/guides/mission-editor.md).
+
 ## Features
 
 **Making missions** (Mission and Script modes):
