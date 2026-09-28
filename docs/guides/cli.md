@@ -226,9 +226,10 @@ It writes:
 | `maps/<Mission>/visual.gltf` | The map, as `rws-info --export-scene-gltf` writes it (with its `.bin` and `.manifest.json`), with textures bound (below) |
 | `maps/<Mission>/collision.gltf` | The collision World, as `--export-collision-gltf` writes it |
 | `maps/<Mission>/sky.gltf` | The sky dome the mission's `.vis` names, when it has one: a sphere of about 42 m to draw around the camera |
-| `maps/<Mission>/markers.json` | Actors (with the logical ID of their model), navigation groups, links, areas and dummies, in game centimetres |
+| `maps/<Mission>/markers.json` | Actors (with the logical ID of their model), navigation groups as routes, their links, areas and dummies, in metres and radians (below) |
 | `characters/<model>.gltf` | One model per actor class whose model lives under `Models/Char`: skinned, on a skeleton named and shaped for Godot's `SkeletonProfileHumanoid` (below) |
-| `anims/<stance>.gltf` | A clip library: the skeleton and one animation per role (`anims/smg.gltf`: idle, walk, run, crouch_walk, shoot, reload, die, ...), no mesh |
+| `anims/<library>.gltf` | A clip library: the skeleton and its clips, no mesh. One per stance (`rifle`, `smg`, `pistol`: 55 roles each; `unarmed`: 14, the civilians'), `actions` (taken out, sitting, the MG post, car seats) and `custom` (the one-off scene clips of `Anims/Costum` under their own names: smoking, talking, repairing, ...) |
+| `weapons/<model>.gltf` | The third-person model (`Armas.bdd` `.FILE2`) of each character class's weapon, as `weapon/<model>` |
 | `props/<model>.gltf` | One model per other actor class |
 | `textures/<corpus path>.png` | Every texture those files name, decoded from DDS; the path is the source's, in lower case (`textures/ambush/maps/st08/textures/sdet_01a.png`) |
 
@@ -250,11 +251,58 @@ joints with `SkeletonProfileHumanoid` names (`Hips`, `LeftUpperArm`, ...; the
 rest keep `bone_<HAnim id>`) and moves three of them to the profile's parents
 (Hips under Root, the clavicles under the Chest, the holster dummies under the
 Hips); world poses and skinning are unchanged. Clips are sampled at 30 frames
-a second through `evaluate_pose`, the viewport's evaluator. Which clip plays
-which role is our own table in `src/csf_godot_export.cpp` (the game chooses
-by slot in code not joined to data yet); the manifest's `anim/<stance>` entry
-gives each role's `loop`, its `speed` in metres a second (`.VEL`; the clips
-stay in place) and its source.
+a second through `evaluate_pose`, the viewport's evaluator.
+
+Which clip plays which role is our own table in `src/csf_godot_export.cpp`
+(the game chooses by slot in code not joined to data yet), read from the clip
+names. Soldiers' clips are a weapon prefix (`SF` rifle, `SM` submachine gun,
+`SP` pistol) and a shared suffix, so the three stances have the same roles:
+`idle`, `idle_alert`, their `_fidget`s, `suspicious`; `walk` (and `_left`,
+`_right`), `walk_alert` (and `_back`, `_left`, `_right`), `run` (and `_back`,
+`_left`, `_right`, `_crouched`), `crouch`, `stand_up`, `crouch_idle`,
+`crouch_walk` (and directions); `shoot`, `crouch_shoot`, `reload`,
+`crouch_reload`, `throw_grenade`, `throw_grenade_b`; `hit`, `hit_alert`,
+`hit_leg`, `crouch_hit`, `gassed`, `crouch_gassed`; `die`, `crouch_die`,
+`run_die`, `die_blast`, `die_fire`, `die_gas`; and turns
+(`[alert_|crouch_]turn_{left,right}_{90,180}`). The turns' letters were
+measured, not guessed: `DG`/`AG`/`HG` start from the standing, alert and
+crouched poses (by the hips' height), `A` turns right and `B` left (by the
+hips' yaw). A class's stance comes from its weapons (`csf::godot_stance`:
+the first `.ARMAS` entry whose `Armas.bdd` `.TIPO` is a rifle, SMG, pistol or
+empty hands).
+
+A `weapon/<model>` entry has the weapon's `stance` and two frames, as 12
+numbers (basis columns x, y, z, then the origin) in the glTF's own space:
+`grip`, the frame the mesh hangs on, and `muzzle`, the frame whose 3ds Max
+user property is `tag=100`. On every shipped third-person weapon the grip's
+X runs along the barrel with Z up, its origin where the hand closes, and the
+muzzle is at the barrel's end. The weapon is held with its grip frame on the
+character's joint `bone_50` (HAnim 50, a dummy under the right hand): this
+was checked by eye against the alternative of hanging the Clump's root
+there, with rifle, SMG and pistol in their idle, aim and shoot poses.
+
+The manifest's `anim/<library>` entry has `roles`: each role's `loop`, its
+`speed` in metres a second (`.VEL`; the clips stay in place), `clip` (the
+original name) and `clips`. A role whose record lists several files has one
+clip each, the first named as the role and the others `<role>_2`, `_3`, ...
+(`die`, `die_2`), for the game to pick from. Each clip has its `source` and,
+when the record times sounds to it, `sounds`: `[seconds, sound ID]`. What the
+common sound `-2` is, is unknown: its times don't match the walk's foot
+plants, and some fall after the clip's end.
+
+`markers.json` (format `opencsf-markers`, version 1) uses the glTF files'
+axes and metres, so a position is where the map shows it. Angles are
+radians: `yaw` turns about +Y so that +Z, where every model faces, turns to
+(sin yaw, 0, cos yaw), then `pitch` turns about X (Godot's default Euler
+order: `rotation = (pitch, yaw, 0)`). It holds:
+
+| Key | Contents |
+|---|---|
+| `actors` | `id`, `name`, `class`; `kind`, the class's actor kind (`.TIPO` in `Objetos.bdd`, lower case: `aleman`, `ruso`, `player`, `decorativo`, `camion`, `item_arma`, ...); `faction` (`german`, `allied`, `neutral`, `player`) from the actor's `.BANDO`, else from its kind (humanoid kinds only; `ruso` counts as Allied, our reading); `asset`, the logical ID of its class's model; `stance` for characters with one (`rifle`, `smg`, `pistol`, `unarmed`), naming their clip library; `weapon`, the logical ID of the weapon that gives it, when it has a model; `position` (its `.CELDA` navigation point when it has one, else `.POS`), `yaw`, `pitch` when not 0, and `point`, that `[group, point]` |
+| `routes` | Each navigation group: `id`, `name`, `kind` (`.TIPO`: `path` 0, `patrol` 2, `cover` 3, `ladder` 4), `points` (`id`, `name` when set, `position`, `yaw`) and `links`, `[from point, to point]` pairs |
+| `route_links` | Links between two groups' points: `[group, point, group, point]` |
+| `areas` | `id`, `name`, floor polygon `points` and `height` |
+| `dummies` | `id`, `name`, `position`, `yaw`, `pitch` when not 0 |
 
 The output folder must be new, empty or an earlier export; the command refuses
 any other folder. Re-running it on the same corpus writes byte-identical files.

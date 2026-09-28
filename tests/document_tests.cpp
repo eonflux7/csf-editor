@@ -1012,6 +1012,88 @@ void write_text_file(const std::filesystem::path& path, const std::string_view t
     write_bytes(path, bytes);
 }
 
+// markers.json for the Godot export: metres and radians, the actor kind from
+// the class, the faction from .BANDO else the kind, routes by .TIPO.
+void test_godot_markers() {
+    const auto root = std::filesystem::temp_directory_path() / "csf-editor-godot-markers-tests";
+    std::filesystem::remove_all(root);
+    const auto package = root / "Mission";
+    const auto map = package / "Maps" / "M1";
+    write_bytes(map / "M1.scn", compile_source(R"([
+  .VERSION 17
+  .BICHOS (
+    [ .NOMBRE Guard .ID 1 .CLASSID 10 .POS (0.0 0.0 0.0) .ANGULO 90.0 .CELDA [ .GRUPO 3 .PUNTO 2 ] ]
+    [ .NOMBRE Prisoner .ID 2 .CLASSID 10 .POS (100.0 0.0 0.0) .ANGULO 0.0 .BANDO NEUTRO ]
+    [ .NOMBRE Barrel .ID 3 .CLASSID 29 .POS (250.0 50.0 -100.0) .ANGULO -180.0 .ANGULO_X 90.0 ]
+    [ .NOMBRE Nothing .ID 4 .CLASSID 77 .POS (0.0 0.0 0.0) .ANGULO 0.0 ]
+  )
+  .MALLA_NAVEGACION [
+    .GRUPOS (
+      [ .ID 3 .NOMBRE Parapets .TIPO 3 .PUNTOS (
+          [ .ID 1 .NOMBRE Post .POS (0.0 0.0 0.0) .ROT 1.5 .ROT_X 0.0 ]
+          [ .ID 2 .NOMBRE "" .POS (300.0 10.0 -400.0) .ROT 0.0 .ROT_X 0.0 ] )
+        .CONEXIONES ( [ .PUNTO_ORI 1 .PUNTO_DST 2 ] ) ]
+      [ .ID 4 .NOMBRE Sweep .TIPO 2 .PUNTOS ( [ .ID 1 .NOMBRE "" .POS (500.0 0.0 0.0) .ROT 0.0 .ROT_X 0.0 ] )
+        .CONEXIONES ( ) ]
+    )
+    .CONEXIONES ( [ .GRUPO_ORI 3 .PUNTO_ORI 2 .GRUPO_DST 4 .PUNTO_DST 1 ] )
+  ]
+  .MALLA_DUMMIES [ .DUMMIES ( [ .ID 2 .NOMBRE Cam .POS (100.0 200.0 300.0) .ROT 0.5 .ROT_X -0.25 ] ) ]
+  .MALLA_AREAS [ .AREAS ( [ .ID 1 .FLAGS 1 .OCLUSION 1 .NOMBRE Z .HEIGHT 200.0 .REVERB 0 .LIMITREVERB 0
+    .PUNTOS ( [ .POS (0.0 0.0 0.0) ] [ .POS (1000.0 0.0 0.0) ] [ .POS (1000.0 0.0 1000.0) ] ) ] ) ]
+])"));
+    write_bytes(package / "BDD" / "Objetos.bdd", compile_source(R"([ .VERSION 10 .LISTADATOS (
+  [ .ID 10 .NOMBRE Soldier .TIPO ALEMAN .MODELO "Models\\Char\\AlSt.dff" ]
+  [ .ID 29 .NOMBRE Bidon .TIPO DECORATIVO .MODELO "Models\\Deco\\bidon.dff" ]
+) ])"));
+    const auto editor = csf::MissionEditor::open(map / "M1.scn", package);
+    const auto json = csf::godot_markers_json(editor.scene(), editor.objects(),
+                                              {{10, "character/alst"}, {29, "prop/bidon"}});
+    const auto has = [&](const std::string_view text) {
+        const bool found = json.find(text) != std::string::npos;
+        if (!found) std::cerr << "godot markers: missing " << text << "\nin " << json << '\n';
+        return found;
+    };
+    CHECK(json.starts_with("{\n\"format\":\"opencsf-markers\",\n\"version\":1,\n\"units\":\"metres\""));
+    // The guard stands on its cover point, not its .POS; 90 degrees is pi/2.
+    CHECK(has(R"({"id":1,"name":"Guard","class":10,"kind":"aleman","faction":"german","asset":"character/alst",)"
+              R"("position":[3,0.1,-4],"yaw":1.5707964,"point":[3,2]})"));
+    CHECK(has(R"({"id":2,"name":"Prisoner","class":10,"kind":"aleman","faction":"neutral","asset":"character/alst",)"
+              R"("position":[1,0,0],"yaw":0})"));
+    CHECK(has(R"({"id":3,"name":"Barrel","class":29,"kind":"decorativo","asset":"prop/bidon",)"
+              R"("position":[2.5,0.5,-1],"yaw":-3.1415927,"pitch":1.5707964})"));
+    CHECK(has(R"({"id":4,"name":"Nothing","class":77,"position":[0,0,0],"yaw":0})"));
+    CHECK(has(R"({"id":3,"name":"Parapets","kind":"cover","points":[{"id":1,"name":"Post","position":[0,0,0],"yaw":1.5},)"
+              R"({"id":2,"position":[3,0.1,-4],"yaw":0}],"links":[[1,2]]})"));
+    CHECK(has(R"({"id":4,"name":"Sweep","kind":"patrol",)"));
+    CHECK(has("\"route_links\":[\n[3,2,4,1]\n]"));
+    CHECK(has(R"({"id":1,"name":"Z","height":2,"points":[[0,0,0],[10,0,0],[10,0,10]]})"));
+    CHECK(has(R"({"id":2,"name":"Cam","position":[1,2,3],"yaw":0.5,"pitch":-0.25})"));
+    CHECK(csf::godot_markers_json(editor.scene(), editor.objects(), {}) ==
+          csf::godot_markers_json(editor.scene(), editor.objects(), {}));
+    // A class's stance is its first weapon held like a rifle, SMG or pistol, or
+    // empty hands; items are passed over, and a class without either has none.
+    const auto weapons = csf::WeaponDatabase::project(csf::Document::from_bytes(compile_source(R"([ .VERSION 10 .LISTADATOS (
+  [ .ID 6 .NOMBRE Mauser .TIPO RIFLE .FILE "Models\\Weap\\PPmauser.dff" ]
+  [ .ID 11 .NOMBRE Granada .TIPO Granada .FILE "Models\\Weap\\PPGrdUS.dff" ]
+  [ .ID 25 .NOMBRE Luger .TIPO PISTOLA .FILE "Models\\Weap\\PPLuger.dff" ]
+  [ .ID 26 .NOMBRE Mp40 .TIPO SMG .FILE "Models\\Weap\\PPmp40.dff" ]
+  [ .ID 70 .NOMBRE Desarmado .TIPO Desarmado .FILE "" ]
+) ])")));
+    const auto armed = [&](std::vector<std::int32_t> ids) {
+        csf::ObjectDefinition definition;
+        definition.weapon_ids = std::move(ids);
+        return csf::godot_stance(definition, weapons);
+    };
+    CHECK(armed({11, 26}) == "smg" && armed({6}) == "rifle" && armed({25, 6}) == "pistol" && armed({70}) == "unarmed");
+    CHECK(armed({11}).empty() && armed({}).empty() && armed({99}).empty());
+    CHECK(csf::godot_markers_json(editor.scene(), editor.objects(), {{10, "character/alst"}}, {{10, "rifle"}},
+                                  {{10, "weapon/tpmauser"}})
+              .find(R"("asset":"character/alst","stance":"rifle","weapon":"weapon/tpmauser","position":[3,0.1,-4])") !=
+          std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
 void test_actor_look() {
     const auto root = std::filesystem::temp_directory_path() / "csf-editor-actor-look-tests";
     std::filesystem::remove_all(root);
@@ -2352,6 +2434,7 @@ int run_tests() {
     test_csf_tree_and_source_text();
     test_mission_editor();
     test_actor_look();
+    test_godot_markers();
     {
         const std::array primitives{csf::ScreenOverlayPrimitive{1, csf::OverlayPrimitiveKind::point,
                                                                 10, 10, 10, 10, 0, true, false},

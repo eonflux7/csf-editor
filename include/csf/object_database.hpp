@@ -32,6 +32,7 @@ struct WeaponDefinition {
     CsfSourceId source;
     std::optional<std::int32_t> id;
     std::optional<std::string> name;
+    std::optional<std::string> type;  // .TIPO: RIFLE, SMG, PISTOLA, Granada, Desarmado, ...
     std::optional<std::string> first_person_model;
     std::optional<std::string> third_person_model;
     std::optional<std::string> hand;

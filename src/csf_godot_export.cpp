@@ -18,6 +18,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 
 namespace csf {
@@ -195,25 +196,325 @@ std::optional<std::int32_t> humanoid_joint_parent(const std::int32_t node_id) {
     }
 }
 
-// Which clip plays each role, per weapon stance. The game picks clips by
-// slot in code we have not joined to data yet (docs/format-reversal/anm,
-// KB-anm-3), so this is our reading of the clip names (Cm caminar = walk,
-// Cr correr = run, Id idle, Ag agachado = crouched, Disp disparar = shoot,
-// Al alerta, Recar recargar = reload) and their speeds (.VEL).
+// Which clip plays each role, per stance. The game picks clips by slot in
+// code we have not joined to data yet (docs/format-reversal/anm, KB-anm-3), so
+// these tables are our reading of the clip names. Soldiers share one scheme: a
+// weapon prefix (SF rifle, SM submachine gun, SP pistol) and a suffix: Id idle,
+// DPie standing, Aler/Al alert, Aga/Ag agachado (crouched), Ocio fidget, Cm
+// caminar (walk), Cr correr (run), Ade/Atr/Izq/Der forward/back/left/right
+// (Iz/De/At when walking), Cubi cubierto (bent over), Disp disparar (shoot),
+// Rec/Recar recargar (reload), Imp impacto (hit), Pier pierna (leg), Dead
+// (die), V volar (thrown by a blast), sospecha (suspicious), Levant stand up,
+// Agacha crouch down, G giro (turn) from D de pie (standing), A alert or H
+// crouched, to the right (A) or left (B): measured from the hips' height and
+// yaw in the exported clips. Speeds come from each clip's .VEL.
 struct ClipRole {
-    std::string_view stance, role, clip;
+    std::string stance, role, clip;
 };
-constexpr ClipRole clip_roles[]{
-    {"smg", "idle", "SMIdDPie"},        {"smg", "idle_alert", "SMIdAler"},  {"smg", "walk", "SMCm"},
-    {"smg", "walk_alert", "SMCmAler"},  {"smg", "run", "SMCrAde"},         {"smg", "crouch_idle", "SMIdAga"},
-    {"smg", "crouch_walk", "SMCmAgac"}, {"smg", "shoot", "SMDisp"},        {"smg", "crouch_shoot", "SMDispAg"},
-    {"smg", "reload", "SMRecar"},       {"smg", "die", "SMDeadAl"},        {"smg", "crouch_die", "SMDeadAg"},
+struct RoleClip {
+    std::string_view role, clip;
 };
+constexpr std::pair<std::string_view, std::string_view> soldier_stances[]{{"rifle", "SF"}, {"smg", "SM"}, {"pistol", "SP"}};
+constexpr RoleClip soldier_roles[]{
+    {"idle", "IdDPie"},           {"idle_fidget", "IdOcio"},      {"idle_alert", "IdAler"},
+    {"idle_alert_fidget", "IdAlertOcio"},                         {"suspicious", "sospecha"},
+    {"walk", "Cm"},               {"walk_left", "CmIz"},          {"walk_right", "CmDe"},
+    {"walk_alert", "CmAler"},     {"walk_alert_back", "CmAlAt"},  {"walk_alert_left", "CmAlIz"},
+    {"walk_alert_right", "CmAlDe"},
+    {"run", "CrAde"},             {"run_back", "CrAtr"},          {"run_left", "CrIzq"},
+    {"run_right", "CrDer"},       {"run_crouched", "CrCubi"},
+    {"crouch", "Agacha"},         {"stand_up", "Levant"},         {"crouch_idle", "IdAga"},
+    {"crouch_fidget", "IdAgaOcio"},
+    {"crouch_walk", "CmAgac"},    {"crouch_walk_back", "CmAgAt"}, {"crouch_walk_left", "CmAgIz"},
+    {"crouch_walk_right", "CmAgDe"},
+    {"shoot", "Disp"},            {"crouch_shoot", "DispAg"},     {"reload", "Recar"},
+    {"crouch_reload", "RecAg"},   {"throw_grenade", "GranadaA"},  {"throw_grenade_b", "GranadaB"},
+    {"hit", "Impac"},             {"hit_alert", "ImpAle"},        {"hit_leg", "ImpPier"},
+    {"crouch_hit", "ImpAg"},      {"gassed", "Gas"},              {"crouch_gassed", "AGas"},
+    {"die", "DeadAl"},            {"crouch_die", "DeadAg"},       {"run_die", "DeadCr"},
+    {"die_blast", "DeadV"},       {"die_fire", "DeadFire"},       {"die_gas", "DeadGas"},
+    {"turn_right_90", "DGA90"},   {"turn_right_180", "DGA180"},   {"turn_left_90", "DGB90"},
+    {"turn_left_180", "DGB180"},  {"alert_turn_right_90", "AGA90"},  {"alert_turn_right_180", "AGA180"},
+    {"alert_turn_left_90", "AGB90"},   {"alert_turn_left_180", "AGB180"},
+    {"crouch_turn_right_90", "HGA90"}, {"crouch_turn_right_180", "HGA180"},
+    {"crouch_turn_left_90", "HGB90"},  {"crouch_turn_left_180", "HGB180"},
+};
+// Civilians and the unarmed (Anims/Costum/Civil*).
+constexpr RoleClip unarmed_roles[]{
+    {"idle", "CivilIdle"},        {"idle_alert", "CivilIdleAler"}, {"walk", "CivilAnda"},
+    {"run", "CivilCr"},           {"crouch", "CivilAgachar"},      {"stand_up", "CivilLevantar"},
+    {"crouch_idle", "CivilIdleAgachado"},                          {"crouch_talk", "CivilAgachadoHabla"},
+    {"hit", "CivilImpac"},        {"crouch_hit", "CivilImpacAg"},
+    {"crouch_turn_right_90", "CivilHGA90"}, {"crouch_turn_right_180", "CivilHGA180"},
+    {"crouch_turn_left_90", "CivilHGB90"},  {"crouch_turn_left_180", "CivilHGB180"},
+};
+// Anything-stance actions from Anims/Enem: being taken out, sitting, the MG
+// post, the Kubelwagen seats (SPKuv, driver and back).
+constexpr RoleClip action_roles[]{
+    {"threatened", "Amenazado"},  {"stabbed", "Acuchillado"},     {"garrotted", "Ahorcado"},
+    {"strangled", "Estrangulado"}, {"strangle", "Estrangular"},   {"put_on_clothes", "EPonerseRopa"},
+    {"sit_idle", "SSDKReposo"},   {"sit_idle_unarmed", "SSDKReposo_Sin_Armas"},
+    {"sit_down", "SSDKSienta"},   {"sit_stand_up", "SSDKLevant"}, {"sit_die", "SSDKDead"},
+    {"mg_idle", "MGId1"},         {"mg_shoot", "MGDisp"},         {"mg_die", "MGDead"},
+    {"car_idle", "SPKuvIdle"},    {"car_in", "SPKuvIn"},          {"car_out", "SPKuvOut"},
+    {"car_die", "SPKuvDead"},     {"car_back_idle", "SPKuvBackIdle"}, {"car_back_in", "SPKuvBackIn"},
+    {"car_back_out", "SPKuvBackOut"}, {"car_back_die", "SPKuvBackDead"},
+};
+
+std::vector<ClipRole> clip_roles() {
+    std::vector<ClipRole> roles;
+    for (const auto& [stance, prefix] : soldier_stances)
+        for (const auto& role : soldier_roles)
+            roles.push_back({std::string(stance), std::string(role.role), std::string(prefix) + std::string(role.clip)});
+    for (const auto& role : unarmed_roles) roles.push_back({"unarmed", std::string(role.role), std::string(role.clip)});
+    for (const auto& role : action_roles) roles.push_back({"actions", std::string(role.role), std::string(role.clip)});
+    return roles;
+}
+
 
 // One manifest entry: its logical ID and its fields, already JSON.
 using ManifestEntry = std::vector<std::pair<std::string, std::string>>;
 
+constexpr std::string_view markers_format = "opencsf-markers";
+constexpr float units_per_metre = 100.0F;  // divided, so 10 units print as 0.1
+constexpr float radians_per_degree = 0.01745329251994329577F;
+
+std::string json_number(const float value) {
+    std::array<char, 32> buffer{};
+    const auto end = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value == 0.0F ? 0.0F : value).ptr;
+    return {buffer.data(), end};
+}
+
+std::string json_metres(const Vec3& v) {
+    return "[" + json_number(v.x / units_per_metre) + "," + json_number(v.y / units_per_metre) + "," +
+           json_number(v.z / units_per_metre) + "]";
+}
+
+// Navigation group .TIPO (docs/format-reversal/scn, KB-scn-11).
+std::string route_kind(const std::int32_t type) {
+    switch (type) {
+    case 0: return "path";
+    case 2: return "patrol";
+    case 3: return "cover";
+    case 4: return "ladder";
+    default: return "type_" + std::to_string(type);
+    }
+}
+
+// Which side an actor is on: its own .BANDO when it has one (shipped values:
+// ALEMAN, ALIADO, NEUTRO), else what its class's actor kind (.TIPO in
+// Objetos.bdd) implies. Only the humanoid kinds imply one (Russians fight on
+// the Allied side: our reading); vehicles, items and scenery have none.
+std::string faction_of(const std::optional<std::string>& bando, const std::string_view kind) {
+    if (bando) {
+        const auto value = lower(*bando);
+        if (value == "aleman") return "german";
+        if (value == "aliado") return "allied";
+        if (value == "neutro") return "neutral";
+        return value;
+    }
+    if (kind == "player") return "player";
+    if (kind == "aleman") return "german";
+    if (kind == "ruso") return "allied";
+    return {};
+}
+
 } // namespace
+
+namespace {
+
+// The stance a weapon's .TIPO puts its holder in (see godot_stance), or empty.
+std::string weapon_stance(const WeaponDefinition& weapon) {
+    if (!weapon.type) return {};
+    const auto type = lower(*weapon.type);
+    if (type == "rifle" || type == "rifle_precision" || type == "escopeta" || type == "mg") return "rifle";
+    if (type == "smg") return "smg";
+    if (type == "pistola" || type == "pistola_silenciador") return "pistol";
+    if (type == "desarmado" || type == "mano") return "unarmed";
+    return {};
+}
+
+// The weapon that gives a class its stance: its first that has one.
+const WeaponDefinition* held_weapon(const ObjectDefinition& definition, const WeaponDatabase& weapons) {
+    for (const auto id : definition.weapon_ids)
+        if (const auto* weapon = weapons.find_id(id); weapon && !weapon_stance(*weapon).empty()) return weapon;
+    return nullptr;
+}
+
+using Transform = std::array<float, 12>;  // basis columns x, y, z, then origin
+
+// A weapon model's attachment frames in the space its glTF is written in
+// (the Clump's, in metres): `grip`, the frame its mesh hangs on, whose origin
+// is where the hand closes (on every shipped third-person weapon: X along the
+// barrel, Z up), and `muzzle`, the frame whose 3ds Max user property is
+// tag=100 (at the barrel's end on every one).
+struct WeaponFrames {
+    std::optional<Transform> grip, muzzle;
+};
+WeaponFrames weapon_frames(const rws::Chunk& clump, const std::span<const std::byte> bytes) {
+    WeaponFrames result;
+    const auto* list = rws::find_child(clump, 0x0E);
+    const auto frames = list ? rws::decode_frame_list(*list, bytes) : rws::DecodeResult<rws::FrameListInfo>{};
+    if (!frames) return result;
+    const auto& info = frames.value->frames;
+    // RenderWare stores a frame's axes as rows (right, up, at): they are the basis columns.
+    std::vector<std::optional<Transform>> world(info.size());
+    const auto resolve = [&](auto&& self, const std::size_t index, const int depth) -> std::optional<Transform> {
+        if (index >= info.size() || depth > 64) return std::nullopt;
+        if (world[index]) return world[index];
+        const auto& frame = info[index];
+        Transform local{frame.rotation[0], frame.rotation[1], frame.rotation[2], frame.rotation[3], frame.rotation[4],
+                        frame.rotation[5], frame.rotation[6], frame.rotation[7], frame.rotation[8],
+                        frame.position.x * 0.01F, frame.position.y * 0.01F, frame.position.z * 0.01F};
+        if (frame.parent >= 0) {
+            const auto parent = self(self, static_cast<std::size_t>(frame.parent), depth + 1);
+            if (!parent) return std::nullopt;
+            Transform composed{};
+            for (int column = 0; column < 4; ++column)
+                for (int row = 0; row < 3; ++row) {
+                    float value = column == 3 ? (*parent)[9 + row] : 0.0F;
+                    for (int k = 0; k < 3; ++k) value += (*parent)[k * 3 + row] * local[column * 3 + k];
+                    composed[column * 3 + row] = value;
+                }
+            local = composed;
+        }
+        return world[index] = local;
+    };
+    for (const auto& child : clump.children)
+        if (child.type == 0x14) {
+            if (const auto atomic = rws::decode_atomic(child, bytes); atomic && atomic.value->frame_index >= 0)
+                result.grip = resolve(resolve, static_cast<std::size_t>(atomic.value->frame_index), 0);
+            break;
+        }
+    // Frame extensions follow the list's Struct, one per frame, in order.
+    std::size_t index = 0;
+    for (const auto& extension : list->children) {
+        if (extension.type != 0x03) continue;
+        if (const auto* user = rws::find_child(extension, 0x11F))
+            if (const auto data = rws::decode_user_data(*user, bytes))
+                for (const auto& array : data.value->arrays)
+                    for (const auto& text : array.strings)
+                        if (text == "tag=100") result.muzzle = resolve(resolve, index, 0);
+        ++index;
+    }
+    return result;
+}
+
+std::string json_transform(const Transform& transform) {
+    std::string out = "[";
+    for (std::size_t i = 0; i < transform.size(); ++i) out += (i ? "," : "") + json_number(transform[i]);
+    return out + "]";
+}
+
+} // namespace
+
+std::string godot_stance(const ObjectDefinition& definition, const WeaponDatabase& weapons) {
+    const auto* weapon = held_weapon(definition, weapons);
+    return weapon ? weapon_stance(*weapon) : std::string{};
+}
+
+// The mission's placements for a game engine, in its own units: metres on the
+// glTF axes (the map's), angles in radians. `yaw` turns about +Y so that +Z,
+// where every model faces, turns to (sin yaw, 0, cos yaw); `pitch` turns about
+// X after it (Godot's default YXZ Euler order: rotation = (pitch, yaw, 0)).
+std::string godot_markers_json(const MissionScene& scene, const ObjectDatabase& objects,
+                               const std::map<std::int32_t, std::string>& class_assets,
+                               const std::map<std::int32_t, std::string>& class_stances,
+                               const std::map<std::int32_t, std::string>& class_weapons) {
+    std::string out = "{\n\"format\":" + json_string(markers_format) +
+                      ",\n\"version\":1,\n\"units\":\"metres\",\n\"up\":\"Y\",\n\"actors\":[";
+    bool first = true;
+    for (const auto& actor : scene.actors()) {
+        const auto position = scene.actor_spawn_position(actor);
+        if (!actor.id || !position) continue;
+        std::string kind, asset, stance, weapon;
+        if (actor.class_id) {
+            if (const auto definitions = objects.find_class(*actor.class_id); definitions.size() == 1 && definitions.front()->type)
+                kind = lower(*definitions.front()->type);
+            if (const auto found = class_assets.find(*actor.class_id); found != class_assets.end()) asset = found->second;
+            if (const auto found = class_stances.find(*actor.class_id); found != class_stances.end()) stance = found->second;
+            if (const auto found = class_weapons.find(*actor.class_id); found != class_weapons.end()) weapon = found->second;
+        }
+        const auto faction = faction_of(actor.faction, kind);
+        out += std::string(first ? "\n" : ",\n") + "{\"id\":" + std::to_string(*actor.id) +
+               ",\"name\":" + json_string(actor.name.value_or("")) + ",\"class\":" + std::to_string(actor.class_id.value_or(-1));
+        if (!kind.empty()) out += ",\"kind\":" + json_string(kind);
+        if (!faction.empty()) out += ",\"faction\":" + json_string(faction);
+        if (!asset.empty()) out += ",\"asset\":" + json_string(asset);
+        if (!stance.empty()) out += ",\"stance\":" + json_string(stance);
+        if (!weapon.empty()) out += ",\"weapon\":" + json_string(weapon);
+        out += ",\"position\":" + json_metres(*position) +
+               ",\"yaw\":" + json_number(actor.heading.value_or(0) * radians_per_degree);
+        if (actor.pitch.value_or(0) != 0) out += ",\"pitch\":" + json_number(*actor.pitch * radians_per_degree);
+        // The navigation point it stands on (.CELDA), which names its route or post.
+        if (actor.group && actor.cell && *actor.group >= 0 && *actor.cell >= 0)
+            out += ",\"point\":[" + std::to_string(*actor.group) + "," + std::to_string(*actor.cell) + "]";
+        out += "}";
+        first = false;
+    }
+    out += "\n],\n\"routes\":[";
+    first = true;
+    for (const auto& group : scene.navigation()) {
+        if (!group.id) continue;
+        out += std::string(first ? "\n" : ",\n") + "{\"id\":" + std::to_string(*group.id) +
+               ",\"name\":" + json_string(group.name.value_or("")) +
+               ",\"kind\":" + json_string(route_kind(group.type.value_or(0))) + ",\"points\":[";
+        bool first_point = true;
+        for (const auto& point : group.points) {
+            if (!point.id || !point.position) continue;
+            out += std::string(first_point ? "" : ",") + "{\"id\":" + std::to_string(*point.id);
+            if (point.name && !point.name->empty()) out += ",\"name\":" + json_string(*point.name);
+            out += ",\"position\":" + json_metres(*point.position);
+            if (point.heading) out += ",\"yaw\":" + json_number(*point.heading);  // .ROT is already radians
+            out += "}";
+            first_point = false;
+        }
+        out += "],\"links\":[";
+        first_point = true;
+        for (const auto& link : group.connections) {
+            if (!link.origin_point || !link.destination_point) continue;
+            out += std::string(first_point ? "" : ",") + "[" + std::to_string(*link.origin_point) + "," +
+                   std::to_string(*link.destination_point) + "]";
+            first_point = false;
+        }
+        out += "]}";
+        first = false;
+    }
+    // Links between points of different routes: [group, point, group, point].
+    out += "\n],\n\"route_links\":[";
+    first = true;
+    for (const auto& link : scene.cross_group_connections()) {
+        if (!link.origin_group || !link.origin_point || !link.destination_group || !link.destination_point) continue;
+        out += std::string(first ? "\n" : ",\n") + "[" + std::to_string(*link.origin_group) + "," +
+               std::to_string(*link.origin_point) + "," + std::to_string(*link.destination_group) + "," +
+               std::to_string(*link.destination_point) + "]";
+        first = false;
+    }
+    // Areas are floor polygons extruded `height` metres up.
+    out += "\n],\n\"areas\":[";
+    first = true;
+    for (const auto& area : scene.areas()) {
+        if (!area.id) continue;
+        out += std::string(first ? "\n" : ",\n") + "{\"id\":" + std::to_string(*area.id) +
+               ",\"name\":" + json_string(area.name.value_or("")) +
+               ",\"height\":" + json_number(area.height.value_or(0) / units_per_metre) + ",\"points\":[";
+        for (std::size_t i = 0; i < area.points.size(); ++i) out += (i ? "," : "") + json_metres(area.points[i]);
+        out += "]}";
+        first = false;
+    }
+    out += "\n],\n\"dummies\":[";
+    first = true;
+    for (const auto& dummy : scene.dummies()) {
+        if (!dummy.id || !dummy.position) continue;
+        out += std::string(first ? "\n" : ",\n") + "{\"id\":" + std::to_string(*dummy.id) +
+               ",\"name\":" + json_string(dummy.name.value_or("")) + ",\"position\":" + json_metres(*dummy.position) +
+               ",\"yaw\":" + json_number(dummy.heading.value_or(0));
+        if (dummy.pitch.value_or(0) != 0) out += ",\"pitch\":" + json_number(*dummy.pitch);
+        out += "}";
+        first = false;
+    }
+    return out + "\n]\n}\n";
+}
 
 GodotExportResult export_godot(const GodotExportOptions& options) {
     GodotExportResult result;
@@ -331,69 +632,164 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         }
     }
 
-    // Clip libraries: per weapon stance, the role clips on the first skinned
-    // character's skeleton (every human shares it), named by role.
+    // Each character class's stance, from its weapons (Armas.bdd), and the
+    // third-person model (.FILE2) of the weapon that gives it, as
+    // weapon/<model stem>: its mesh, and its grip and muzzle frames in the
+    // manifest.
+    std::map<std::int32_t, std::string> class_stances, class_weapons;
+    if (editor)
+        if (const auto file = editor->file_of_kind(MissionFileKind::weapons)) {
+            const auto weapons = WeaponDatabase::project(editor->document(*file));
+            const auto resources = editor->resource_index(package);
+            for (const auto& [class_id, id] : class_ids) {
+                if (!id.starts_with("character/")) continue;
+                const auto definitions = editor->objects().find_class(class_id);
+                if (definitions.size() != 1) continue;
+                const auto* weapon = held_weapon(*definitions.front(), weapons);
+                if (!weapon) continue;
+                class_stances[class_id] = weapon_stance(*weapon);
+                if (!weapon->third_person_model || weapon->third_person_model->empty()) continue;
+                const auto resolution = resources.resolve(*weapon->third_person_model);
+                if (resolution.candidate_indices.size() != 1) {
+                    result.problems.push_back("weapon " + weapon->name.value_or("?") + ": " + *weapon->third_person_model +
+                                              " not found");
+                    continue;
+                }
+                const auto& model_path = resources.resources()[resolution.candidate_indices.front()].path;
+                const auto stem = lower(model_path.stem().string());
+                const auto weapon_id = "weapon/" + stem;
+                class_weapons[class_id] = weapon_id;
+                if (assets.contains(weapon_id)) continue;
+                const auto weapon_file = std::filesystem::path("weapons") / (stem + ".gltf");
+                try {
+                    const auto model = rws::Document::load(model_path);
+                    (void)rws::export_scene_gltf(model.chunks(), model.scene_instances(), model.bytes(), options.out / weapon_file,
+                                                 textures.resolver(model_path, options.out / weapon_file));
+                    ManifestEntry entry{{"file", json_string(weapon_file.generic_string())},
+                                        {"source", json_string(source(model_path))},
+                                        {"stance", json_string(weapon_stance(*weapon))}};
+                    if (!model.chunks().empty() && model.chunks().front().type == 0x10) {
+                        const auto frames = weapon_frames(model.chunks().front(), model.bytes());
+                        if (frames.grip) entry.emplace_back("grip", json_transform(*frames.grip));
+                        if (frames.muzzle) entry.emplace_back("muzzle", json_transform(*frames.muzzle));
+                        if (!frames.grip) result.problems.push_back(weapon_id + ": no grip frame");
+                    }
+                    assets[weapon_id] = std::move(entry);
+                    result.lines.push_back("weapon\t" + weapon_file.generic_string());
+                } catch (const std::exception& error) {
+                    result.problems.push_back(weapon_id + " (" + source(model_path) + "): " + error.what());
+                    class_weapons.erase(class_id);
+                }
+            }
+        }
+
+    // Clip libraries: per stance, the role clips on the first skinned
+    // character's skeleton (every human shares it), named by role. A role
+    // whose record has several files (die, fidgets) gets one clip each: the
+    // first under the role's name, the others as <role>_2, <role>_3, ...; the
+    // game picks one at random (our reading). `custom` holds the one-off scene
+    // clips (Anims/Costum: smoking, talking, repairing, ...) under their own
+    // names, for missions to play.
     if (editor && !skeletons.empty()) {
         const auto& [skeleton_id, skeleton_path] = *skeletons.begin();
         const auto resources = editor->resource_index(package);
+        const auto& records = editor->animations().records();
+        auto roles = clip_roles();
+        std::set<std::string> taken;
+        for (const auto& role : roles) taken.insert(lower(role.clip));
+        for (const auto& record : records) {
+            if (record.variants.empty() || taken.contains(lower(record.logical_name))) continue;
+            if (lower(record.variants.front().reference).find("costum\\") == std::string::npos) continue;
+            taken.insert(lower(record.logical_name));
+            roles.push_back({"custom", lower(record.logical_name), record.logical_name});
+        }
         std::map<std::string, std::vector<const ClipRole*>> stances;
-        for (const auto& role : clip_roles) stances[std::string(role.stance)].push_back(&role);
-        for (const auto& [stance, roles] : stances) {
+        for (const auto& role : roles) stances[role.stance].push_back(&role);
+        for (const auto& [stance, stance_roles] : stances) {
             std::vector<rws::CharacterClip> clips;
-            std::string clip_fields;
-            for (const auto* role : roles) {
-                const auto record = std::ranges::find_if(editor->animations().records(), [&](const AnimationRecord& r) {
-                    return lower(r.logical_name) == lower(std::string(role->clip));
+            // Per role: its manifest fields but for `clips`, then each clip's name and fields.
+            std::vector<std::pair<std::string, std::string>> role_fields;
+            std::vector<std::vector<std::pair<std::string, std::string>>> role_clips;
+            for (const auto* role : stance_roles) {
+                const auto record = std::ranges::find_if(records, [&](const AnimationRecord& r) {
+                    return lower(r.logical_name) == lower(role->clip);
                 });
-                if (record == editor->animations().records().end() || record->variants.empty()) {
-                    result.problems.push_back("anim " + stance + "/" + std::string(role->role) + ": no clip " + std::string(role->clip));
-                    continue;
-                }
-                const auto resolution = resources.resolve(record->variants.front().reference);
-                if (resolution.candidate_indices.size() != 1) {
-                    result.problems.push_back("anim " + stance + "/" + std::string(role->role) + ": " +
-                                              record->variants.front().reference + " not found");
-                    continue;
-                }
-                const auto& path = resources.resources()[resolution.candidate_indices.front()].path;
-                const auto document = rws::Document::load(path);
-                const auto clip_chunk = std::ranges::find_if(document.chunks(), [](const rws::Chunk& c) { return c.type == 0x1B; });
-                if (clip_chunk == document.chunks().end()) {
-                    result.problems.push_back("anim " + source(path) + ": no Animation chunk");
+                if (record == records.end() || record->variants.empty()) {
+                    result.problems.push_back("anim " + stance + "/" + role->role + ": no clip " + role->clip);
                     continue;
                 }
                 const bool loop = record->loop.value_or(false);
-                clips.push_back({std::string(role->role), rws::decode_animation(*clip_chunk, document.bytes()), loop});
+                std::vector<std::pair<std::string, std::string>> variants;
+                for (const auto& variant : record->variants) {
+                    const auto name = variants.empty() ? role->role : role->role + "_" + std::to_string(variants.size() + 1);
+                    const auto resolution = resources.resolve(variant.reference);
+                    if (resolution.candidate_indices.size() != 1) {
+                        result.problems.push_back("anim " + stance + "/" + name + ": " + variant.reference + " not found");
+                        continue;
+                    }
+                    const auto& path = resources.resources()[resolution.candidate_indices.front()].path;
+                    const auto document = rws::Document::load(path);
+                    const auto clip_chunk = std::ranges::find_if(document.chunks(), [](const rws::Chunk& c) { return c.type == 0x1B; });
+                    if (clip_chunk == document.chunks().end()) {
+                        result.problems.push_back("anim " + source(path) + ": no Animation chunk");
+                        continue;
+                    }
+                    clips.push_back({name, rws::decode_animation(*clip_chunk, document.bytes()), loop});
+                    // Sounds the clip starts at a time: [seconds, sound ID]. What -2 is, is
+                    // unknown: its times don't line up with the walk's foot plants.
+                    std::string sounds;
+                    for (const auto& sound : variant.sounds) {
+                        if (!sound.time) continue;
+                        sounds += std::string(sounds.empty() ? "" : ",") + "[" + json_number(*sound.time) + "," +
+                                  json_string(sound.logical_id) + "]";
+                    }
+                    variants.emplace_back(name, "{\"source\": " + json_string(source(path)) +
+                                                    (sounds.empty() ? "" : ", \"sounds\": [" + sounds + "]") + "}");
+                }
+                if (variants.empty()) continue;
                 // The engine moves the actor at .VEL game units a second; the clips stay in place.
-                const auto speed = record->velocity_scalar.value_or(0.0F) * 0.01F;
-                std::array<char, 32> buffer{};
-                const auto end = std::to_chars(buffer.data(), buffer.data() + buffer.size(), speed).ptr;
-                clip_fields += std::string(clip_fields.empty() ? "" : ", ") + json_string(role->role) + ": {\"loop\": " +
-                               (loop ? "true" : "false") + ", \"speed\": " + std::string(buffer.data(), end) +
-                               ", \"source\": " + json_string(source(path)) + "}";
+                role_fields.emplace_back(role->role, "\"loop\": " + std::string(loop ? "true" : "false") +
+                                                         ", \"speed\": " + json_number(record->velocity_scalar.value_or(0.0F) * 0.01F) +
+                                                         ", \"clip\": " + json_string(role->clip));
+                role_clips.push_back(std::move(variants));
             }
             if (clips.empty()) continue;
             const auto file = std::filesystem::path("anims") / (stance + ".gltf");
+            std::set<std::string> skipped;
             try {
                 const auto model = rws::Document::load(skeleton_path);
                 const auto stats = rws::export_character_gltf(model.chunks().front(), model.bytes(), options.out / file,
                                                               std::move(clips), {}, humanoid_joint_name,
                                                               humanoid_joint_parent, false);
-                for (const auto& skipped : stats.skipped_clips) result.problems.push_back("anim " + stance + "/" + skipped);
+                for (const auto& why : stats.skipped_clips) {
+                    result.problems.push_back("anim " + stance + "/" + why);
+                    skipped.insert(why.substr(0, why.find(':')));
+                }
                 result.lines.push_back("anims\t" + file.generic_string() + '\t' + std::to_string(stats.clips) + " clips");
             } catch (const std::exception& error) {
                 result.problems.push_back("anim " + stance + ": " + error.what());
                 continue;
             }
+            std::string clip_fields;
+            for (std::size_t i = 0; i < role_fields.size(); ++i) {
+                std::string variants;
+                for (const auto& [name, fields] : role_clips[i])
+                    if (!skipped.contains(name))
+                        variants += std::string(variants.empty() ? "" : ", ") + json_string(name) + ": " + fields;
+                if (variants.empty()) continue;
+                clip_fields += std::string(clip_fields.empty() ? "" : ", ") + json_string(role_fields[i].first) + ": {" +
+                               role_fields[i].second + ", \"clips\": {" + variants + "}}";
+            }
             assets["anim/" + stance] = {{"file", json_string(file.generic_string())},
                                         {"skeleton", json_string(skeleton_id)},
-                                        {"clips", "{" + clip_fields + "}"}};
+                                        {"roles", "{" + clip_fields + "}"}};
         }
     }
 
-    // Actors, routes, areas and dummies, in game centimetres as the reference export writes them.
+    // Actors, routes, areas and dummies, in metres and radians.
     const auto markers = map_folder / "markers.json";
-    write_file(options.out / markers, reference_markers_json(AuthoringProject{}, editor ? &editor->scene() : nullptr, class_ids));
+    write_file(options.out / markers, editor ? godot_markers_json(editor->scene(), editor->objects(), class_ids, class_stances, class_weapons)
+                                             : godot_markers_json(MissionScene{}, ObjectDatabase{}, {}));
     result.lines.push_back("markers\t" + markers.generic_string());
     assets["map/" + lower(slot->mission)] = {
         {"visual", json_string((map_folder / "visual.gltf").generic_string())},

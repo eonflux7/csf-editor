@@ -175,6 +175,8 @@ WeaponDatabase WeaponDatabase::project(const Document& document) {
         definition.id = integer(*id);
         if (const auto* value = field(document, *record, {"NOMBRE", "NAME"}))
             definition.name = string_value(document, *value);
+        if (const auto* value = field(document, *record, {"TIPO", "TYPE"}))
+            definition.type = string_value(document, *value);
         if (file) definition.first_person_model = string_value(document, *file);
         if (file2) definition.third_person_model = string_value(document, *file2);
         if (const auto* value = field(document, *record, {"MANO", "HAND"}))
