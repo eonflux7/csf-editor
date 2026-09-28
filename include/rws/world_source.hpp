@@ -105,7 +105,8 @@ struct WorldSource {
 [[nodiscard]] DecodeResult<WorldSource> parse_world_source(std::string_view text);
 
 struct WorldCompileOptions {
-    std::size_t max_sector_triangles{1024};
+    std::size_t max_sector_triangles{1024};  // collision
+    std::size_t max_visual_sector_triangles{visual_sector_triangles};
     // Second UV set for every visual vertex that has none: the donor materials
     // keep their dual-pass lightmap, so this picks one lightmap texel.
     bool constant_lightmap_uv{true};

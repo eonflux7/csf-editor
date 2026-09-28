@@ -235,7 +235,7 @@ int main(int argc, char** argv) try {
         if (argc < 4) { usage(); return 1; }
         const std::filesystem::path input = argv[2], output = argv[3];
         bool overwrite = false;
-        std::size_t budget = 1024;
+        std::optional<std::size_t> budget;  // default: visual_sector_triangles, collision 1024
         for (int i = 4; i < argc; ++i) {
             const std::string_view option = argv[i];
             if (option == "--overwrite") overwrite = true;
@@ -271,10 +271,11 @@ int main(int argc, char** argv) try {
             options.library_id = source.library_id;
             options.format = source.format;
             options.material_list = source.material_list;
-            options.max_sector_triangles = budget;
             options.visual_plugins = std::ranges::any_of(source.sectors, [](const auto& sector) {
                 return std::ranges::any_of(sector.plugins, [](const auto& p) { return p.type == 0x120U; });
             });
+            options.max_sector_triangles =
+                budget.value_or(options.visual_plugins ? rws::visual_sector_triangles : options.max_sector_triangles);
             const auto built = rws::build_world(rws::world_build_triangles(source), options);
             if (!built) throw std::runtime_error(built.error);
             if (const auto problems = rws::check_world_model(*built.value); !problems.empty())
@@ -625,7 +626,8 @@ int main(int argc, char** argv) try {
             const std::string_view option = argv[i];
             if (option == "--keep-props") keep_props = true;
             else if (option == "--overwrite") overwrite = true;
-            else if (option == "--max-sector-triangles" && i + 1 < argc) options.max_sector_triangles = u32(argv[++i]);
+            else if (option == "--max-sector-triangles" && i + 1 < argc)
+                options.max_sector_triangles = options.max_visual_sector_triangles = u32(argv[++i]);
             else if (option == "--texture" && i + 3 < argc) {
                 std::string name = argv[++i];
                 images.push_back({name, argv[++i]});

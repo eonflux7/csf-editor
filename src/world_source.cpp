@@ -679,7 +679,7 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
     visual_options.library_id = donor_visual.library_id;
     visual_options.format = donor_visual.format;
     visual_options.material_list = compose_material_list(visual_list, donor_visual.library_id);
-    visual_options.max_sector_triangles = options.max_sector_triangles;
+    visual_options.max_sector_triangles = options.max_visual_sector_triangles;
     visual_options.visual_plugins = true;
     auto built_visual = build_world(visual, visual_options);
     WorldBuildOptions collision_options;

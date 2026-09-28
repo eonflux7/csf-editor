@@ -118,6 +118,13 @@ split_material_list(std::span<const std::byte> payload, std::uint32_t library_id
 [[nodiscard]] std::vector<std::byte>
 compose_material_list(std::span<const std::vector<std::byte>> materials, std::uint32_t library_id);
 
+// The largest World Sector the u16 vertex indices and counts allow. Visual
+// Worlds are built with it: the game occlusion-culls each visual sector's box
+// against the scene's area occluders, and small sectors (1024 triangles)
+// flickered at their borders on ST07A; shipped visual Worlds have 1-40
+// sectors of ~30k triangles, collision Worlds <= 1024 (the builder's default).
+inline constexpr std::size_t visual_sector_triangles = 0xFFFFU / 3U;
+
 // Building a World from a triangle soup (game units, source Y up, triangles
 // counter-clockwise seen from their front, as in the shipped Worlds).
 struct WorldBuildVertex {
