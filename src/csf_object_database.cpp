@@ -135,8 +135,10 @@ ObjectDatabase ObjectDatabase::project(const Document& document) {
             if (kind) {
                 // Player records carry a first-person hands model in MODELO and the full
                 // character in MODELO_TERCERA. The mission actor preview needs the latter.
-                if (has_third_person_model && (key == "MODELO" || key == "MODEL"))
+                if (has_third_person_model && (key == "MODELO" || key == "MODEL")) {
+                    if (value && !value->empty()) definition.first_person_model = *value;
                     continue;
+                }
                 if (value && !value->empty())
                     definition.references.push_back({*kind, *value, source(document, child), name});
                 else
@@ -181,6 +183,23 @@ WeaponDatabase WeaponDatabase::project(const Document& document) {
         if (file2) definition.third_person_model = string_value(document, *file2);
         if (const auto* value = field(document, *record, {"MANO", "HAND"}))
             definition.hand = string_value(document, *value);
+        const auto sound = [&](const std::string& name) -> std::optional<std::int32_t> {
+            const auto* value = field(document, *record, {name});
+            const auto id = value ? integer(*value) : std::nullopt;
+            return id && *id >= 0 ? id : std::nullopt;
+        };
+        definition.shot_sound = sound("WAVEDISPARO");
+        definition.player_shot_sound = sound("WAVEDISPAROPLAYER");
+        definition.empty_sound = sound("WAVEDISPAROSINBALAS");
+        definition.reload_sound = sound("WAVERECARGA");
+        if (const auto* list = field(document, *record, {"ANIMACIONESPLAYER"}))
+            for (const auto& item : list->children) {
+                const auto* type = field(document, item, {"TIPO", "TYPE"});
+                const auto* animation = field(document, item, {"ID"});
+                const auto type_name = type ? string_value(document, *type) : std::nullopt;
+                const auto animation_id = animation ? integer(*animation) : std::nullopt;
+                if (type_name && animation_id) definition.player_animations.emplace_back(*type_name, *animation_id);
+            }
         if (definition.id) result.definitions_.push_back(std::move(definition));
     }
     return result;
@@ -189,6 +208,73 @@ WeaponDatabase WeaponDatabase::project(const Document& document) {
 const WeaponDefinition* WeaponDatabase::find_id(const std::int32_t id) const noexcept {
     const auto found = std::ranges::find_if(definitions_,
                                             [&](const auto& value) { return value.id == id; });
+    return found == definitions_.end() ? nullptr : &*found;
+}
+
+std::vector<SurfaceDefinition> project_surfaces(const Document& document) {
+    std::vector<SurfaceDefinition> result;
+    // Surface records have an .ID and a .NOMBRE_TIPO (no .NOMBRE, which
+    // collect_records looks for).
+    std::vector<const Node*> records;
+    const auto collect = [&](auto&& self, const Node& node) -> void {
+        if (field(document, node, {"ID"}) && field(document, node, {"NOMBRETIPO"})) {
+            records.push_back(&node);
+            return;
+        }
+        for (const auto& child : node.children) self(self, child);
+    };
+    for (const auto& root : document.roots()) collect(collect, root);
+    for (const auto* record : records) {
+        const auto* id = field(document, *record, {"ID"});
+        const auto* name = field(document, *record, {"NOMBRETIPO"});
+        const auto value = id ? integer(*id) : std::nullopt;
+        if (!value || !name) continue;
+        const auto sound = [&](const std::string& key) -> std::optional<std::int32_t> {
+            const auto* node = field(document, *record, {key});
+            const auto sound_id = node ? integer(*node) : std::nullopt;
+            return sound_id && *sound_id >= 0 ? sound_id : std::nullopt;
+        };
+        result.push_back({*value, string_value(document, *name).value_or(""), sound("SONIDOPISADA"), sound("SONIDOIMPACTO")});
+    }
+    return result;
+}
+
+SoundDatabase SoundDatabase::project(const Document& document) {
+    SoundDatabase result;
+    std::vector<const Node*> records;
+    for (const auto& root : document.roots())
+        collect_records(document, root, records);
+    for (const auto* record : records) {
+        const auto* id = field(document, *record, {"ID"});
+        const auto* files = field(document, *record, {"FILE"});
+        const auto value = id ? integer(*id) : std::nullopt;
+        if (!value || !files) continue;
+        SoundDefinition definition;
+        definition.source = source(document, *record);
+        definition.id = *value;
+        if (const auto* name = field(document, *record, {"NOMBRE", "NAME"}))
+            definition.name = string_value(document, *name).value_or("");
+        if (const auto single = string_value(document, *files)) definition.files.push_back(*single);
+        for (const auto& item : files->children)
+            if (const auto file = string_value(document, item)) definition.files.push_back(*file);
+        const auto number = [&](const std::string& name) -> std::optional<float> {
+            const auto* node = field(document, *record, {name});
+            if (!node) return std::nullopt;
+            if (const auto whole = integer(*node)) return static_cast<float>(*whole);
+            if (const auto* real = std::get_if<float>(&node->scalar)) return *real;
+            return std::nullopt;
+        };
+        definition.volume = number("VOLUMEN");
+        definition.loop = number("LOOP").value_or(0) != 0;
+        definition.positional = number("ES3D").value_or(0) != 0;
+        definition.radius = number("RADIO");
+        result.definitions_.push_back(std::move(definition));
+    }
+    return result;
+}
+
+const SoundDefinition* SoundDatabase::find_id(const std::int32_t id) const noexcept {
+    const auto found = std::ranges::find_if(definitions_, [&](const auto& value) { return value.id == id; });
     return found == definitions_.end() ? nullptr : &*found;
 }
 

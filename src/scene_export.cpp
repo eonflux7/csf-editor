@@ -1068,7 +1068,8 @@ CharacterExportStats export_character_gltf(const Chunk& clump, const std::span<c
                                            std::vector<CharacterClip> clips,
                                            const SceneTextureResolver& textures,
                                            const JointNamer& joint_name, const JointParent& joint_parent,
-                                           const bool include_meshes) {
+                                           const bool include_meshes,
+                                           const std::vector<CharacterAttachment>& attachments) {
     if (clump.type != 0x10) throw std::runtime_error("Selected chunk is not a Clump");
     const auto* frame_list = find_child(clump, 0x0E);
     const auto* geometry_list = find_child(clump, 0x1A);
@@ -1106,6 +1107,70 @@ CharacterExportStats export_character_gltf(const Chunk& clump, const std::span<c
     std::vector<std::size_t> joint_frames;  // skin bone -> frame
     std::vector<CharacterMesh> meshes;
     std::vector<MaterialRecord> materials;
+    // One Atomic's Geometry as a mesh: skinned when it has a Skin, else rigid
+    // under the character's `frame`. `source` holds the Geometry's bytes (the
+    // character's, or an attachment's).
+    // `bake`, when given, moves the vertices (a part placed under a joint that
+    // is not its own Frame).
+    const auto add_mesh = [&](const Chunk& geometry_chunk, const auto& geometry_value, const auto& skin,
+                              const std::span<const std::byte> source, const std::string& name, const std::size_t frame,
+                              const Matrix* bake = nullptr) {
+        const auto baked = [&](const Vec3 v, const float w) -> Vec3 {
+            if (!bake) return v;
+            const auto& m = *bake;
+            return {m[0] * v.x + m[4] * v.y + m[8] * v.z + m[12] * w, m[1] * v.x + m[5] * v.y + m[9] * v.z + m[13] * w,
+                    m[2] * v.x + m[6] * v.y + m[10] * v.z + m[14] * w};
+        };
+        if (geometry_value.triangle_layout == TriangleLayout::unknown) return;
+        const auto morph = std::ranges::find_if(geometry_value.morph_targets, [](const auto& m) { return m.has_vertices; });
+        if (morph == geometry_value.morph_targets.end()) return;
+        CharacterMesh item;
+        auto& mesh = item.mesh;
+        mesh.name = name;
+        const auto local_materials =
+            decode_materials(find_child(geometry_chunk, 0x08), source, geometry_chunk.offset, mesh.name, {190, 190, 190, 255});
+        const auto material_base = materials.size();
+        materials.insert(materials.end(), local_materials.begin(), local_materials.end());
+        mesh.primitives.resize(local_materials.size());
+        for (std::size_t i = 0; i < mesh.primitives.size(); ++i) mesh.primitives[i].material = material_base + i;
+        for (std::int32_t i = 0; i < geometry_value.vertex_count; ++i) {
+            const auto offset = morph->vertices_offset + static_cast<std::uint64_t>(i) * 12U;
+            mesh.positions.push_back(export_point(baked({read_f32(source, offset), read_f32(source, offset + 4), read_f32(source, offset + 8)}, 1)));
+            if (morph->has_normals) {
+                const auto n = morph->normals_offset + static_cast<std::uint64_t>(i) * 12U;
+                mesh.normals.push_back(normalize(baked({read_f32(source, n), read_f32(source, n + 4), read_f32(source, n + 8)}, 0)));
+            }
+            if (!geometry_value.texcoord_offsets.empty()) {
+                const auto uv = geometry_value.texcoord_offsets[0] + static_cast<std::uint64_t>(i) * 8U;
+                mesh.uv0.push_back({read_f32(source, uv), read_f32(source, uv + 4)});
+            }
+            if (skin) {
+                std::array<std::uint8_t, 4> joints{};
+                std::array<float, 4> weights{};
+                float total{};
+                for (std::size_t j = 0; j < 4; ++j) {
+                    joints[j] = std::to_integer<std::uint8_t>(source[skin.value->vertex_indices_offset + static_cast<std::uint64_t>(i) * 4 + j]);
+                    weights[j] = read_f32(source, skin.value->vertex_weights_offset + static_cast<std::uint64_t>(i) * 16 + j * 4);
+                    if (weights[j] <= 0) weights[j] = 0, joints[j] = 0;
+                    total += weights[j];
+                }
+                if (total <= 0) weights = {1, 0, 0, 0};
+                else for (auto& w : weights) w /= total;
+                item.joints.push_back(joints);
+                item.weights.push_back(weights);
+            }
+        }
+        for (std::int32_t i = 0; i < geometry_value.triangle_count; ++i) {
+            const auto triangle = decode_triangle(geometry_value, i, source);
+            if (!triangle) continue;
+            auto& indices = mesh.primitives[std::min<std::size_t>(triangle.value->material, mesh.primitives.size() - 1)].indices;
+            for (const auto index : triangle.value->vertices) indices.push_back(index);
+        }
+        std::erase_if(mesh.primitives, [](const PrimitiveRecord& p) { return p.indices.empty(); });
+        if (mesh.primitives.empty()) return;
+        if (!skin) item.frame = frame;
+        meshes.push_back(std::move(item));
+    };
     for (const auto& atomic_chunk : clump.children) {
         if (atomic_chunk.type != 0x14) continue;
         const auto atomic = decode_atomic(atomic_chunk, bytes);
@@ -1130,64 +1195,77 @@ CharacterExportStats export_character_gltf(const Chunk& clump, const std::span<c
                 joint_frames.push_back(static_cast<std::size_t>(binding.value->matrix_to_frame[b]));
             }
         }
-        if (!include_meshes || geometry.value->triangle_layout == TriangleLayout::unknown) continue;
-        const auto morph = std::ranges::find_if(geometry.value->morph_targets, [](const auto& m) { return m.has_vertices; });
-        if (morph == geometry.value->morph_targets.end()) continue;
-        CharacterMesh item;
-        auto& mesh = item.mesh;
-        mesh.name = "geometry_" + std::to_string(atomic.value->geometry_index);
-        const auto local_materials =
-            decode_materials(find_child(geometry_chunk, 0x08), bytes, geometry_chunk.offset, mesh.name, {190, 190, 190, 255});
-        const auto material_base = materials.size();
-        materials.insert(materials.end(), local_materials.begin(), local_materials.end());
-        mesh.primitives.resize(local_materials.size());
-        for (std::size_t i = 0; i < mesh.primitives.size(); ++i) mesh.primitives[i].material = material_base + i;
-        for (std::int32_t i = 0; i < geometry.value->vertex_count; ++i) {
-            const auto offset = morph->vertices_offset + static_cast<std::uint64_t>(i) * 12U;
-            mesh.positions.push_back(export_point({read_f32(bytes, offset), read_f32(bytes, offset + 4), read_f32(bytes, offset + 8)}));
-            if (morph->has_normals) {
-                const auto n = morph->normals_offset + static_cast<std::uint64_t>(i) * 12U;
-                mesh.normals.push_back(normalize({read_f32(bytes, n), read_f32(bytes, n + 4), read_f32(bytes, n + 8)}));
-            }
-            if (!geometry.value->texcoord_offsets.empty()) {
-                const auto uv = geometry.value->texcoord_offsets[0] + static_cast<std::uint64_t>(i) * 8U;
-                mesh.uv0.push_back({read_f32(bytes, uv), read_f32(bytes, uv + 4)});
-            }
-            if (skin) {
-                std::array<std::uint8_t, 4> joints{};
-                std::array<float, 4> weights{};
-                float total{};
-                for (std::size_t j = 0; j < 4; ++j) {
-                    joints[j] = std::to_integer<std::uint8_t>(bytes[skin.value->vertex_indices_offset + static_cast<std::uint64_t>(i) * 4 + j]);
-                    weights[j] = read_f32(bytes, skin.value->vertex_weights_offset + static_cast<std::uint64_t>(i) * 16 + j * 4);
-                    if (weights[j] <= 0) weights[j] = 0, joints[j] = 0;
-                    total += weights[j];
-                }
-                if (total <= 0) weights = {1, 0, 0, 0};
-                else for (auto& w : weights) w /= total;
-                item.joints.push_back(joints);
-                item.weights.push_back(weights);
-            }
-        }
-        for (std::int32_t i = 0; i < geometry.value->triangle_count; ++i) {
-            const auto triangle = decode_triangle(*geometry.value, i, bytes);
-            if (!triangle) continue;
-            auto& indices = mesh.primitives[std::min<std::size_t>(triangle.value->material, mesh.primitives.size() - 1)].indices;
-            for (const auto index : triangle.value->vertices) indices.push_back(index);
-        }
-        std::erase_if(mesh.primitives, [](const PrimitiveRecord& p) { return p.indices.empty(); });
-        if (mesh.primitives.empty()) continue;
-        if (!skin) item.frame = frame;
-        meshes.push_back(std::move(item));
+        if (include_meshes) add_mesh(geometry_chunk, *geometry.value, skin, bytes, "geometry_" + std::to_string(atomic.value->geometry_index), frame);
     }
     if (!bind) throw std::runtime_error("Clump has no skinned Atomic");
-    for (const auto& item : meshes)
-        if (!item.joints.empty())
-            for (const auto& joints : item.joints)
-                for (const auto j : joints)
-                    if (j >= joint_frames.size()) throw std::runtime_error("Skin vertex names bone " + std::to_string(j));
+
+    // Attachments: rigid models on a joint, each Atomic where its Frame puts it.
+    std::size_t attached_parts{};
+    std::vector<std::string> skipped_parts;
+    for (std::size_t a = 0; a < attachments.size() && include_meshes; ++a) {
+        const auto& attachment = attachments[a];
+        const auto where = "attachment " + std::to_string(a);
+        const auto& ids = binding.value->frame_node_ids;
+        const auto joint = std::ranges::find(ids, attachment.joint_node);
+        const auto* attachment_frames = attachment.clump && attachment.clump->type == 0x10 ? find_child(*attachment.clump, 0x0E) : nullptr;
+        const auto* attachment_geometries = attachment.clump && attachment.clump->type == 0x10 ? find_child(*attachment.clump, 0x1A) : nullptr;
+        const auto part_frames = attachment_frames ? decode_frame_list(*attachment_frames, attachment.bytes) : decltype(frames){};
+        if (joint == ids.end()) {
+            skipped_parts.push_back(where + ": no joint " + std::to_string(attachment.joint_node));
+            continue;
+        }
+        if (!attachment_geometries || !part_frames) {
+            skipped_parts.push_back(where + ": not a Clump with frames and geometry");
+            continue;
+        }
+        // Each Frame from the Clump's root. The joint takes the root's place
+        // (as a placement replaces a Clump's root matrix): the root's own
+        // matrix, an export leftover that differs per model, is not applied.
+        std::vector<Matrix> part_world(part_frames.value->frames.size());
+        for (std::size_t i = 0; i < part_world.size(); ++i) {
+            const auto& f = part_frames.value->frames[i];
+            if (f.parent < 0) {
+                part_world[i] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+                continue;
+            }
+            const Matrix local{f.rotation[0], f.rotation[1], f.rotation[2], 0, f.rotation[3], f.rotation[4],
+                               f.rotation[5], 0,  f.rotation[6], f.rotation[7], f.rotation[8], 0,
+                               f.position.x,  f.position.y,  f.position.z,  1};
+            part_world[i] = f.parent >= 0 && static_cast<std::size_t>(f.parent) < i
+                                ? multiply(part_world[static_cast<std::size_t>(f.parent)], local)
+                                : local;
+        }
+        std::vector<const Chunk*> part_geometries;
+        for (const auto& child : attachment_geometries->children)
+            if (child.type == 0x0F) part_geometries.push_back(&child);
+        std::size_t atomic_index = 0;
+        for (const auto& atomic_chunk : attachment.clump->children) {
+            if (atomic_chunk.type != 0x14) continue;
+            const auto what = where + " atomic " + std::to_string(atomic_index++);
+            const auto atomic = decode_atomic(atomic_chunk, attachment.bytes);
+            if (!atomic || atomic.value->frame_index < 0 || atomic.value->geometry_index < 0 ||
+                static_cast<std::size_t>(atomic.value->frame_index) >= part_world.size() ||
+                static_cast<std::size_t>(atomic.value->geometry_index) >= part_geometries.size()) {
+                skipped_parts.push_back(what + ": undecodable");
+                continue;
+            }
+            const auto& geometry_chunk = *part_geometries[static_cast<std::size_t>(atomic.value->geometry_index)];
+            const auto geometry = decode_geometry(geometry_chunk, attachment.bytes);
+            if (!geometry) {
+                skipped_parts.push_back(what + ": undecodable geometry");
+                continue;
+            }
+            const auto before = meshes.size();
+            add_mesh(geometry_chunk, *geometry.value, DecodeResult<SkinInfo>{}, attachment.bytes,
+                     "attachment_" + std::to_string(a) + "_part_" + std::to_string(atomic_index - 1),
+                     static_cast<std::size_t>(joint - ids.begin()), &part_world[static_cast<std::size_t>(atomic.value->frame_index)]);
+            if (meshes.size() > before) ++attached_parts;
+        }
+    }
 
     CharacterExportStats stats;
+    stats.attached_parts = attached_parts;
+    stats.skipped_parts = std::move(skipped_parts);
     stats.joints = joint_frames.size();
     stats.meshes = meshes.size();
     stats.materials = materials.size();

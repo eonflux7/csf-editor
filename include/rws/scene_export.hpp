@@ -70,6 +70,18 @@ struct CharacterClip {
 struct CharacterExportStats {
     std::size_t joints{}, meshes{}, triangles{}, materials{}, clips{};
     std::vector<std::string> skipped_clips;  // "name: why"
+    std::size_t attached_parts{};
+    std::vector<std::string> skipped_parts;  // "attachment N: why"
+};
+// A rigid Clump the character holds (a first-person weapon): its root sits on
+// the joint with HAnim node ID `joint_node` (the hand's item joint), and each
+// of its Atomics where its Frame puts it from that root (whose own matrix
+// the joint replaces, as a placement replaces a Clump's root). The Clump's own
+// HAnim IDs mean nothing here: they overlap the hands' finger joints.
+struct CharacterAttachment {
+    const Chunk* clump{};
+    std::span<const std::byte> bytes;
+    std::int32_t joint_node{};
 };
 // A skinned Clump (a character) as a glTF skeleton: one node per Frame at
 // the bind pose the Skin plugin expects (recover_skin_bind_pose), named by
@@ -81,7 +93,9 @@ struct CharacterExportStats {
 // `joint_parent` may hang a joint under another (by HAnim node IDs) to match
 // a target hierarchy; poses and skinning stay as they are in world space.
 // With `include_meshes` false only the skeleton and clips are written (an
-// animation library). Metres, Y up, like the scene export.
+// animation library). `attachments` add rigid models on joints (see
+// CharacterAttachment); their materials resolve through `textures` too.
+// Metres, Y up, like the scene export.
 using JointNamer = std::function<std::string(std::int32_t node_id)>;
 using JointParent = std::function<std::optional<std::int32_t>(std::int32_t node_id)>;
 [[nodiscard]] CharacterExportStats export_character_gltf(const Chunk& clump, std::span<const std::byte> bytes,
@@ -90,7 +104,8 @@ using JointParent = std::function<std::optional<std::int32_t>(std::int32_t node_
                                                          const SceneTextureResolver& textures = {},
                                                          const JointNamer& joint_name = {},
                                                          const JointParent& joint_parent = {},
-                                                         bool include_meshes = true);
+                                                         bool include_meshes = true,
+                                                         const std::vector<CharacterAttachment>& attachments = {});
 
 [[nodiscard]] SceneExportStats export_collision_gltf(const std::vector<Chunk>& chunks,
                                                      std::span<const std::byte> bytes,

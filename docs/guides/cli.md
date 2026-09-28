@@ -230,7 +230,9 @@ It writes:
 | `characters/<model>.gltf` | One model per actor class whose model lives under `Models/Char`: skinned, on a skeleton named and shaped for Godot's `SkeletonProfileHumanoid` (below) |
 | `anims/<library>.gltf` | A clip library: the skeleton and its clips, no mesh. One per stance (`rifle`, `smg`, `pistol`: 55 roles each; `unarmed`: 14, the civilians'), `actions` (taken out, sitting, the MG post, car seats) and `custom` (the one-off scene clips of `Anims/Costum` under their own names: smoking, talking, repairing, ...) |
 | `weapons/<model>.gltf` | The third-person model (`Armas.bdd` `.FILE2`) of each character class's weapon, as `weapon/<model>` |
+| `fp/<hands>_<weapon>.gltf` | First person: a player class's hands (`.MODELO`) holding a weapon's first-person model (`.FILE`), with its first-person clips (`.ANIMACIONES_PLAYER`), as `fp/<hands>_<weapon>` (below) |
 | `props/<model>.gltf` | One model per other actor class |
+| `sounds/<wave>.wav` | Every wave of the mission's audio bank (the `.wad` beside its scene), as 16-bit PCM WAV (below) |
 | `textures/<corpus path>.png` | Every texture those files name, decoded from DDS; the path is the source's, in lower case (`textures/ambush/maps/st08/textures/sdet_01a.png`) |
 
 In every glTF it writes, a material's base texture is its `baseColorTexture`
@@ -280,6 +282,42 @@ muzzle is at the barrel's end. The weapon is held with its grip frame on the
 character's joint `bone_50` (HAnim 50, a dummy under the right hand): this
 was checked by eye against the alternative of hanging the Clump's root
 there, with rifle, SMG and pistol in their idle, aim and shoot poses.
+
+First-person models are written for every player class of the mission and
+every weapon of its `Armas.bdd` with a first-person model and clips (which
+weapons a player starts with is in the mission script, not read yet). The
+hands are skinned on their own 56-joint skeleton (arms, both hands' fingers:
+joints 87-110 are the right hand's, so the weapon Clump's own HAnim IDs, which
+overlap them, mean nothing). The weapon hangs whole on the item joint of the
+hand its `.MANO` names (`bone_50` right, `bone_40` left), each part where its
+frame puts it from the Clump's root, whose own matrix the joint replaces
+(`rws::CharacterAttachment`). The file is in camera space as the game draws
+it: the eye at the origin, looking down -Z, Y up. The manifest entry has
+`name` (the weapon record's `.NOMBRE`), `type`, `roles` (as for clip
+libraries, with each role's `.TIPO` as `type`, and no `speed`), and, for
+guns, `muzzle_joint` and `muzzle`, the `tag=100` frame in that joint's space.
+Roles by `.TIPO`: `ESTATICO` idle, `AVANZANDO` walk, `CORRIENDO` run,
+`AGACHADO` crouch_idle, `AGACHADO_AVANZANDO` crouch_walk, `DISPARO` shoot,
+`RECARGAR` reload, `SACAR` draw, `GUARDAR_ARMA` holster, `OCIO` fidget,
+`MUERTE` die, `MORIBUNDO(_ENTRAR)` dying(_start), `DUAL_<type>` dual_<role>;
+others keep their own name in lower case. The player character's entry lists
+its models under `first_person`: weapon name (lower case) -> ID.
+
+A mission's `.wad` is RenderWare Audio: one `0x802` chunk per wave, a header
+(`0x803`: format 15, the sample rate at byte 4, the data size at 12, bits and
+channels at 16, the wave's name at 112) and the samples (`0x804`). Every
+shipped bank is 16-bit PCM, mono or stereo (interleaved), 22050 or 44100 Hz,
+so the waves are copied as they are. Each `Sonidos.bdd` record becomes
+`sound/<name>` (lower case, `[a-z0-9_-]`): `files` (the waves its `.FILE`
+names, matched by stem; one is picked per play), `volume` (0-1), `loop`,
+`positional` (`.ES3D`) and `radius` (metres). Waves a record names that the
+bank lacks are counted in one `problem` line. Each `Materiales.bdd` surface
+type becomes `surface/<name>` with `id`, `step` (`.SONIDO_PISADA`) and
+`impact` (`.SONIDO_IMPACTO`) sounds; the collision map's materials name
+their surface type in `rws_surface_name`. Weapons (`weapon/` and `fp/`
+entries) have `sounds`: `shoot` (`.WAVE_DISPARO`, or `.WAVE_DISPARO_PLAYER`
+in first person), `empty` and `reload`; first-person clips list the sounds
+they start as `sounds`: `[seconds, sound ID]`.
 
 The manifest's `anim/<library>` entry has `roles`: each role's `loop`, its
 `speed` in metres a second (`.VEL`; the clips stay in place), `clip` (the

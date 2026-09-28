@@ -24,6 +24,9 @@ struct ObjectDefinition {
     std::optional<std::string> name;
     std::optional<std::string> type;  // .TIPO: ALEMAN, DECORATIVO, ITEM_ARMA, ...
     std::vector<std::int32_t> weapon_ids;
+    // Player classes: the first-person hands (.MODELO, when .MODELO_TERCERA
+    // names the body, which `references` then holds as the visual model).
+    std::optional<std::string> first_person_model;
     std::vector<ObjectReference> references;
     std::vector<RawField> unknown_fields;
 };
@@ -36,6 +39,47 @@ struct WeaponDefinition {
     std::optional<std::string> first_person_model;
     std::optional<std::string> third_person_model;
     std::optional<std::string> hand;
+    // .ANIMACIONES_PLAYER: the first-person clips, as (.TIPO, Anims.bdd .ID):
+    // ESTATICO, AVANZANDO, DISPARO, RECARGAR, SACAR, ...
+    std::vector<std::pair<std::string, std::int32_t>> player_animations;
+    // Sonidos.bdd IDs: .WAVE_DISPARO (a shot heard from others),
+    // .WAVE_DISPARO_PLAYER (the player's own), .WAVE_DISPARO_SIN_BALAS (empty),
+    // .WAVE_RECARGA (reload).
+    std::optional<std::int32_t> shot_sound, player_shot_sound, empty_sound, reload_sound;
+};
+
+// A Sonidos.bdd record: the waves one sound picks from, and how it plays.
+struct SoundDefinition {
+    CsfSourceId source;
+    std::int32_t id{};
+    std::string name;
+    std::vector<std::string> files;  // .FILE: variants, one picked per play
+    std::optional<float> volume;     // .VOLUMEN, 0-100
+    bool loop{};                     // .LOOP
+    bool positional{};               // .ES3D
+    std::optional<float> radius;     // .RADIO, game units (cm)
+};
+
+// A Materiales.bdd record: a surface type (the name the map's materials give
+// as their surface) and the Sonidos.bdd IDs of stepping on it and hitting it.
+struct SurfaceDefinition {
+    std::int32_t id{};
+    std::string name;                        // .NOMBRE_TIPO: Piedra, Madera, ...
+    std::optional<std::int32_t> step_sound;  // .SONIDO_PISADA
+    std::optional<std::int32_t> impact_sound;  // .SONIDO_IMPACTO
+};
+[[nodiscard]] std::vector<SurfaceDefinition> project_surfaces(const Document& document);
+
+class SoundDatabase {
+public:
+    [[nodiscard]] static SoundDatabase project(const Document& document);
+    [[nodiscard]] const std::vector<SoundDefinition>& definitions() const noexcept {
+        return definitions_;
+    }
+    [[nodiscard]] const SoundDefinition* find_id(std::int32_t id) const noexcept;
+
+private:
+    std::vector<SoundDefinition> definitions_;
 };
 
 class WeaponDatabase {

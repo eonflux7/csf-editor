@@ -13,6 +13,7 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -86,8 +87,15 @@ public:
 
     // A resolver for a glTF written to `gltf` from the source file `source`.
     rws::SceneTextureResolver resolver(const std::filesystem::path& source, const std::filesystem::path& gltf) {
-        return [this, source, gltf](const std::string_view name) -> std::optional<rws::SceneTexture> {
-            const auto found = find(source, lower(std::string(name)));
+        return resolver(std::vector{source}, gltf);
+    }
+    // The same for a glTF made of several source files (hands holding a
+    // weapon): a texture is looked up from each in turn.
+    rws::SceneTextureResolver resolver(const std::vector<std::filesystem::path>& sources, const std::filesystem::path& gltf) {
+        return [this, sources, gltf](const std::string_view name) -> std::optional<rws::SceneTexture> {
+            std::optional<std::filesystem::path> found;
+            for (const auto& source : sources)
+                if (!found) found = find(source, lower(std::string(name)));
             if (!found) {
                 missing_.insert(std::string(name));
                 return std::nullopt;
@@ -279,6 +287,102 @@ constexpr std::string_view markers_format = "opencsf-markers";
 constexpr float units_per_metre = 100.0F;  // divided, so 10 units print as 0.1
 constexpr float radians_per_degree = 0.01745329251994329577F;
 
+// First-person clip roles by .ANIMACIONES_PLAYER .TIPO (our English names,
+// in the style of the third-person roles). A type not listed keeps its own
+// name in lower case; DUAL_<type> (two guns) becomes dual_<role>.
+std::string first_person_role(const std::string& type) {
+    static const std::map<std::string, std::string> roles{
+        {"ESTATICO", "idle"}, {"AGACHADO", "crouch_idle"}, {"AVANZANDO", "walk"},
+        {"AGACHADO_AVANZANDO", "crouch_walk"}, {"CORRIENDO", "run"}, {"DISPARO", "shoot"},
+        {"DISPARAR", "shoot"}, {"DISPARO_CORTO", "shoot_short"}, {"RECARGAR", "reload"},
+        {"RECARGA_PREPARAR", "reload_start"}, {"RECARGA_TERMINAR", "reload_end"}, {"SACAR", "draw"},
+        {"SACAR_ARMA", "draw"}, {"GUARDAR_ARMA", "holster"}, {"METER", "put_away"}, {"OCIO", "fidget"},
+        {"MUERTE", "die"}, {"MORIBUNDO", "dying"}, {"MORIBUNDO_ENTRAR", "dying_start"},
+        {"APUNTAR", "aim"}, {"APUNTAR_DISPARO", "aim_shoot"}, {"LANZAR_TERMINAR", "throw"},
+        {"LANZAR_TERMINAR_CORTO", "throw_short"}, {"CUERDA_PIANO", "garrotte"}, {"CURAR", "heal"},
+        {"ANDAR", "walk"}, {"ANDAR_ATRAS", "walk_back"}, {"CORRER", "run"}, {"CORRER_ATRAS", "run_back"},
+        {"STRAFE_DER", "strafe_right"}, {"STRAFE_IZQ", "strafe_left"}, {"REPOSO", "rest"},
+    };
+    auto key = type;
+    std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    if (key.starts_with("DUAL_")) return "dual_" + first_person_role(key.substr(5));
+    const auto found = roles.find(key);
+    return found != roles.end() ? found->second : lower(key);
+}
+
+// One wave of a mission's audio bank (.wad): RenderWare Audio, a 0x802 chunk
+// per wave holding a header (0x803: format 15, sample rate, data size, bits,
+// channels; the name at byte 112) and 16-bit PCM (0x804). Every shipped bank
+// is 16-bit PCM, mono or stereo, 22050 or 44100 Hz.
+struct AudioWave {
+    std::string name;
+    std::uint32_t rate{};
+    std::uint16_t channels{}, bits{};
+    std::size_t offset{}, size{};
+};
+std::uint32_t read_u32(const std::vector<char>& bytes, const std::size_t at) {
+    std::uint32_t value{};
+    std::memcpy(&value, bytes.data() + at, 4);
+    return value;
+}
+std::vector<AudioWave> read_audio_bank(const std::vector<char>& bytes) {
+    std::vector<AudioWave> waves;
+    for (std::size_t at = 0; at + 12 <= bytes.size();) {
+        const auto type = read_u32(bytes, at), size = read_u32(bytes, at + 4);
+        const auto end = at + 12 + size;
+        if (type != 0x802 || end > bytes.size()) break;
+        const auto header = at + 12;
+        if (read_u32(bytes, header) == 0x803) {
+            const auto header_size = read_u32(bytes, header + 4);
+            const auto fields = header + 12;
+            const auto data = fields + header_size;
+            if (header_size >= 116 && data + 12 <= end && read_u32(bytes, data) == 0x804) {
+                AudioWave wave;
+                wave.rate = read_u32(bytes, fields + 4);
+                const auto format = read_u32(bytes, fields + 16);
+                wave.bits = static_cast<std::uint16_t>(format & 0xFF);
+                wave.channels = static_cast<std::uint16_t>((format >> 8) & 0xFF);
+                wave.offset = data + 12;
+                wave.size = std::min<std::size_t>(read_u32(bytes, data + 4), end - wave.offset);
+                const auto* name = bytes.data() + fields + 112;
+                wave.name = std::string(name, strnlen(name, header_size - 112));
+                if (wave.bits == 16 && wave.channels >= 1 && wave.rate > 0 && !wave.name.empty())
+                    waves.push_back(std::move(wave));
+            }
+        }
+        at = end;
+    }
+    return waves;
+}
+void write_wav(const std::filesystem::path& path, const AudioWave& wave, const std::vector<char>& bytes) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    const auto u32 = [&](const std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    const auto u16 = [&](const std::uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+    const auto block = static_cast<std::uint16_t>(wave.channels * wave.bits / 8);
+    out.write("RIFF", 4);
+    u32(static_cast<std::uint32_t>(36 + wave.size));
+    out.write("WAVEfmt ", 8);
+    u32(16);
+    u16(1);
+    u16(wave.channels);
+    u32(wave.rate);
+    u32(wave.rate * block);
+    u16(block);
+    u16(wave.bits);
+    out.write("data", 4);
+    u32(static_cast<std::uint32_t>(wave.size));
+    out.write(bytes.data() + wave.offset, static_cast<std::streamsize>(wave.size));
+    if (!out) throw std::runtime_error("Cannot write " + path.generic_string());
+}
+// A name as a file name and logical ID part: lower case, [a-z0-9_-] only.
+std::string id_part(const std::string& name) {
+    auto result = lower(name);
+    for (auto& c : result)
+        if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-') c = '_';
+    return result;
+}
+
 std::string json_number(const float value) {
     std::array<char, 32> buffer{};
     const auto end = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value == 0.0F ? 0.0F : value).ptr;
@@ -347,11 +451,12 @@ using Transform = std::array<float, 12>;  // basis columns x, y, z, then origin
 // (the Clump's, in metres): `grip`, the frame its mesh hangs on, whose origin
 // is where the hand closes (on every shipped third-person weapon: X along the
 // barrel, Z up), and `muzzle`, the frame whose 3ds Max user property is
-// tag=100 (at the barrel's end on every one).
+// tag=100 (at the barrel's end on every one). `held` leaves out the root
+// frame's matrix, which the holding joint replaces (first-person weapons).
 struct WeaponFrames {
     std::optional<Transform> grip, muzzle;
 };
-WeaponFrames weapon_frames(const rws::Chunk& clump, const std::span<const std::byte> bytes) {
+WeaponFrames weapon_frames(const rws::Chunk& clump, const std::span<const std::byte> bytes, const bool held = false) {
     WeaponFrames result;
     const auto* list = rws::find_child(clump, 0x0E);
     const auto frames = list ? rws::decode_frame_list(*list, bytes) : rws::DecodeResult<rws::FrameListInfo>{};
@@ -363,6 +468,7 @@ WeaponFrames weapon_frames(const rws::Chunk& clump, const std::span<const std::b
         if (index >= info.size() || depth > 64) return std::nullopt;
         if (world[index]) return world[index];
         const auto& frame = info[index];
+        if (held && frame.parent < 0) return world[index] = Transform{1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
         Transform local{frame.rotation[0], frame.rotation[1], frame.rotation[2], frame.rotation[3], frame.rotation[4],
                         frame.rotation[5], frame.rotation[6], frame.rotation[7], frame.rotation[8],
                         frame.position.x * 0.01F, frame.position.y * 0.01F, frame.position.z * 0.01F};
@@ -632,6 +738,92 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         }
     }
 
+    // Sounds: the mission's bank (the .wad beside its scene) as
+    // sounds/<wave name>.wav, and each Sonidos.bdd record as sound/<name>:
+    // `files` (the variants one play picks from), `volume` (0-1), `loop`,
+    // `positional` (.ES3D) and `radius` (metres). A record's .FILE names a wave
+    // by its stem; the bank names some with a suffix (`CAMION_MOVER_01 (44)`).
+    std::map<std::int32_t, std::string> sound_ids;  // Sonidos.bdd ID -> logical ID
+    {
+        std::map<std::string, std::string> waves;  // lower-case wave name -> file
+        std::vector<std::filesystem::path> banks;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator((package_root / slot->scene).parent_path(), error))
+            if (lower(entry.path().extension().string()) == ".wad") banks.push_back(entry.path());
+        std::ranges::sort(banks);
+        std::size_t written = 0;
+        for (const auto& bank : banks) {
+            std::ifstream in(bank, std::ios::binary);
+            const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            for (const auto& wave : read_audio_bank(bytes)) {
+                const auto file = (std::filesystem::path("sounds") / (id_part(wave.name) + ".wav")).generic_string();
+                if (waves.contains(lower(wave.name))) continue;
+                write_wav(options.out / file, wave, bytes);
+                ++written;
+                waves[lower(wave.name)] = file;
+                if (const auto paren = wave.name.find(" ("); paren != std::string::npos)
+                    waves.try_emplace(lower(wave.name.substr(0, paren)), file);
+            }
+        }
+        if (!banks.empty()) result.lines.push_back("sounds\tsounds/\t" + std::to_string(written) + " waves");
+        const auto sonidos = package_root / "BDD" / "Sonidos.bdd";
+        std::size_t missing = 0;
+        const auto sound_database = std::filesystem::is_regular_file(sonidos) && !waves.empty()
+                                        ? SoundDatabase::project(Document::load(sonidos))
+                                        : SoundDatabase{};
+        for (const auto& sound : sound_database.definitions()) {
+                std::string files;
+                for (auto reference : sound.files) {
+                    std::ranges::replace(reference, '\\', '/');
+                    const auto found = waves.find(lower(std::filesystem::path(reference).stem().string()));
+                    if (found == waves.end()) {
+                        ++missing;
+                        continue;
+                    }
+                    files += std::string(files.empty() ? "" : ", ") + json_string(found->second);
+                }
+                if (files.empty() || sound.name.empty()) continue;
+                const auto id = "sound/" + id_part(sound.name);
+                if (assets.contains(id)) continue;
+                ManifestEntry entry{{"files", "[" + files + "]"},
+                                    {"volume", json_number(sound.volume.value_or(100.0F) * 0.01F)},
+                                    {"loop", sound.loop ? "true" : "false"},
+                                    {"positional", sound.positional ? "true" : "false"}};
+                if (sound.radius) entry.emplace_back("radius", json_number(*sound.radius * 0.01F));
+                assets[id] = std::move(entry);
+                sound_ids[sound.id] = id;
+            }
+        if (missing) result.problems.push_back("sounds: " + std::to_string(missing) + " waves Sonidos.bdd names are not in the bank");
+        // Surface types (Materiales.bdd), as surface/<name>: the sounds of
+        // stepping on it (`step`) and hitting it (`impact`). The collision
+        // map's materials name theirs (`rws_surface_name`).
+        const auto materiales = package_root / "BDD" / "Materiales.bdd";
+        if (std::filesystem::is_regular_file(materiales))
+            for (const auto& surface : project_surfaces(Document::load(materiales))) {
+                if (surface.name.empty()) continue;
+                ManifestEntry entry{{"id", std::to_string(surface.id)}};
+                for (const auto& [key, sound] : {std::pair{"step", surface.step_sound}, std::pair{"impact", surface.impact_sound}})
+                    if (sound)
+                        if (const auto found = sound_ids.find(*sound); found != sound_ids.end())
+                            entry.emplace_back(key, json_string(found->second));
+                assets.try_emplace("surface/" + id_part(surface.name), std::move(entry));
+            }
+    }
+    // A weapon's sounds as a manifest field: {"shoot": "sound/...", ...}.
+    const auto weapon_sounds = [&](const WeaponDefinition& weapon, const bool player) {
+        std::string fields;
+        const auto add = [&](const char* key, const std::optional<std::int32_t> id) {
+            if (!id) return;
+            const auto found = sound_ids.find(*id);
+            if (found == sound_ids.end()) return;
+            fields += std::string(fields.empty() ? "" : ", ") + json_string(key) + ": " + json_string(found->second);
+        };
+        add("shoot", player ? weapon.player_shot_sound.has_value() ? weapon.player_shot_sound : weapon.shot_sound : weapon.shot_sound);
+        add("empty", weapon.empty_sound);
+        add("reload", weapon.reload_sound);
+        return fields.empty() ? std::string() : "{" + fields + "}";
+    };
+
     // Each character class's stance, from its weapons (Armas.bdd), and the
     // third-person model (.FILE2) of the weapon that gives it, as
     // weapon/<model stem>: its mesh, and its grip and muzzle frames in the
@@ -668,6 +860,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                     ManifestEntry entry{{"file", json_string(weapon_file.generic_string())},
                                         {"source", json_string(source(model_path))},
                                         {"stance", json_string(weapon_stance(*weapon))}};
+                    if (const auto sounds = weapon_sounds(*weapon, false); !sounds.empty()) entry.emplace_back("sounds", sounds);
                     if (!model.chunks().empty() && model.chunks().front().type == 0x10) {
                         const auto frames = weapon_frames(model.chunks().front(), model.bytes());
                         if (frames.grip) entry.emplace_back("grip", json_transform(*frames.grip));
@@ -785,6 +978,138 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                                         {"roles", "{" + clip_fields + "}"}};
         }
     }
+
+    // First person: each player class's hands (.MODELO) holding each weapon
+    // with a first-person model (.FILE) and clips (.ANIMACIONES_PLAYER), as
+    // fp/<hands stem>_<weapon model stem>: the hands' skin, the weapon on the
+    // item joint of the hand its .MANO names (50 right, 40 left, as in third
+    // person), and the clips named by first_person_role. The models are in
+    // camera space: forward -Z, up Y, the eye at the origin. Which
+    // weapons a player starts with is the mission script's (START_GAME), not
+    // read yet: every weapon of the mission that has a first-person model is
+    // exported. The player character's entry lists them under
+    // `first_person`: weapon record name -> ID.
+    if (editor)
+        if (const auto file = editor->file_of_kind(MissionFileKind::weapons)) {
+            const auto weapons = WeaponDatabase::project(editor->document(*file));
+            const auto resources = editor->resource_index(package);
+            const auto& records = editor->animations().records();
+            const auto resolve = [&](const std::string& reference) -> std::optional<std::filesystem::path> {
+                const auto resolution = resources.resolve(reference);
+                if (resolution.candidate_indices.size() != 1) return std::nullopt;
+                return resources.resources()[resolution.candidate_indices.front()].path;
+            };
+            for (const auto& [class_id, character_id] : class_ids) {
+                const auto definitions = editor->objects().find_class(class_id);
+                if (definitions.size() != 1 || !definitions.front()->first_person_model) continue;
+                const auto hands_path = resolve(*definitions.front()->first_person_model);
+                if (!hands_path) {
+                    result.problems.push_back("class " + std::to_string(class_id) + ": hands " +
+                                              *definitions.front()->first_person_model + " not found");
+                    continue;
+                }
+                const auto hands = rws::Document::load(*hands_path);
+                if (hands.chunks().empty() || hands.chunks().front().type != 0x10) continue;
+                const auto hands_stem = lower(hands_path->stem().string());
+                std::string first_person;  // "name": "fp/...", ...
+                for (const auto& weapon : weapons.definitions()) {
+                    if (!weapon.first_person_model || weapon.first_person_model->empty() || weapon.player_animations.empty())
+                        continue;
+                    const auto weapon_path = resolve(*weapon.first_person_model);
+                    if (!weapon_path) {
+                        result.problems.push_back("fp " + weapon.name.value_or("?") + ": " + *weapon.first_person_model + " not found");
+                        continue;
+                    }
+                    const auto id = "fp/" + hands_stem + "_" + lower(weapon_path->stem().string());
+                    const auto listed = "\"" + lower(weapon.name.value_or(id)) + "\"";
+                    if (!assets.contains(id)) {
+                        const auto held = rws::Document::load(*weapon_path);
+                        if (held.chunks().empty() || held.chunks().front().type != 0x10) {
+                            result.problems.push_back(id + ": " + source(*weapon_path) + " is not a Clump");
+                            continue;
+                        }
+                        std::vector<rws::CharacterClip> clips;
+                        std::string role_fields;
+                        std::set<std::string> roles_taken;
+                        for (const auto& [type, animation_id] : weapon.player_animations) {
+                            const auto role = first_person_role(type);
+                            if (!roles_taken.insert(role).second) continue;
+                            const auto record = std::ranges::find_if(records, [&](const AnimationRecord& r) { return r.id == animation_id; });
+                            if (record == records.end() || record->variants.empty()) {
+                                result.problems.push_back(id + "/" + role + ": no animation " + std::to_string(animation_id));
+                                continue;
+                            }
+                            const bool loop = record->loop.value_or(false);
+                            std::string variants;
+                            for (const auto& variant : record->variants) {
+                                const auto name = variants.empty() ? role : role + "_" + std::to_string(std::ranges::count(variants, '{') + 1);
+                                const auto path = resolve(variant.reference);
+                                if (!path) {
+                                    result.problems.push_back(id + "/" + name + ": " + variant.reference + " not found");
+                                    continue;
+                                }
+                                const auto document = rws::Document::load(*path);
+                                const auto chunk = std::ranges::find_if(document.chunks(), [](const rws::Chunk& c) { return c.type == 0x1B; });
+                                if (chunk == document.chunks().end()) continue;
+                                clips.push_back({name, rws::decode_animation(*chunk, document.bytes()), loop});
+                                // Sounds the clip starts: [seconds, sound ID].
+                                std::string sounds;
+                                for (const auto& event : variant.sounds) {
+                                    std::int32_t sound_id{};
+                                    const auto& text = event.logical_id;
+                                    if (!event.time || std::from_chars(text.data(), text.data() + text.size(), sound_id).ec != std::errc{})
+                                        continue;
+                                    const auto found = sound_ids.find(sound_id);
+                                    if (found == sound_ids.end()) continue;
+                                    sounds += std::string(sounds.empty() ? "" : ", ") + "[" + json_number(*event.time) + ", " +
+                                              json_string(found->second) + "]";
+                                }
+                                variants += std::string(variants.empty() ? "" : ", ") + json_string(name) +
+                                            ": {\"source\": " + json_string(source(*path)) +
+                                            (sounds.empty() ? "" : ", \"sounds\": [" + sounds + "]") + "}";
+                            }
+                            if (variants.empty()) continue;
+                            role_fields += std::string(role_fields.empty() ? "" : ", ") + json_string(role) +
+                                           ": {\"loop\": " + (loop ? "true" : "false") + ", \"clip\": " +
+                                           json_string(record->logical_name) + ", \"type\": " + json_string(type) +
+                                           ", \"clips\": {" + variants + "}}";
+                        }
+                        const auto fp_file = std::filesystem::path("fp") / (id.substr(3) + ".gltf");
+                        try {
+                            const auto stats = rws::export_character_gltf(
+                                hands.chunks().front(), hands.bytes(), options.out / fp_file, std::move(clips),
+                                textures.resolver(std::vector{*hands_path, *weapon_path}, options.out / fp_file), {}, {}, true,
+                                {{&held.chunks().front(), held.bytes(), lower(weapon.hand.value_or("")) == "izquierda" ? 40 : 50}});
+                            for (const auto& why : stats.skipped_clips) result.problems.push_back(id + "/" + why);
+                            for (const auto& why : stats.skipped_parts) result.problems.push_back(id + ": " + why);
+                            result.lines.push_back("fp\t" + fp_file.generic_string() + '\t' + std::to_string(stats.clips) +
+                                                   " clips, " + std::to_string(stats.attached_parts) + " weapon parts");
+                        } catch (const std::exception& error) {
+                            result.problems.push_back(id + ": " + error.what());
+                            continue;
+                        }
+                        ManifestEntry entry{{"file", json_string(fp_file.generic_string())},
+                                            {"source", json_string(source(*hands_path))},
+                                            {"weapon_source", json_string(source(*weapon_path))},
+                                            {"name", json_string(weapon.name.value_or(""))},
+                                            {"roles", "{" + role_fields + "}"}};
+                        if (weapon.type) entry.emplace_back("type", json_string(*weapon.type));
+                        if (const auto sounds = weapon_sounds(weapon, true); !sounds.empty()) entry.emplace_back("sounds", sounds);
+                        // The barrel's end, from the hand's item joint (for flashes and shots).
+                        const auto joint = lower(weapon.hand.value_or("")) == "izquierda" ? "bone_40" : "bone_50";
+                        if (const auto frames = weapon_frames(held.chunks().front(), held.bytes(), true); frames.muzzle) {
+                            entry.emplace_back("muzzle_joint", json_string(joint));
+                            entry.emplace_back("muzzle", json_transform(*frames.muzzle));
+                        }
+                        assets[id] = std::move(entry);
+                    }
+                    if (first_person.find(listed + ":") == std::string::npos)
+                        first_person += std::string(first_person.empty() ? "" : ", ") + listed + ": " + json_string(id);
+                }
+                if (!first_person.empty() && assets.contains(character_id))
+                    assets[character_id].emplace_back("first_person", "{" + first_person + "}");
+            }
+        }
 
     // Actors, routes, areas and dummies, in metres and radians.
     const auto markers = map_folder / "markers.json";
