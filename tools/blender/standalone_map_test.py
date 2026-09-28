@@ -8,7 +8,10 @@ only). The test decompiles it with `csf-mod world-source`, imports it through
 the add-on's Import map, checks every face, material and collision shade came
 in, exports the scene unchanged and checks the export against the source
 (positions to 0.01 cm, UVs to 1e-4), then raises one visual vertex and builds the map with
-`csf-mod world-build --keep-props`. It also checks that a glTF-imported
+`csf-mod world-build --keep-props`. It checks that painted shade colours
+export as the game's exporter bakes them (mean of R, G, B over the corners),
+that the older csf_shade face attribute still works and that Bake shade darkens
+a shadowed floor. It also checks that a glTF-imported
 material falls back to its rws_* properties and that glTF props are skipped.
 Everything is written under OUT_DIR.
 """
@@ -64,6 +67,10 @@ def same_faces(before: list, after: list) -> bool:
         for (key, corners), (other_key, other) in zip(before, after))
 
 
+def before_collision(faces: list) -> list:
+    return [face for face in faces if face[0][0] == "collision"]
+
+
 def csf_mod(*arguments) -> str:
     result = subprocess.run([os.environ["CSF_MOD"], *map(str, arguments)], capture_output=True, text=True,
                             errors="replace")
@@ -87,7 +94,9 @@ def main(argv: list[str]) -> int:
     check(visual is not None and collision is not None and stats["objects"] == 2, "a visual and a collision object")
     check(visual["csf_role"] == "visual" and collision["csf_role"] == "collision", "roles are set")
     check(len(visual.data.polygons) + len(collision.data.polygons) == stats["faces"], "every face imported")
-    check(collision.data.attributes["csf_shade"].domain == "FACE", "collision shade is a face attribute")
+    shade_colors = collision.data.color_attributes.get(csfworld.SHADE_COLORS)
+    check(shade_colors is not None and shade_colors.domain == "CORNER", "collision shade is a corner colour")
+    check(collision.data.color_attributes.active_color_name == csfworld.SHADE_COLORS, "and is the painted one")
     check(len(visual.data.uv_layers) == 2, "visual has base and lightmap UVs")
     check(all("csf_texture" in m and "csf_surface" in m for m in visual.data.materials), "materials carry names")
     textured = [m for m in visual.data.materials if any(n.type == "TEX_IMAGE" for n in m.node_tree.nodes)]
@@ -124,6 +133,56 @@ def main(argv: list[str]) -> int:
     check("visual\t" in report and "collision\t" in report and built.is_file(), "world-build compiles the edit")
     check(any(line.startswith("visual\t") and f"\t{len(visual.data.polygons)} triangles" in line
               for line in report.splitlines()), "the built map has every visual triangle")
+
+    # Painted shade: per corner, then per vertex; each face's shade is the
+    # integer mean of R, G and B over its three corners, as sRGB bytes.
+    mesh = collision.data
+    triangle = next(p for p in mesh.polygons if p.loop_total == 3)
+    corners = [(30, 60, 90), (200, 10, 0), (255, 255, 254)]
+    for loop, rgb in zip(triangle.loop_indices, corners):
+        shade_colors.data[loop].color_srgb = (*(c / 255.0 for c in rgb), 1.0)
+    painted = out / "painted.csfworld"
+    csfworld.export(str(painted), bpy.context.scene, objects=[collision], precise=True)
+    after = faces_of(painted)
+    expected = sum(sum(rgb) for rgb in corners) // 9
+    check(after[triangle.index][0][3] == expected, f"a painted face exports shade {expected}")
+    check(all(a[0] == b[0] for k, (a, b) in enumerate(zip(before_collision(before), after)) if k != triangle.index),
+          "the other faces keep their shades")
+    point_colors = mesh.color_attributes.new("csf_shade_color_points", "BYTE_COLOR", "POINT")
+    for k, vertex in enumerate(triangle.vertices):
+        point_colors.data[vertex].color_srgb = (*(c / 255.0 for c in corners[k]), 1.0)
+    mesh.color_attributes.remove(shade_colors)
+    point_colors.name = csfworld.SHADE_COLORS
+    csfworld.export(str(painted), bpy.context.scene, objects=[collision], precise=True)
+    check(faces_of(painted)[triangle.index][0][3] == expected, "per-vertex shade colours work too")
+
+    # Without colours, the csf_shade face attribute of older files.
+    mesh.color_attributes.remove(mesh.color_attributes[csfworld.SHADE_COLORS])
+    legacy = mesh.attributes.new("csf_shade", "INT", "FACE")
+    legacy.data.foreach_set("value", [17] * len(mesh.polygons))
+    csfworld.export(str(painted), bpy.context.scene, objects=[collision], precise=True)
+    check(all(face[0][3] == 17 for face in faces_of(painted)), "csf_shade still sets the shade without colours")
+
+    # Bake shade: a floor half under a roof, lit by a sun from above.
+    for obj in list(bpy.data.objects):
+        bpy.data.objects.remove(obj)
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=20, y_subdivisions=4, size=8)
+    floor = bpy.context.active_object
+    floor["csf_role"] = "collision"
+    bpy.ops.mesh.primitive_plane_add(size=10, location=(5, 0, 3))
+    bpy.context.active_object["csf_role"] = "visual"
+    bpy.ops.object.light_add(type="SUN", rotation=(0, 0, 0))
+    bpy.context.active_object.data.energy = 1.0
+    check(bpy.ops.csf.bake_shade(samples=64) == {"FINISHED"}, "Bake shade runs")
+    baked = out / "baked.csfworld"
+    csfworld.export(str(baked), bpy.context.scene, objects=[floor])
+    floor_faces = faces_of(baked)
+    lit = [f[0][3] for f in floor_faces if max(c[0][0] for c in f[1]) < -100]  # x < -1 m
+    shadowed = [f[0][3] for f in floor_faces if min(c[0][0] for c in f[1]) > 100
+                and max(c[0][0] for c in f[1]) < 300]  # 1 m < x < 3 m, under the roof
+    check(lit and min(lit) >= 250, f"a Sun of strength 1 lights the open floor fully ({min(lit)}-{max(lit)})")
+    check(shadowed and max(shadowed) < 100,
+          f"the floor under the roof is dark ({min(shadowed)}-{max(shadowed)})")
 
     # glTF path: rws_* material properties, props skipped.
     for obj in list(bpy.data.objects):

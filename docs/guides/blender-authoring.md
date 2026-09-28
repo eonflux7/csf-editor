@@ -95,10 +95,8 @@ the shipped normals) and *collision* (drawn as wire, each surface in the
 colour the game gives it in `Materiales.bdd`: Intangible, the invisible walls,
 is red, Madera brown, Tierra lavender; switch Viewport Shading's colour to
 *Material* to see them). Materials carry `csf_texture`, `csf_surface`,
-`csf_lightmap` and, on collision, `csf_surface_color`; each collision
-face keeps its shade (the per-triangle byte the game bakes from lighting) in
-the face attribute `csf_shade`, which new faces inherit from their
-neighbours. Keep the collision object visible: hidden objects are not exported.
+`csf_lightmap` and, on collision, `csf_surface_color`. Keep the collision
+object visible: hidden objects are not exported.
 
 **Export .csfworld** writes the visible meshes with nine significant digits,
 so untouched vertices come back where they were. `world-build` resolves
@@ -136,6 +134,34 @@ A glTF from `rws-info --export-scene-gltf` imported into Blender also exports:
 its materials fall back to their `rws_base_texture`, `rws_surface_name` and
 `rws_lightmap_texture` properties and its props (`rws_kind`) are skipped, but
 it has no collision object or shades, so prefer Import map.
+
+## Collision shade
+
+Each collision triangle carries a shade byte, 0-255. The game's own exporter
+baked it from the collision World's vertex colours, as the integer mean of R,
+G and B over the triangle's three corners. It is meant for darkening the
+entities that stand in shadow, but no runtime reader of it has been found yet
+(format-reversal KB-world-geometry-4), so check in game whether it does.
+Import map keeps it in the same form: the colour attribute `csf_shade_color`
+of the collision object, grey per face, with 255 as white. A project's terrain
+and buildings (role *both*) take it the same way.
+
+- **Paint** it in Vertex Paint mode, or see it with Viewport Shading's colour
+  set to *Attribute*. Export writes each triangle's shade as the game's
+  exporter did: `(R + G + B of its three corners) / 9`, from the sRGB bytes
+  you see. A colour attribute with that name per vertex works too.
+- **Bake shade** (sidebar box *Collision shade*) bakes the scene's light into
+  the selected collision objects (role *collision* or *both*; with none
+  selected, all of them) with Cycles, direct and indirect, without colour. The
+  scale is linear: a Sun of strength 1 falling straight on gives 255 and the
+  world colour lights the shadows. Visual meshes cast shadows too. Use 64 or
+  more samples, because fewer leave the shade noisy.
+- **Shade colours** gives a new collision mesh the attribute, filled with its
+  current shades, so you can start painting.
+
+Without `csf_shade_color`, a face's shade comes from the integer face attribute
+`csf_shade` (what versions before 0.4.0 imported), else from the material's
+`csf_shade`, else 228, the most common shipped value.
 
 ## Headless
 

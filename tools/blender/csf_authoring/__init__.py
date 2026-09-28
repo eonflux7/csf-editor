@@ -18,6 +18,8 @@ Blender owns mesh sources; csf-editor owns placements and mission records
   (.rws, through `csf-mod world-source`) or a .csfworld with its visual and
   collision geometry, and export the scene as a .csfworld that
   `csf-mod world-build` compiles with the original map as donor.
+* Collision shade: the per-triangle collision byte as the vertex colours
+  `csf_shade_color`, to paint (Vertex Paint) or bake from the scene's lights.
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ csfworld = importlib.reload(csfworld)
 bl_info = {
     "name": "CSF authoring",
     "author": "csf-editor",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (4, 2, 0),
     "location": "3D View > Sidebar > CSF",
     "description": "Terrain and building assets for csf-editor authoring projects",
@@ -603,6 +605,104 @@ class CSF_OT_export_world(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def shade_objects(context) -> list:
+    """The selected meshes that export collision (role collision or both),
+    else every such exportable mesh of the scene."""
+    def collides(obj) -> bool:
+        return obj.type == "MESH" and str(obj.get("csf_role", "both")) != "visual" and not csfworld.is_reference(obj)
+    selected = [obj for obj in context.selected_objects if collides(obj)]
+    return selected or [obj for obj in csfworld.exportable(context.scene) if collides(obj)]
+
+
+class CSF_OT_shade_colors(bpy.types.Operator):
+    """Give the collision meshes shade colours (csf_shade_color) from their current shades, to paint in Vertex Paint"""
+    bl_idname = "csf.shade_colors"
+    bl_label = "Shade colours"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        made = 0
+        for obj in shade_objects(context):
+            if obj.data.color_attributes.get(csfworld.SHADE_COLORS) is None:
+                csfworld.set_shade_colors(obj.data, csfworld.face_shades(obj, obj.data))
+                made += 1
+        self.report({"INFO"}, f"Shade colours added to {made} objects" if made else
+                    "The collision meshes already have shade colours")
+        return {"FINISHED"}
+
+
+SHADE_BAKE = "csf_shade_bake"
+
+
+def bake_shade(context, objects, samples: int) -> None:
+    """Bake the scene's light (Cycles, direct and indirect, no colour) into
+    each object's csf_shade_color, linearly: 255 is the light of a Sun of
+    strength 1 falling straight on, and the world colour lights the shadows."""
+    scene = context.scene
+    if not objects:
+        raise RuntimeError("No collision meshes to bake (role collision or both)")
+    if not any(obj.type == "LIGHT" for obj in scene.objects) and scene.world is None:
+        raise RuntimeError("The scene has no lights; add a Sun (its rotation sets the light direction)")
+    scene.render.engine = "CYCLES"
+    scene.cycles.samples = samples
+    scene.render.bake.target = "VERTEX_COLORS"
+    scene.render.bake.use_pass_direct = True
+    scene.render.bake.use_pass_indirect = True
+    scene.render.bake.use_pass_color = False
+    if context.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    # Baked into a float attribute first: the byte one would store the light
+    # through the sRGB curve.
+    targets = []
+    for obj in objects:
+        colors = obj.data.color_attributes
+        if colors.get(SHADE_BAKE) is not None:
+            colors.remove(colors[SHADE_BAKE])
+        colors.active_color = colors.new(SHADE_BAKE, "FLOAT_COLOR", "CORNER")
+        targets.append(obj)
+    try:
+        bpy.ops.object.select_all(action="DESELECT")
+        for obj in objects:
+            obj.select_set(True)
+        context.view_layer.objects.active = objects[0]
+        bpy.ops.object.bake(type="DIFFUSE", pass_filter={"DIRECT", "INDIRECT"}, target="VERTEX_COLORS")
+        for obj in objects:
+            baked = obj.data.color_attributes[SHADE_BAKE]
+            values = [0.0] * (len(baked.data) * 4)
+            baked.data.foreach_get("color", values)
+            # Cycles' diffuse light of a Sun of strength 1 is 1/pi.
+            corners = [min(max((values[k] + values[k + 1] + values[k + 2]) / 3.0 * math.pi, 0.0), 1.0)
+                       for k in range(0, len(values), 4)]
+            csfworld.set_shade_colors(obj.data, corners=corners)
+    finally:
+        for obj in targets:
+            colors = obj.data.color_attributes
+            if colors.get(SHADE_BAKE) is not None:
+                colors.remove(colors[SHADE_BAKE])
+            if colors.get(csfworld.SHADE_COLORS) is not None:
+                colors.active_color = colors[csfworld.SHADE_COLORS]
+
+
+class CSF_OT_bake_shade(bpy.types.Operator):
+    """Bake the scene's lighting into the collision meshes' shade colours (Cycles, light only)"""
+    bl_idname = "csf.bake_shade"
+    bl_label = "Bake shade"
+    samples: bpy.props.IntProperty(name="Samples", default=64, min=1, max=4096)
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        objects = shade_objects(context)
+        try:
+            bake_shade(context, objects, self.samples)
+        except (RuntimeError, OSError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Baked the shade of {len(objects)} objects")
+        return {"FINISHED"}
+
+
 def menu_import(self, context):
     self.layout.operator(CSF_OT_import_map.bl_idname, text="CSF map (.rws, .csfworld)")
 
@@ -647,10 +747,16 @@ class CSF_PT_authoring(bpy.types.Panel):
         row = box.row(align=True)
         row.operator("csf.import_map", icon="IMPORT")
         row.operator("csf.export_world", icon="EXPORT")
+        box = layout.box()
+        box.label(text="Collision shade")
+        row = box.row(align=True)
+        row.operator("csf.shade_colors", icon="VPAINT_HLT")
+        row.operator("csf.bake_shade", icon="LIGHT_SUN")
 
 
 CLASSES = (CsfPreferences, CSF_OT_tag_asset, CSF_OT_untag_asset, CSF_OT_bake, CSF_OT_send, CSF_OT_load_reference,
-           CSF_OT_clear_reference, CSF_OT_import_model, CSF_OT_import_map, CSF_OT_export_world, CSF_PT_authoring)
+           CSF_OT_clear_reference, CSF_OT_import_model, CSF_OT_import_map, CSF_OT_export_world, CSF_OT_shade_colors,
+           CSF_OT_bake_shade, CSF_PT_authoring)
 
 
 def register():
