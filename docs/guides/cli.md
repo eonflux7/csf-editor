@@ -392,6 +392,10 @@ blender --background scene.blend --python tools/blender/export_csf_world.py -- o
 ./build/Release/csf-mod world-ground out/terrain.csfworld 0 0 2500 -2000
 ```
 
+Visual Worlds are built with sectors of up to 21 845 triangles (the most
+their u16 indices allow) and collision Worlds with up to 1024, as the shipped
+maps are: the game occlusion-culls each visual sector, and small visual sectors
+flickered at their borders in game. `--max-sector-triangles N` sets both.
 `--keep-props` keeps the donor's Clumps and scene-instance records in the new
 map. `--texture` and `--lightmap` add textures of the map's own: DXT1 DDS files
 in `Textures/` next to the new map and a copy of the donor's `.txl` listing

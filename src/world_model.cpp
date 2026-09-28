@@ -529,7 +529,7 @@ constexpr std::uint32_t right_to_render_chunk = 0x1FU;
 constexpr std::uint32_t material_effects_chunk = 0x120U;
 constexpr std::uint32_t user_data_chunk = 0x11FU;
 // Three u16 vertex indices per triangle and u16 sector counts.
-constexpr std::size_t max_sector_triangles = 0xFFFFU / 3U;
+constexpr std::size_t max_sector_triangles = visual_sector_triangles;
 
 float axis_value(const Vec3& value, const std::size_t axis) noexcept {
     return axis == 0 ? value.x : (axis == 1 ? value.y : value.z);
