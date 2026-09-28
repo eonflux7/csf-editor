@@ -227,7 +227,8 @@ It writes:
 | `maps/<Mission>/collision.gltf` | The collision World, as `--export-collision-gltf` writes it |
 | `maps/<Mission>/sky.gltf` | The sky dome the mission's `.vis` names, when it has one: a sphere of about 42 m to draw around the camera |
 | `maps/<Mission>/markers.json` | Actors (with the logical ID of their model), navigation groups, links, areas and dummies, in game centimetres |
-| `characters/<model>.gltf` | One model per actor class whose model lives under `Models/Char` |
+| `characters/<model>.gltf` | One model per actor class whose model lives under `Models/Char`: skinned, on a skeleton named and shaped for Godot's `SkeletonProfileHumanoid` (below) |
+| `anims/<stance>.gltf` | A clip library: the skeleton and one animation per role (`anims/smg.gltf`: idle, walk, run, crouch_walk, shoot, reload, die, ...), no mesh |
 | `props/<model>.gltf` | One model per other actor class |
 | `textures/<corpus path>.png` | Every texture those files name, decoded from DDS; the path is the source's, in lower case (`textures/ambush/maps/st08/textures/sdet_01a.png`) |
 
@@ -240,6 +241,20 @@ multiplied with the base texture (at twice its value by default, as in the
 editor's viewport). A texture is looked up
 beside the file that names it, then in each `Textures` folder from there up to
 the mission package, ignoring case; one found nowhere is a `problem` line.
+
+Characters are written by `rws::export_character_gltf`: one node per Frame at
+the bind pose the Skin plugin expects, the skinned Geometry with
+`JOINTS_0`/`WEIGHTS_0`, and rigid parts (canteen, bag) under their bone. Every
+shipped human is the same 44-joint 3ds Max Biped, so one table names the
+joints with `SkeletonProfileHumanoid` names (`Hips`, `LeftUpperArm`, ...; the
+rest keep `bone_<HAnim id>`) and moves three of them to the profile's parents
+(Hips under Root, the clavicles under the Chest, the holster dummies under the
+Hips); world poses and skinning are unchanged. Clips are sampled at 30 frames
+a second through `evaluate_pose`, the viewport's evaluator. Which clip plays
+which role is our own table in `src/csf_godot_export.cpp` (the game chooses
+by slot in code not joined to data yet); the manifest's `anim/<stance>` entry
+gives each role's `loop`, its `speed` in metres a second (`.VEL`; the clips
+stay in place) and its source.
 
 The output folder must be new, empty or an earlier export; the command refuses
 any other folder. Re-running it on the same corpus writes byte-identical files.

@@ -3840,6 +3840,99 @@ int run_tests() {
         hierarchy.nodes = {{100, 0, 0}, {200, 1, 0}};
         const auto compatibility = rws::map_animation_tracks(clip, hierarchy, frames.frames.size());
         CHECK(compatibility.compatible && clip.tracks[1].node_id == 200);
+        {
+            // A character export (export_character_gltf): a Clump with a root frame,
+            // two HAnim joints (100 at the origin, 200 two units up) and a
+            // three-vertex Geometry skinned to them.
+            const auto chunk = [](const std::uint32_t type, const std::vector<std::byte>& payload) {
+                std::vector<std::byte> out;
+                append_header(out, type, static_cast<std::uint32_t>(payload.size()));
+                out.insert(out.end(), payload.begin(), payload.end());
+                return out;
+            };
+            const auto join = [](std::initializer_list<std::vector<std::byte>> parts) {
+                std::vector<std::byte> out;
+                for (const auto& part : parts) out.insert(out.end(), part.begin(), part.end());
+                return out;
+            };
+            std::vector<std::byte> frame_struct;
+            append_u32(frame_struct, 3);
+            for (int i = 0; i < 3; ++i) {
+                for (const float value : {1.F, 0.F, 0.F, 0.F, 1.F, 0.F, 0.F, 0.F, 1.F}) append_f32(frame_struct, value);
+                for (const float value : {0.F, i == 2 ? 200.F : 0.F, 0.F}) append_f32(frame_struct, value);
+                append_u32(frame_struct, i == 0 ? 0xFFFFFFFFU : static_cast<std::uint32_t>(i - 1));
+                append_u32(frame_struct, 0);
+            }
+            std::vector<std::byte> root_hanim, child_hanim;
+            for (const auto value : {0x100U, 100U, 2U, 0U, 36U, 100U, 0U, 0U, 200U, 1U, 0U}) append_u32(root_hanim, value);
+            for (const auto value : {0x100U, 200U, 0U}) append_u32(child_hanim, value);
+            const auto frame_list = chunk(0x0E, join({chunk(0x01, frame_struct), chunk(0x03, {}),
+                                                      chunk(0x03, chunk(0x11E, root_hanim)),
+                                                      chunk(0x03, chunk(0x11E, child_hanim))}));
+            std::vector<std::byte> geometry_struct;
+            for (const auto value : {0x12U, 1U, 3U, 1U}) append_u32(geometry_struct, value);
+            for (const auto value : {0x00010000U, 0x00000002U}) append_u32(geometry_struct, value);  // triangle 0 1 2
+            for (const auto value : {0.F, 0.F, 0.F, 300.F}) append_f32(geometry_struct, value);
+            append_u32(geometry_struct, 1);
+            append_u32(geometry_struct, 1);
+            for (const float value : {0.F, 0.F, 0.F, 100.F, 0.F, 0.F, 0.F, 200.F, 0.F}) append_f32(geometry_struct, value);
+            for (int i = 0; i < 3; ++i) for (const float value : {0.F, 0.F, 1.F}) append_f32(geometry_struct, value);
+            std::vector<std::byte> skin;
+            for (const auto value : {2, 2, 1, 0, 0, 1}) skin.push_back(static_cast<std::byte>(value));
+            for (const auto value : {0U, 0U, 1U}) append_u32(skin, value);           // vertex 2 follows joint 200
+            for (int i = 0; i < 3; ++i) for (int j = 0; j < 4; ++j) append_f32(skin, j == 0 ? 1.F : 0.F);
+            for (int bone = 0; bone < 2; ++bone)
+                for (int i = 0; i < 16; ++i)
+                    append_f32(skin, i == 0 || i == 5 || i == 10 || i == 15 ? 1.F : i == 13 && bone == 1 ? -200.F : 0.F);
+            for (const auto value : {0U, 0U, 0U}) append_u32(skin, value);
+            std::vector<std::byte> list_struct, material_struct;
+            append_u32(list_struct, 1);
+            append_u32(list_struct, 0xFFFFFFFFU);
+            for (const auto value : {0U, 0xFFFFFFFFU, 0U, 0U}) append_u32(material_struct, value);
+            for (const auto value : {1.F, 1.F, 1.F}) append_f32(material_struct, value);
+            const auto materials = chunk(0x08, join({chunk(0x01, list_struct), chunk(0x07, chunk(0x01, material_struct))}));
+            const auto geometry = chunk(0x0F, join({chunk(0x01, geometry_struct), materials, chunk(0x03, chunk(0x116, skin))}));
+            std::vector<std::byte> count, atomic_struct, clump_struct;
+            append_u32(count, 1);
+            for (const auto value : {0U, 0U, 5U, 0U}) append_u32(atomic_struct, value);
+            for (const auto value : {1U, 0U, 0U}) append_u32(clump_struct, value);
+            const auto clump_bytes = chunk(0x10, join({chunk(0x01, clump_struct), frame_list,
+                                                       chunk(0x1A, join({chunk(0x01, count), geometry})),
+                                                       chunk(0x14, chunk(0x01, atomic_struct))}));
+            const auto character = rws::Document::from_bytes(clump_bytes);
+            const auto out = std::filesystem::temp_directory_path() / "rwsman-character-export" / "guard.gltf";
+            std::filesystem::remove_all(out.parent_path());
+            const auto namer = [](const std::int32_t id) { return id == 100 ? std::string("Hips") : std::string(); };
+            const auto stats = rws::export_character_gltf(character.chunks()[0], character.bytes(), out,
+                                                          {{"walk", clip, true}}, {}, namer);
+            CHECK(stats.joints == 2 && stats.meshes == 1 && stats.triangles == 1 && stats.clips == 1 &&
+                  stats.skipped_clips.empty());
+            std::ifstream input(out, std::ios::binary);
+            const std::string gltf(std::istreambuf_iterator<char>(input), {});
+            CHECK(gltf.find(R"("name": "Hips")") != std::string::npos &&
+                  gltf.find(R"("name": "bone_200")") != std::string::npos &&
+                  gltf.find(R"("name": "frame_0")") != std::string::npos);
+            CHECK(gltf.find(R"("joints": [1, 2]})") != std::string::npos &&
+                  gltf.find(R"("JOINTS_0")") != std::string::npos && gltf.find(R"("WEIGHTS_0")") != std::string::npos);
+            // One second at 30 samples a second: 31 samples from 0 to 1.
+            CHECK(gltf.find(R"({"name": "walk", "samplers": [)") != std::string::npos &&
+                  gltf.find(R"("count": 31, "type": "SCALAR", "min": [0], "max": [1])") != std::string::npos);
+            // Joint 200 two metres up, in metres.
+            CHECK(gltf.find(R"("name": "bone_200", "rotation": [0, 0, 0, 1], "translation": [0, 2, 0])") != std::string::npos);
+            // A joint cannot hang under its own child.
+            bool threw = false;
+            try {
+                (void)rws::export_character_gltf(character.chunks()[0], character.bytes(), out, {}, {}, {},
+                                                 [](const std::int32_t id) -> std::optional<std::int32_t> {
+                                                     if (id == 100) return 200;
+                                                     return std::nullopt;
+                                                 });
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            CHECK(threw);
+            std::filesystem::remove_all(out.parent_path());
+        }
         // Frame List order is not HAnim matrix order. Frame 0 has no HAnim
         // node, matrix 0 maps to frame 1, and matrix 1 maps to frame 3.
         std::vector<std::byte> frame_payload;

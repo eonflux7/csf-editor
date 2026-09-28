@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rws/animation.hpp"
 #include "rws/document.hpp"
 
 #include <cstddef>
@@ -59,6 +60,37 @@ using SceneTextureResolver = std::function<std::optional<SceneTexture>(std::stri
                                                  std::span<const std::byte> bytes,
                                                  const std::filesystem::path& output_path,
                                                  const SceneTextureResolver& textures = {});
+
+// One animation of a character export, under the name the glTF gives it.
+struct CharacterClip {
+    std::string name;
+    AnimationClip clip;
+    bool loop{};
+};
+struct CharacterExportStats {
+    std::size_t joints{}, meshes{}, triangles{}, materials{}, clips{};
+    std::vector<std::string> skipped_clips;  // "name: why"
+};
+// A skinned Clump (a character) as a glTF skeleton: one node per Frame at
+// the bind pose the Skin plugin expects (recover_skin_bind_pose), named by
+// `joint_name` from its HAnim node ID (default bone_<id>; frames without one
+// are frame_<index>). The skinned Geometry carries JOINTS_0/WEIGHTS_0 over
+// the Skin's bones; the other Atomics hang rigidly under their Frame. Each
+// clip is sampled at 30 frames a second through evaluate_pose, the
+// viewport's evaluator, as translation and rotation channels on the joints.
+// `joint_parent` may hang a joint under another (by HAnim node IDs) to match
+// a target hierarchy; poses and skinning stay as they are in world space.
+// With `include_meshes` false only the skeleton and clips are written (an
+// animation library). Metres, Y up, like the scene export.
+using JointNamer = std::function<std::string(std::int32_t node_id)>;
+using JointParent = std::function<std::optional<std::int32_t>(std::int32_t node_id)>;
+[[nodiscard]] CharacterExportStats export_character_gltf(const Chunk& clump, std::span<const std::byte> bytes,
+                                                         const std::filesystem::path& output_path,
+                                                         std::vector<CharacterClip> clips = {},
+                                                         const SceneTextureResolver& textures = {},
+                                                         const JointNamer& joint_name = {},
+                                                         const JointParent& joint_parent = {},
+                                                         bool include_meshes = true);
 
 [[nodiscard]] SceneExportStats export_collision_gltf(const std::vector<Chunk>& chunks,
                                                      std::span<const std::byte> bytes,

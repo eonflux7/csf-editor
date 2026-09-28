@@ -1,5 +1,6 @@
 #include "csf/godot_export.hpp"
 
+#include "csf/animation_catalog.hpp"
 #include "csf/authoring_project.hpp"
 #include "csf/mission_edit.hpp"
 #include "csf/object_database.hpp"
@@ -9,7 +10,9 @@
 #include "rws/texture_image.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <charconv>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -153,6 +156,60 @@ private:
     std::set<std::string> missing_;              // names found nowhere
 };
 
+// Names a CSF human's joint by its HAnim node ID with Godot's
+// SkeletonProfileHumanoid names, so any humanoid animation retargets onto it.
+// Every shipped human has the same 44 IDs (a 3ds Max Biped); the table was
+// read from their bind pose: the model faces +Z and its left is +X, as in
+// glTF. Others (the Biped centre, the motion node, hand and holster dummies,
+// finger and head ends) keep bone_<id>.
+std::string humanoid_joint_name(const std::int32_t node_id) {
+    static const std::map<std::int32_t, std::string_view> names{
+        {2000, "Root"},          {1045, "Hips"},           {20, "Spine"},           {30, "Chest"},
+        {1040, "Neck"},          {60, "Head"},             {1046, "Jaw"},
+        {1003, "LeftShoulder"},  {1039, "LeftUpperArm"},   {2004, "LeftLowerArm"},  {1021, "LeftHand"},
+        {1004, "LeftThumbProximal"},  {1005, "LeftIndexProximal"},
+        {1057, "RightShoulder"}, {1093, "RightUpperArm"},  {2007, "RightLowerArm"}, {1075, "RightHand"},
+        {1058, "RightThumbProximal"}, {1059, "RightIndexProximal"},
+        {1023, "LeftUpperLeg"},  {1002, "LeftLowerLeg"},   {1019, "LeftFoot"},      {1024, "LeftToes"},
+        {1077, "RightUpperLeg"}, {1056, "RightLowerLeg"},  {1073, "RightFoot"},     {1078, "RightToes"},
+    };
+    const auto it = names.find(node_id);
+    return it == names.end() ? std::string{} : std::string(it->second);
+}
+
+// Where the humanoid profile hangs a joint that the Biped hangs elsewhere, so
+// retargeting (which copies rotations relative to the parent) sees the same
+// chain on both sides: the Hips straight under the Root (the Biped centre, ID
+// 1, becomes a leaf that keeps its own motion), the clavicles under the Chest
+// rather than the Neck, and the holster dummies (70-72: canteen, bag, spade)
+// under the Hips, which every humanoid clip moves.
+std::optional<std::int32_t> humanoid_joint_parent(const std::int32_t node_id) {
+    switch (node_id) {
+    case 1045: return 2000;
+    case 1003:
+    case 1057: return 30;
+    case 70:
+    case 71:
+    case 72: return 1045;
+    default: return std::nullopt;
+    }
+}
+
+// Which clip plays each role, per weapon stance. The game picks clips by
+// slot in code we have not joined to data yet (docs/format-reversal/anm,
+// KB-anm-3), so this is our reading of the clip names (Cm caminar = walk,
+// Cr correr = run, Id idle, Ag agachado = crouched, Disp disparar = shoot,
+// Al alerta, Recar recargar = reload) and their speeds (.VEL).
+struct ClipRole {
+    std::string_view stance, role, clip;
+};
+constexpr ClipRole clip_roles[]{
+    {"smg", "idle", "SMIdDPie"},        {"smg", "idle_alert", "SMIdAler"},  {"smg", "walk", "SMCm"},
+    {"smg", "walk_alert", "SMCmAler"},  {"smg", "run", "SMCrAde"},         {"smg", "crouch_idle", "SMIdAga"},
+    {"smg", "crouch_walk", "SMCmAgac"}, {"smg", "shoot", "SMDisp"},        {"smg", "crouch_shoot", "SMDispAg"},
+    {"smg", "reload", "SMRecar"},       {"smg", "die", "SMDeadAl"},        {"smg", "crouch_die", "SMDeadAg"},
+};
+
 // One manifest entry: its logical ID and its fields, already JSON.
 using ManifestEntry = std::vector<std::pair<std::string, std::string>>;
 
@@ -226,6 +283,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         result.problems.push_back("scene " + source(package_root / slot->scene) + ": " + error.what());
     }
     std::map<std::int32_t, std::string> class_ids;  // class -> logical ID
+    std::map<std::string, std::filesystem::path> skeletons;  // skinned character ID -> model
     if (editor) {
         const auto resources = editor->resource_index(package);
         for (const auto& association : associate_actors(editor->scene(), editor->objects(), resources)) {
@@ -245,8 +303,23 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
             if (!assets.contains(id)) {
                 try {
                     const auto model = rws::Document::load(model_path);
-                    (void)rws::export_scene_gltf(model.chunks(), model.scene_instances(), model.bytes(), options.out / file,
-                                                 textures.resolver(model_path, options.out / file));
+                    // A character with a skin keeps its skeleton; anything else is a static model.
+                    const auto* clump = model.chunks().empty() || model.chunks().front().type != 0x10 ? nullptr : &model.chunks().front();
+                    bool skinned = false;
+                    if (character && clump) {
+                        try {
+                            (void)rws::export_character_gltf(*clump, model.bytes(), options.out / file, {},
+                                                             textures.resolver(model_path, options.out / file), humanoid_joint_name,
+                                                             humanoid_joint_parent);
+                            skinned = true;
+                            skeletons[id] = model_path;
+                        } catch (const std::exception& error) {
+                            result.problems.push_back(class_name + " (" + source(model_path) + "): exported without its skeleton: " + error.what());
+                        }
+                    }
+                    if (!skinned)
+                        (void)rws::export_scene_gltf(model.chunks(), model.scene_instances(), model.bytes(), options.out / file,
+                                                     textures.resolver(model_path, options.out / file));
                 } catch (const std::exception& error) {
                     result.problems.push_back(class_name + " (" + source(model_path) + "): " + error.what());
                     continue;
@@ -255,6 +328,66 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 result.lines.push_back(std::string(character ? "character\t" : "prop\t") + file.generic_string());
             }
             class_ids[*association.class_id] = id;
+        }
+    }
+
+    // Clip libraries: per weapon stance, the role clips on the first skinned
+    // character's skeleton (every human shares it), named by role.
+    if (editor && !skeletons.empty()) {
+        const auto& [skeleton_id, skeleton_path] = *skeletons.begin();
+        const auto resources = editor->resource_index(package);
+        std::map<std::string, std::vector<const ClipRole*>> stances;
+        for (const auto& role : clip_roles) stances[std::string(role.stance)].push_back(&role);
+        for (const auto& [stance, roles] : stances) {
+            std::vector<rws::CharacterClip> clips;
+            std::string clip_fields;
+            for (const auto* role : roles) {
+                const auto record = std::ranges::find_if(editor->animations().records(), [&](const AnimationRecord& r) {
+                    return lower(r.logical_name) == lower(std::string(role->clip));
+                });
+                if (record == editor->animations().records().end() || record->variants.empty()) {
+                    result.problems.push_back("anim " + stance + "/" + std::string(role->role) + ": no clip " + std::string(role->clip));
+                    continue;
+                }
+                const auto resolution = resources.resolve(record->variants.front().reference);
+                if (resolution.candidate_indices.size() != 1) {
+                    result.problems.push_back("anim " + stance + "/" + std::string(role->role) + ": " +
+                                              record->variants.front().reference + " not found");
+                    continue;
+                }
+                const auto& path = resources.resources()[resolution.candidate_indices.front()].path;
+                const auto document = rws::Document::load(path);
+                const auto clip_chunk = std::ranges::find_if(document.chunks(), [](const rws::Chunk& c) { return c.type == 0x1B; });
+                if (clip_chunk == document.chunks().end()) {
+                    result.problems.push_back("anim " + source(path) + ": no Animation chunk");
+                    continue;
+                }
+                const bool loop = record->loop.value_or(false);
+                clips.push_back({std::string(role->role), rws::decode_animation(*clip_chunk, document.bytes()), loop});
+                // The engine moves the actor at .VEL game units a second; the clips stay in place.
+                const auto speed = record->velocity_scalar.value_or(0.0F) * 0.01F;
+                std::array<char, 32> buffer{};
+                const auto end = std::to_chars(buffer.data(), buffer.data() + buffer.size(), speed).ptr;
+                clip_fields += std::string(clip_fields.empty() ? "" : ", ") + json_string(role->role) + ": {\"loop\": " +
+                               (loop ? "true" : "false") + ", \"speed\": " + std::string(buffer.data(), end) +
+                               ", \"source\": " + json_string(source(path)) + "}";
+            }
+            if (clips.empty()) continue;
+            const auto file = std::filesystem::path("anims") / (stance + ".gltf");
+            try {
+                const auto model = rws::Document::load(skeleton_path);
+                const auto stats = rws::export_character_gltf(model.chunks().front(), model.bytes(), options.out / file,
+                                                              std::move(clips), {}, humanoid_joint_name,
+                                                              humanoid_joint_parent, false);
+                for (const auto& skipped : stats.skipped_clips) result.problems.push_back("anim " + stance + "/" + skipped);
+                result.lines.push_back("anims\t" + file.generic_string() + '\t' + std::to_string(stats.clips) + " clips");
+            } catch (const std::exception& error) {
+                result.problems.push_back("anim " + stance + ": " + error.what());
+                continue;
+            }
+            assets["anim/" + stance] = {{"file", json_string(file.generic_string())},
+                                        {"skeleton", json_string(skeleton_id)},
+                                        {"clips", "{" + clip_fields + "}"}};
         }
     }
 
