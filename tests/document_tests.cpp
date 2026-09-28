@@ -4417,6 +4417,46 @@ int run_tests() {
         CHECK(!rws::check_world_model(broken).empty());
     }
     {
+        // A Coll Tree part larger than a leaf whose centres all coincide becomes a
+        // leaf; its parent must point at that leaf, not at a split that is never
+        // built (FR01 lost ground triangles to this). Walk the tree as the game
+        // does (0x007C9710) and reach every triangle exactly once.
+        rws::WorldModelSector sector;
+        sector.bounding_box_inf = {0, 0, 0};
+        sector.bounding_box_sup = {400, 10, 10};
+        const auto add = [&](const float x0, const float x1, const float y) {
+            const auto first = static_cast<std::uint16_t>(sector.positions.size());
+            sector.positions.push_back({x0, y, 0});
+            sector.positions.push_back({x1, y, 0});
+            sector.positions.push_back({x0, y, 10});
+            sector.triangles.push_back({{first, static_cast<std::uint16_t>(first + 1U),
+                                         static_cast<std::uint16_t>(first + 2U)}, 0});
+        };
+        for (int i = 0; i < 4; ++i) add(0, 10, static_cast<float>(i));         // stacked: one centre
+        for (int i = 0; i < 4; ++i) add(100.0F + 80.0F * i, 150.0F + 80.0F * i, 0);
+        const auto plugin = rws::build_collision_tree(sector, 0x1C020037U);
+        const auto u8 = [&](const std::size_t at) { return std::to_integer<std::uint8_t>(plugin.payload[at]); };
+        const auto u16 = [&](const std::size_t at) { return static_cast<std::uint16_t>(u8(at) | (u8(at + 1) << 8U)); };
+        const std::size_t header = 4 + 12 + 12;  // version, Coll Tree and Struct headers
+        const auto splits = u16(header + 32);
+        const auto remap = header + 36 + splits * 16U;
+        std::vector<int> reached(sector.triangles.size());
+        const auto walk = [&](auto&& self, const std::uint16_t split) -> void {
+            CHECK(split < splits);
+            if (split >= splits) return;
+            for (std::size_t side = 0; side < 2; ++side) {
+                const auto at = header + 36 + split * 16U + side * 8U;
+                if (u8(at + 1) == 0xFFU) {
+                    self(self, u16(at + 2));
+                } else {
+                    for (std::size_t i = 0; i < u8(at + 1); ++i) ++reached.at(u16(remap + (u16(at + 2) + i) * 2U));
+                }
+            }
+        };
+        walk(walk, 0);
+        CHECK(std::ranges::all_of(reached, [](const int n) { return n == 1; }));
+    }
+    {
         // Sector map and ground heights of a World source's collision faces: a
         // slope y = x / 2 and, for the ground, a floor at 200 above half of it.
         const std::string slope =

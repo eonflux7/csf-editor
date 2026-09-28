@@ -828,16 +828,12 @@ WorldPlugin build_collision_tree(const WorldModelSector& sector, const std::uint
         for (const auto t : right) split.value[1] = std::min(split.value[1], axis_value(bounds(t).inf, axis));
         if (right.empty()) split.value[1] = split.value[0];
         for (std::size_t side = 0; side < 2; ++side) {
+            // A part larger than a leaf can still come back as one (all its
+            // centres equal), so take the descriptor the recursion returns.
             auto& part = side == 0 ? left : right;
-            if (part.size() > leaf_triangles) {
-                split.contents[side] = 0xFFU;
-                split.index[side] = static_cast<std::uint16_t>(splits.size());
-                (void)self(self, std::move(part), false);
-            } else {
-                const auto [count, first] = self(self, std::move(part), false);
-                split.contents[side] = count;
-                split.index[side] = first;
-            }
+            const auto [contents, child] = self(self, std::move(part), false);
+            split.contents[side] = contents;
+            split.index[side] = child;
         }
         splits[index] = split;
         return {0xFFU, static_cast<std::uint16_t>(index)};
