@@ -69,7 +69,7 @@ workflow artifacts. You still need the game's unpacked resources and Blender
 | Component | Purpose |
 | --- | --- |
 | `csf-editor` | CSF Mission Editor: Mission, Script and Inspect modes |
-| `csf-mod` | Projects and missions from the command line: `project-*`, `mission-ops`, `mission-components`, `mission-flow`, recompilable CSFFBS text (`decompile`/`compile`), packaging, deployment and rollback |
+| `csf-mod` | Projects and missions from the command line: `project-*`, `mission-ops`, `mission-components`, `mission-flow`, recompilable CSFFBS text (`decompile`/`compile`), packaging, deployment and rollback, and `export-godot` (a mission as glTF and JSON for a game engine) |
 | `csf-info` | Summarize, validate, search, and inspect one `CSFFBS` document |
 | `rws-info`, `rws-corpus` | Inspect, validate and export one `.rws`/`.rpc` file, or inventory a directory of them |
 | `csf_core`, `rws_core` | The libraries all of them use: CSFFBS and mission model, mission editor and recipes, authoring projects; RenderWare parsing, Worlds and export |

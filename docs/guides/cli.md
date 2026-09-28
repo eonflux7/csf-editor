@@ -208,6 +208,44 @@ Linux:
 
 It is read-only: it does not modify the files it scans.
 
+## Export a mission for a game engine
+
+`csf-mod export-godot` converts one mission of an unpacked corpus into files a
+game engine reads without knowing RenderWare: glTF for geometry and JSON for
+everything else.
+
+```bash
+./build/Release/csf-mod export-godot ../CSF_unpacks Ambush ~/dev/godot-opencsf/legacy
+```
+
+It writes:
+
+| Path | Contents |
+|---|---|
+| `manifest.json` | Logical IDs (`map/ambush`, `character/alofic`, `prop/bidon`) to files, with each one's corpus-relative source |
+| `maps/<Mission>/visual.gltf` | The map, as `rws-info --export-scene-gltf` writes it (with its `.bin` and `.manifest.json`), with textures bound (below) |
+| `maps/<Mission>/collision.gltf` | The collision World, as `--export-collision-gltf` writes it |
+| `maps/<Mission>/sky.gltf` | The sky dome the mission's `.vis` names, when it has one: a sphere of about 42 m to draw around the camera |
+| `maps/<Mission>/markers.json` | Actors (with the logical ID of their model), navigation groups, links, areas and dummies, in game centimetres |
+| `characters/<model>.gltf` | One model per actor class whose model lives under `Models/Char` |
+| `props/<model>.gltf` | One model per other actor class |
+| `textures/<corpus path>.png` | Every texture those files name, decoded from DDS; the path is the source's, in lower case (`textures/ambush/maps/st08/textures/sdet_01a.png`) |
+
+In every glTF it writes, a material's base texture is its `baseColorTexture`
+on `TEXCOORD_0`, with `alphaMode` `MASK` for textures whose transparent pixels
+are almost all fully transparent and `BLEND` for the rest (glass). glTF has no
+lightmap slot, so a lightmapped material names its lightmap PNG in the extra
+`lightmap_uri` (relative to the `.gltf`), sampled with `TEXCOORD_1` and
+multiplied with the base texture (at twice its value by default, as in the
+editor's viewport). A texture is looked up
+beside the file that names it, then in each `Textures` folder from there up to
+the mission package, ignoring case; one found nowhere is a `problem` line.
+
+The output folder must be new, empty or an earlier export; the command refuses
+any other folder. Re-running it on the same corpus writes byte-identical files.
+An actor class without exactly one resolvable model, or a scene that cannot be
+opened, is printed as a `problem` line and skipped; the map is still written.
+
 ## Build and rewrite Worlds
 
 `csf-mod` writes map Worlds through `rws::WorldModel`. Each command writes new

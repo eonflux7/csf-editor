@@ -1,6 +1,7 @@
 #include "csf/animation_catalog.hpp"
 #include "csf/authoring.hpp"
 #include "csf/authoring_project.hpp"
+#include "csf/godot_export.hpp"
 #include "csf/cmo.hpp"
 #include "csf/document.hpp"
 #include "csf/export.hpp"
@@ -4799,6 +4800,65 @@ int run_tests() {
             const auto slots = csf::mission_slots(root / "corpus");
             CHECK(slots.size() == 1 && slots[0].mission == "M1" && slots[0].scene == "Maps/X/M1.scn" &&
                   slots[0].archive == "maps/M1.pak" && slots[0].collision_map == "Maps/X/X_col.rws");
+
+            // The Godot export (csf/godot_export): the map, markers and manifest
+            // even when the scene cannot be opened, byte-identical on a re-run,
+            // and never into a folder of someone else's files.
+            {
+                const auto godot = root / "godot";
+                const auto export_files = [&] {
+                    std::map<std::string, std::string> files;
+                    for (const auto& entry : std::filesystem::recursive_directory_iterator(godot))
+                        if (entry.is_regular_file()) {
+                            std::ifstream input(entry.path(), std::ios::binary);
+                            files[entry.path().lexically_relative(godot).generic_string()] =
+                                std::string(std::istreambuf_iterator<char>(input), {});
+                        }
+                    return files;
+                };
+                const auto exported = csf::export_godot({root / "corpus", "m1", godot});
+                CHECK(!exported.problems.empty() && exported.problems[0].starts_with("scene M1/Maps/X/M1.scn"));
+                const auto files = export_files();
+                CHECK(files.contains("maps/M1/visual.gltf") && files.contains("maps/M1/collision.gltf") &&
+                      files.contains("maps/M1/markers.json"));
+                const auto& manifest = files.at("manifest.json");
+                CHECK(manifest.find(R"("map/m1": {"visual": "maps/M1/visual.gltf")") != std::string::npos &&
+                      manifest.find(R"("source": "M1/Maps/X/M1.scn")") != std::string::npos);
+                (void)csf::export_godot({root / "corpus", "M1", godot});
+                CHECK(export_files() == files);
+                std::filesystem::create_directories(root / "someone");
+                std::ofstream(root / "someone" / "notes.txt") << "mine";
+                bool threw = false;
+                try {
+                    (void)csf::export_godot({root / "corpus", "M1", root / "someone"});
+                } catch (const std::runtime_error&) {
+                    threw = true;
+                }
+                CHECK(threw && !std::filesystem::exists(root / "someone" / "manifest.json"));
+                // Textures beside the map become PNGs under textures/, bound to the
+                // materials that name them; one-bit alpha makes a cut-out material.
+                const auto& gltf = files.at("maps/M1/visual.gltf");
+                const auto name_at = gltf.find(R"("rws_base_texture": ")");
+                CHECK(name_at != std::string::npos && gltf.find("baseColorTexture") == std::string::npos);
+                const auto name_start = name_at + std::string_view(R"("rws_base_texture": ")").size();
+                const auto texture = gltf.substr(name_start, gltf.find('"', name_start) - name_start);
+                CHECK(!texture.empty() && std::ranges::count(exported.problems, "texture " + texture + ": not found") == 1);
+                std::filesystem::create_directories(maps / "Textures");
+                std::string error;
+                const std::vector<std::uint8_t> cut_out{255, 0, 0, 255, 0, 0, 0, 0, 0, 255, 0, 255, 0, 0, 255, 255};
+                CHECK(rws::write_png_rgba(maps / "Textures" / (texture + ".png"), 2, 2, cut_out, error));
+                const auto with_texture = csf::export_godot({root / "corpus", "M1", godot});
+                CHECK(std::ranges::count(with_texture.problems, "texture " + texture + ": not found") == 0);
+                const auto textured = export_files();
+                auto png = "textures/m1/maps/x/textures/" + texture + ".png";
+                std::ranges::transform(png, png.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                CHECK(textured.contains(png));
+                const auto& bound = textured.at("maps/M1/visual.gltf");
+                CHECK(bound.find(R"("uri": "../../)" + png + '"') != std::string::npos &&
+                      bound.find(R"("baseColorTexture": {"index": 0, "texCoord": 0})") != std::string::npos &&
+                      bound.find(R"("alphaMode": "MASK")") != std::string::npos);
+                std::filesystem::remove(maps / "Textures" / (texture + ".png"));
+            }
 
             // Text ranges: hundreds from 900, clear of the donor's IDs and other projects'.
             const auto texts_dir = root / "corpus" / "GlobalEK" / "Texts";

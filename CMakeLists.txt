@@ -45,6 +45,7 @@ add_library(csf_core
     src/csf_cmo.cpp
     src/csf_document.cpp
     src/csf_export.cpp
+    src/csf_godot_export.cpp
     src/csf_mission.cpp
     src/csf_mission_edit.cpp
     src/csf_mission_flow.cpp

@@ -667,7 +667,8 @@ static SceneExportStats export_gltf(const std::vector<Chunk>& chunks,
                                     const std::span<const SceneInstance> instances,
                                     const std::span<const std::byte> bytes,
                                     const std::filesystem::path& requested_path,
-                                    const bool preserve_world_faces) {
+                                    const bool preserve_world_faces,
+                                    const SceneTextureResolver& resolve_texture = {}) {
     auto output_path = requested_path;
     if (output_path.extension() != ".gltf") output_path.replace_extension(".gltf");
     if (output_path.has_parent_path())
@@ -784,14 +785,37 @@ static SceneExportStats export_gltf(const std::vector<Chunk>& chunks,
         }
         json << "]}" << (i + 1 == gltf_meshes.size() ? "\n" : ",\n");
     }
+    // Images and textures in first-use order, one per distinct URI.
+    std::vector<std::string> image_uris;
+    std::map<std::string, std::optional<SceneTexture>> resolved;
+    const auto texture_of = [&](const std::string& name) -> const std::optional<SceneTexture>& {
+        static const std::optional<SceneTexture> none;
+        if (!resolve_texture || name.empty()) return none;
+        auto [it, added] = resolved.try_emplace(name);
+        if (added) it->second = resolve_texture(name);
+        return it->second;
+    };
+    const auto image_index = [&](const std::string& uri) {
+        const auto found = std::ranges::find(image_uris, uri);
+        if (found != image_uris.end()) return static_cast<std::size_t>(found - image_uris.begin());
+        image_uris.push_back(uri);
+        return image_uris.size() - 1;
+    };
     json << "  ],\n  \"materials\": [\n";
     for (std::size_t i = 0; i < materials.size(); ++i) {
         const auto& material = materials[i];
-        json << "    {\"name\": \"" << json_escape(material.name) << "\", \"doubleSided\": true, "
-             << "\"pbrMetallicRoughness\": {\"baseColorFactor\": [" << material.color[0] / 255.0F
+        const auto& base = texture_of(material.base_texture);
+        const auto& lightmap = texture_of(material.lightmap_texture);
+        json << "    {\"name\": \"" << json_escape(material.name) << "\", \"doubleSided\": true, ";
+        if (base && base->alpha == SceneTexture::Alpha::mask)
+            json << "\"alphaMode\": \"MASK\", \"alphaCutoff\": 0.5, ";
+        else if (base && base->alpha == SceneTexture::Alpha::blend)
+            json << "\"alphaMode\": \"BLEND\", ";
+        json << "\"pbrMetallicRoughness\": {\"baseColorFactor\": [" << material.color[0] / 255.0F
              << ',' << material.color[1] / 255.0F << ',' << material.color[2] / 255.0F << ','
-             << material.color[3] / 255.0F
-             << "], \"metallicFactor\": 0, \"roughnessFactor\": 1}, \"extras\": {"
+             << material.color[3] / 255.0F << "], ";
+        if (base) json << "\"baseColorTexture\": {\"index\": " << image_index(base->uri) << ", \"texCoord\": 0}, ";
+        json << "\"metallicFactor\": 0, \"roughnessFactor\": 1}, \"extras\": {"
              << "\"rws_owner_offset\": \"" << hex_offset(material.owner_offset)
              << "\", \"rws_material_slot\": " << material.slot << ", \"rws_surface_name\": \""
              << json_escape(material.surface_name) << "\""
@@ -801,8 +825,18 @@ static SceneExportStats export_gltf(const std::vector<Chunk>& chunks,
         else
             json << "null";
         json << ", \"rws_base_texture\": \"" << json_escape(material.base_texture)
-             << "\", \"rws_lightmap_texture\": \"" << json_escape(material.lightmap_texture)
-             << "\"}}" << (i + 1 == materials.size() ? "\n" : ",\n");
+             << "\", \"rws_lightmap_texture\": \"" << json_escape(material.lightmap_texture) << '"';
+        if (lightmap) json << ", \"lightmap_uri\": \"" << json_escape(lightmap->uri) << '"';
+        json << "}}" << (i + 1 == materials.size() ? "\n" : ",\n");
+    }
+    if (!image_uris.empty()) {
+        // Texture i samples image i with the default sampler (repeat, mipmaps).
+        json << "  ],\n  \"images\": [\n";
+        for (std::size_t i = 0; i < image_uris.size(); ++i)
+            json << "    {\"uri\": \"" << json_escape(image_uris[i]) << "\"}" << (i + 1 == image_uris.size() ? "\n" : ",\n");
+        json << "  ],\n  \"textures\": [\n";
+        for (std::size_t i = 0; i < image_uris.size(); ++i)
+            json << "    {\"source\": " << i << '}' << (i + 1 == image_uris.size() ? "\n" : ",\n");
     }
     json << "  ],\n  \"buffers\": [{\"uri\": \"" << json_escape(bin_path.filename().string())
          << "\", \"byteLength\": " << binary.size() << "}],\n  \"bufferViews\": [\n";
@@ -874,16 +908,18 @@ static SceneExportStats export_gltf(const std::vector<Chunk>& chunks,
 SceneExportStats export_scene_gltf(const std::vector<Chunk>& chunks,
                                    const std::span<const SceneInstance> instances,
                                    const std::span<const std::byte> bytes,
-                                   const std::filesystem::path& output_path) {
-    return export_gltf(chunks, instances, bytes, output_path, false);
+                                   const std::filesystem::path& output_path,
+                                   const SceneTextureResolver& textures) {
+    return export_gltf(chunks, instances, bytes, output_path, false, textures);
 }
 
 SceneExportStats export_clump_gltf(const Chunk& clump, const std::span<const std::byte> bytes,
-                                   const std::filesystem::path& output_path) {
+                                   const std::filesystem::path& output_path,
+                                   const SceneTextureResolver& textures) {
     if (clump.type != 0x10) throw std::runtime_error("Selected chunk is not a Clump");
     // Chunk objects only describe offsets and hierarchy; payload bytes remain
     // in the shared span, so this temporary one-root document is inexpensive.
-    return export_scene_gltf(std::vector<Chunk>{clump}, {}, bytes, output_path);
+    return export_scene_gltf(std::vector<Chunk>{clump}, {}, bytes, output_path, textures);
 }
 
 SceneExportStats export_collision_gltf(const std::vector<Chunk>& chunks,
