@@ -17,8 +17,13 @@ Conventions
   of the project (the add-on's Bake lighting sets it); the second UV layer then
   maps it.
 * Per object, ``csf_role`` is ``both`` (default), ``visual`` or ``collision``.
-* A face attribute ``csf_shade`` (integer, per face) overrides the material's
-  shade for that face: the collision byte a decompiled map keeps per triangle.
+* A colour attribute ``csf_shade_color`` (per corner or per vertex) sets a
+  collision face's shade as the game's own exporter did from the collision
+  World's vertex colours: the integer mean of R, G and B over the triangle's
+  three corners, as sRGB bytes (KB-world-geometry-4). Paint it in Vertex Paint
+  or bake it (the add-on's Bake shade); white is 255, black 0.
+* Without it, a face attribute ``csf_shade`` (integer, per face) overrides the
+  material's shade for that face (files made before 0.4.0 keep working).
 * ``csf_surface_color`` (``RRGGBBAA``), which Import map sets from the map's
   collision Materials (the colours of Materiales.bdd), is written back as the
   surface's ``surface`` line.
@@ -33,7 +38,7 @@ Conventions
 
 `load()` is the other direction: a `.csfworld` (``csf-mod world-source`` of a
 shipped map) as one object per role, with the names above as properties, the
-per-triangle collision shade as ``csf_shade``, each collision surface in its
+per-triangle collision shade as grey ``csf_shade_color``, each collision surface in its
 game colour (``surface`` lines; Intangible is red) and, when found, the textures.
 """
 
@@ -46,6 +51,7 @@ import mathutils
 
 DEFAULT_SURFACE = "Tierra"
 DEFAULT_SHADE = 228
+SHADE_COLORS = "csf_shade_color"
 ROLES = ("both", "visual", "collision")
 
 
@@ -93,6 +99,62 @@ def exportable(scene) -> list:
             and obj.get("rws_kind") not in PROP_KINDS]
 
 
+def shade_colors(mesh):
+    """(sRGB R, G, B bytes per corner or vertex, per_vertex) of `csf_shade_color`, or None."""
+    attribute = mesh.color_attributes.get(SHADE_COLORS)
+    if attribute is None or attribute.domain not in ("CORNER", "POINT"):
+        return None
+    values = [0.0] * (len(attribute.data) * 4)
+    attribute.data.foreach_get("color_srgb", values)
+    rgb = [min(max(int(round(v * 255.0)), 0), 255) for v in values]
+    return rgb, attribute.domain == "POINT"
+
+
+def triangle_shade(colors, mesh, loops) -> int:
+    """The game exporter's shade: sum of R, G and B of the three corners // 9."""
+    rgb, per_vertex = colors
+    total = 0
+    for loop in loops:
+        k = 4 * (mesh.loops[loop].vertex_index if per_vertex else loop)
+        total += rgb[k] + rgb[k + 1] + rgb[k + 2]
+    return total // 9
+
+
+def face_shades(obj, mesh) -> list[int]:
+    """Each face's shade without `csf_shade_color`: `csf_shade`, else its material's, else 228."""
+    shades = mesh.attributes.get("csf_shade")
+    if shades is not None and (shades.domain != "FACE" or shades.data_type != "INT"):
+        shades = None
+    result = []
+    for polygon in mesh.polygons:
+        slot = obj.material_slots[polygon.material_index].material \
+            if polygon.material_index < len(obj.material_slots) else None
+        shade = int(slot.get("csf_shade", DEFAULT_SHADE)) if slot else DEFAULT_SHADE
+        if shades is not None:
+            shade = shades.data[polygon.index].value
+        result.append(min(max(shade, 0), 255))
+    return result
+
+
+def set_shade_colors(mesh, shades: list[int] | None = None, corners: list[float] | None = None):
+    """`csf_shade_color` as grey per corner (made if missing): each face its
+    shade from `shades`, or each corner its value 0-1 from `corners`."""
+    attribute = mesh.color_attributes.get(SHADE_COLORS)
+    if attribute is None or attribute.domain != "CORNER" or attribute.data_type != "BYTE_COLOR":
+        if attribute is not None:
+            mesh.color_attributes.remove(attribute)
+        attribute = mesh.color_attributes.new(SHADE_COLORS, "BYTE_COLOR", "CORNER")
+    if corners is None:
+        corners = [0.0] * len(mesh.loops)
+        for polygon in mesh.polygons:
+            for loop in polygon.loop_indices:
+                corners[loop] = shades[polygon.index] / 255.0
+    attribute.data.foreach_set("color_srgb", [c for grey in corners for c in (grey, grey, grey, 1.0)])
+    mesh.color_attributes.active_color = attribute
+    mesh.color_attributes.render_color_index = mesh.color_attributes.find(SHADE_COLORS)
+    return attribute
+
+
 def export(path: str, scene=None, objects=None, local: bool = False, precise: bool = False) -> dict:
     """Write `objects` (default: every visible, non-reference mesh of `scene`).
 
@@ -124,14 +186,12 @@ def export(path: str, scene=None, objects=None, local: bool = False, precise: bo
             mesh.calc_loop_triangles()
             normals = mesh.corner_normals
             uv_layers = list(mesh.uv_layers)[:2]
-            shades = mesh.attributes.get("csf_shade")
-            if shades is not None and (shades.domain != "FACE" or shades.data_type != "INT"):
-                shades = None
+            colors = shade_colors(mesh) if role != "visual" else None
+            shades = face_shades(obj, mesh) if colors is None else None
             for triangle in mesh.loop_triangles:
                 slot = obj.material_slots[triangle.material_index].material if obj.material_slots else None
-                shade = int(slot.get("csf_shade", DEFAULT_SHADE)) if slot else DEFAULT_SHADE
-                if shades is not None:
-                    shade = min(max(shades.data[triangle.polygon_index].value, 0), 255)
+                shade = triangle_shade(colors, mesh, triangle.loops) if colors else \
+                    shades[triangle.polygon_index]
                 key = (material_texture(slot), material_surface(slot), shade, material_lightmap(slot))
                 if slot is not None and slot.get("csf_surface_color"):
                     surface_colors.setdefault(key[1], str(slot["csf_surface_color"]))
@@ -291,13 +351,13 @@ def load(path: str, textures: str | None = None, collection=None) -> dict:
         index: dict[tuple, int] = {}
         positions, loops, loop_uv0, loop_uv1, loop_normals = [], [], [], [], []  # loops: per face
         slots: dict[tuple, int] = {}
-        face_slots, face_shades = [], []
+        face_slots, triangle_shades = [], []
         has_uv1 = any(vertices[f[k]][8] is not None for f in role_faces for k in range(3))
         for a, b, c, m, _ in role_faces:
             texture, surface, shade, lightmap = materials[m]
             key = (texture, surface, lightmap)
             face_slots.append(slots.setdefault(key, len(slots)))
-            face_shades.append(shade)
+            triangle_shades.append(shade)
             corners = [vertices[k] for k in (a, b, c)]
             points = [(x / 100.0, -z / 100.0, y / 100.0) for x, y, z, *_ in corners]
             welded = [index.get(point) for point in points]
@@ -322,8 +382,7 @@ def load(path: str, textures: str | None = None, collection=None) -> dict:
                 layer = mesh.uv_layers.new(name=name)
                 layer.data.foreach_set("uv", [c for uv in values for c in uv])
         if role != "visual":
-            shades = mesh.attributes.new("csf_shade", "INT", "FACE")
-            shades.data.foreach_set("value", face_shades)
+            set_shade_colors(mesh, triangle_shades)
         mesh.update()
         if not collision and any(any(n) for n in loop_normals):
             mesh.normals_split_custom_set(loop_normals)

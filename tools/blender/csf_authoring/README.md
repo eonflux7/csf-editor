@@ -13,3 +13,7 @@ Without a project, **Import map** (sidebar, or File > Import > CSF map) opens a
 shipped map (`.rws`, through `csf-mod world-source`) or a `.csfworld` with its
 visual and collision geometry, and **Export .csfworld** (File > Export) writes
 it back for `csf-mod world-build`; see "A map without a project" in the guide.
+
+**Collision shade** paints or bakes (Cycles) the per-triangle shade byte of the
+collision as the vertex colours `csf_shade_color`; see "Collision shade" in the
+guide.
