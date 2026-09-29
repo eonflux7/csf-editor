@@ -26,6 +26,10 @@ struct ObjectDefinition {
     std::optional<std::string> name;
     std::optional<std::string> type;  // .TIPO: ALEMAN, DECORATIVO, ITEM_ARMA, ...
     std::vector<std::int32_t> weapon_ids;
+    // .ANIMACIONES: the class's own clips, as (.TIPO, Anims.bdd .ID): a
+    // vehicle's seats (SUBIR_PUESTO_0, REPOSO_PUESTO_1, ...), an archetype's
+    // overrides.
+    std::vector<std::pair<std::string, std::int32_t>> animations;
     // Player classes: the first-person hands (.MODELO, when .MODELO_TERCERA
     // names the body, which `references` then holds as the visual model).
     std::optional<std::string> first_person_model;

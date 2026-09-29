@@ -125,6 +125,14 @@ ObjectDatabase ObjectDatabase::project(const Document& document) {
             for (const auto& item : weapons->children)
                 if (const auto value = integer(item)) definition.weapon_ids.push_back(*value);
         }
+        if (const auto* list = field(document, *record, {"ANIMACIONES"}))
+            for (const auto& item : list->children) {
+                const auto* type = field(document, item, {"TIPO", "TYPE"});
+                const auto* animation = field(document, item, {"ID"});
+                const auto type_name = type ? string_value(document, *type) : std::nullopt;
+                const auto animation_id = animation ? integer(*animation) : std::nullopt;
+                if (type_name && animation_id) definition.animations.emplace_back(*type_name, *animation_id);
+            }
         const bool has_third_person_model =
             field(document, *record, {"MODELOTERCERA", "THIRDPERSONMODEL"}) != nullptr;
         for (const auto& child : record->children) {

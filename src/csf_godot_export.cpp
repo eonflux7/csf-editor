@@ -285,17 +285,14 @@ constexpr RoleClip unarmed_roles[]{
     {"crouch_turn_right_90", "CivilHGA90"}, {"crouch_turn_right_180", "CivilHGA180"},
     {"crouch_turn_left_90", "CivilHGB90"},  {"crouch_turn_left_180", "CivilHGB180"},
 };
-// Anything-stance actions from Anims/Enem: being taken out, sitting, the MG
-// post, the Kubelwagen seats (SPKuv, driver and back).
+// Anything-stance actions from Anims/Enem: being taken out, sitting. The
+// vehicles' and mounted guns' seat clips join them by their own names, from
+// the classes (seat_clips).
 constexpr RoleClip action_roles[]{
     {"threatened", "Amenazado"},  {"stabbed", "Acuchillado"},     {"garrotted", "Ahorcado"},
     {"strangled", "Estrangulado"}, {"strangle", "Estrangular"},   {"put_on_clothes", "EPonerseRopa"},
     {"sit_idle", "SSDKReposo"},   {"sit_idle_unarmed", "SSDKReposo_Sin_Armas"},
     {"sit_down", "SSDKSienta"},   {"sit_stand_up", "SSDKLevant"}, {"sit_die", "SSDKDead"},
-    {"mg_idle", "MGId1"},         {"mg_shoot", "MGDisp"},         {"mg_die", "MGDead"},
-    {"car_idle", "SPKuvIdle"},    {"car_in", "SPKuvIn"},          {"car_out", "SPKuvOut"},
-    {"car_die", "SPKuvDead"},     {"car_back_idle", "SPKuvBackIdle"}, {"car_back_in", "SPKuvBackIn"},
-    {"car_back_out", "SPKuvBackOut"}, {"car_back_die", "SPKuvBackDead"},
 };
 
 std::vector<ClipRole> clip_roles() {
@@ -800,6 +797,13 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
     std::map<std::string, std::vector<rws::CharacterClip>> library_clips;  // stance -> clips
     std::vector<std::pair<std::string, std::string>> missing_roles;    // "<stance>/<role>" -> problem
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> first_person;  // character -> weapon name, ID
+    // A vehicle's seats (a mounted gun is one too): the model's seat frames
+    // (its named frames 1000-1049, else 1050-1099) and, from the class with
+    // the most seat clips (.ANIMACIONES <use>_PUESTO_<n>), each seat's clips
+    // by use (in, idle, out, die, shoot) as Anims.bdd names.
+    std::map<std::string, std::vector<std::int32_t>> seat_frames;                                   // model ID -> frame IDs
+    std::map<std::string, std::map<std::int32_t, std::map<std::string, std::string>>> seat_clips;  // model ID -> seat -> use -> clip
+    std::set<std::string> vehicle_models;
     const auto collected = [&](const std::string& stance, const std::string& role) {
         const auto found = libraries.find(stance);
         return found != libraries.end() && std::ranges::any_of(found->second, [&](const LibraryRole& r) { return r.role == role; });
@@ -953,6 +957,15 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                                        ", \"name\": " + json_string(windows_1252_to_utf8(frame.name)) +
                                        ", \"transform\": " + json_transform(frame.transform) + "}";
                         if (!dummies.empty()) hang = {"dummies", "[" + dummies + "]"};
+                        for (const auto [low, high] : {std::pair{1000, 1049}, std::pair{1050, 1099}}) {
+                            std::vector<std::int32_t> seats;
+                            for (const auto& frame : named_frames(*clump, model.bytes()))
+                                if (frame.id >= low && frame.id <= high) seats.push_back(frame.id);
+                            std::ranges::sort(seats);
+                            if (seats.empty()) continue;
+                            seat_frames[id] = std::move(seats);
+                            break;
+                        }
                     }
                 } catch (const std::exception& error) {
                     result.problems.push_back(class_name + " (" + source(model_path) + "): " + error.what());
@@ -963,6 +976,28 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 result.lines.push_back(std::string(character ? "character\t" : "prop\t") + file.generic_string());
             }
             class_ids[*association.class_id] = id;
+            std::map<std::int32_t, std::map<std::string, std::string>> seats;
+            std::size_t clips = 0;
+            for (const auto* definition : editor->objects().find_class(*association.class_id)) {
+                for (const auto& field : definition->unknown_fields)
+                    if (lower(field.name).find("vehicle_info") != std::string::npos) vehicle_models.insert(id);
+                for (const auto& [type, animation_id] : definition->animations) {
+                    static const std::map<std::string, std::string> uses{
+                        {"SUBIR", "in"}, {"REPOSO", "idle"}, {"BAJAR", "out"}, {"MUERTE", "die"}, {"DISPARAR", "shoot"}};
+                    const auto at = type.rfind("_PUESTO_");
+                    const auto use = at == std::string::npos ? uses.end() : uses.find(type.substr(0, at));
+                    if (use == uses.end()) continue;
+                    const auto& records = editor->animations().records();
+                    const auto record = std::ranges::find_if(records, [&](const AnimationRecord& r) { return r.id == animation_id; });
+                    if (record == records.end()) continue;
+                    seats[std::stoi(type.substr(at + 8))][use->second] = record->logical_name;
+                    ++clips;
+                }
+            }
+            std::size_t had = 0;
+            for (const auto& [seat, by_use] : seat_clips[id]) had += by_use.size();
+            if (clips > had) seat_clips[id] = std::move(seats);
+            if (seat_clips[id].empty()) seat_clips.erase(id);
         }
     }
 
@@ -1203,6 +1238,15 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
             taken.insert(lower(record.logical_name));
             roles.push_back({"custom", lower(record.logical_name), record.logical_name});
         }
+        // The seats' clips, by their own names, where this mission has them.
+        for (const auto& [model, seats] : seat_clips)
+            for (const auto& [seat, by_use] : seats)
+                for (const auto& [use, clip] : by_use) {
+                    if (taken.contains(lower(clip))) continue;
+                    if (std::ranges::none_of(records, [&](const AnimationRecord& r) { return lower(r.logical_name) == lower(clip); })) continue;
+                    taken.insert(lower(clip));
+                    roles.push_back({"actions", lower(clip), clip});
+                }
         std::map<std::string, std::vector<const ClipRole*>> stances;
         for (const auto& role : roles) stances[role.stance].push_back(&role);
         for (const auto& [stance, stance_roles] : stances) {
@@ -1511,6 +1555,38 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         std::string fields;
         for (const auto& [name, id] : views) fields += std::string(fields.empty() ? "" : ", ") + json_string(name) + ": " + json_string(id);
         assets[character_id].emplace_back("first_person", "{" + fields + "}");
+    }
+
+    for (const auto& [model, frames] : seat_frames) {
+        const auto clips = seat_clips.find(model);
+        if (!assets.contains(model) || (clips == seat_clips.end() && !vehicle_models.contains(model))) continue;
+        auto count = static_cast<std::int32_t>(frames.size());
+        if (clips != seat_clips.end() && !clips->second.empty()) count = std::max(count, clips->second.rbegin()->first + 1);
+        std::string seats;
+        for (std::int32_t seat = 0; seat < count; ++seat) {
+            std::string fields = "\"frame\": " + std::to_string(seat < static_cast<std::int32_t>(frames.size()) ? frames[seat] : -1);
+            if (clips != seat_clips.end())
+                if (const auto by_use = clips->second.find(seat); by_use != clips->second.end()) {
+                    std::string uses;
+                    for (const auto& [use, clip] : by_use->second)
+                        uses += std::string(uses.empty() ? "" : ", ") + json_string(use) + ": " + json_string("actions/" + lower(clip));
+                    fields += ", \"clips\": {" + uses + "}";
+                }
+            seats += std::string(seats.empty() ? "" : ", ") + "{" + fields + "}";
+        }
+        assets[model].emplace_back("seats", "[" + seats + "]");
+    }
+    // A mounted gun's model has no seat frames: one seat at its origin.
+    for (const auto& [model, seats] : seat_clips) {
+        if (seat_frames.contains(model) || !assets.contains(model)) continue;
+        std::string list;
+        for (const auto& [seat, by_use] : seats) {
+            std::string uses;
+            for (const auto& [use, clip] : by_use)
+                uses += std::string(uses.empty() ? "" : ", ") + json_string(use) + ": " + json_string("actions/" + lower(clip));
+            list += std::string(list.empty() ? "" : ", ") + "{\"frame\": -1, \"clips\": {" + uses + "}}";
+        }
+        assets[model].emplace_back("seats", "[" + list + "]");
     }
 
     std::string missions;

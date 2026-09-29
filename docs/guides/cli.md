@@ -343,8 +343,16 @@ already has (the light `luz verde` beside the glow) is
 are `bone_<id>`), and a prop's has `dummies`, its named frames (a Frame
 whose Pyro metadata is present): `id` (the metadata's number, the scripts'
 `DUMMY_BICHO`), `name` and `transform` (12 numbers: basis columns, then the
-origin, in the model's space, metres). A `mission/<mission>` entry has
-`classes`: each actor class's model, `{"204": "prop/alarmarota"}`.
+origin, in the model's space, metres). A vehicle's model (one a class with
+`.VEHICLE_INFO` or seat clips uses: trucks, cars, boats, mounted guns) has
+`seats`, in the scripts' seat order: `frame`, the seat's frame (the model's
+named frames 1000-1049 by ID, else 1050-1099; -1 for a model with neither,
+the model's origin), and for a seat the class has clips for, `clips` by use
+(`in`, `idle`, `out`, `die`, `shoot`: the class's `.ANIMACIONES`
+`SUBIR_`, `REPOSO_`, `BAJAR_`, `MUERTE_`, `DISPARAR_PUESTO_<seat>`), as
+`actions/<clip name in lower case>` roles; those clips join the `actions`
+library under their own names. A `mission/<mission>` entry has `classes`:
+each actor class's model, `{"204": "prop/alarmarota"}`.
 
 The manifest's `anim/<library>` entry has `roles`: each role's `loop`, its
 `speed` in metres a second (`.VEL`; the clips stay in place), `clip` (the
