@@ -241,7 +241,7 @@ It writes:
 | `anims/<library>.gltf` | A clip library: the skeleton and its clips, no mesh. One per stance (`rifle`, `smg`, `pistol`: 55 roles each; `unarmed`: 14, the civilians'), `actions` (taken out, sitting, the MG post, car seats) and `custom` (the one-off scene clips of `Anims/Costum` under their own names: smoking, talking, repairing, ...) |
 | `weapons/<model>.gltf` | The third-person model (`Armas.bdd` `.FILE2`) of each character class's weapon, as `weapon/<model>` |
 | `fp/<hands>_<weapon>.gltf` | First person: a player class's hands (`.MODELO`) holding a weapon's first-person model (`.FILE`), with its first-person clips (`.ANIMACIONES_PLAYER`), as `fp/<hands>_<weapon>` (below) |
-| `props/<model>.gltf` | One model per other actor class |
+| `props/<model>.gltf` | One model per other actor class, and per class a mission script creates (`CREAR_BICHO`: a broken alarm) |
 | `sounds/<wave>.wav` | Every wave of the mission's audio bank (the `.wad` beside its scene), as 16-bit PCM WAV (below) |
 | `missions/<Mission>.json` | The mission's data for logic written by hand: texts, objectives, variables, events, every script as readable text, and the names behind the scripts' numbers (below); `mission/<mission>` in the manifest |
 | `textures/<corpus path>.png` | Every texture those files name, decoded from DDS; the path is the source's, in lower case (`textures/ambush/maps/st08/textures/sdet_01a.png`) |
@@ -330,6 +330,22 @@ entries) have `sounds`: `shoot` (`.WAVE_DISPARO`, or `.WAVE_DISPARO_PLAYER`
 in first person), `empty` and `reload`; first-person clips list the sounds
 they start as `sounds`: `[seconds, sound ID]`.
 
+Each `Efectos.bdd` record becomes `effect/<name>` (lower case,
+`[a-z0-9_-]`): `kind` (its `.TIPO` in lower case: `particle_system`,
+`glow`, `light`, `estela`), `fields` (the record's fields as written: lower
+case without the dot, a list as an array, the first of a repeated one) and
+`texture` (a glow's or trail's `.FILE`, a particle system's `.TEXTURE`, as a
+PNG under `textures/`). A particle system's `.sp` file (its `.FILE`) comes as
+`system`, its fields written the same way. A record whose name another kind
+already has (the light `luz verde` beside the glow) is
+`effect/<name>_<kind>`. Where effects hang: a skinned character's entry has
+`joints`, its humanoid joint names by HAnim ID (`"60": "Head"`; the others
+are `bone_<id>`), and a prop's has `dummies`, its named frames (a Frame
+whose Pyro metadata is present): `id` (the metadata's number, the scripts'
+`DUMMY_BICHO`), `name` and `transform` (12 numbers: basis columns, then the
+origin, in the model's space, metres). A `mission/<mission>` entry has
+`classes`: each actor class's model, `{"204": "prop/alarmarota"}`.
+
 The manifest's `anim/<library>` entry has `roles`: each role's `loop`, its
 `speed` in metres a second (`.VEL`; the clips stay in place), `clip` (the
 original name) and `clips`. A role whose record lists several files has one
@@ -352,6 +368,7 @@ order: `rotation = (pitch, yaw, 0)`). It holds:
 | `route_links` | Links between two groups' points: `[group, point, group, point]` |
 | `areas` | `id`, `name`, floor polygon `points` and `height` |
 | `dummies` | `id`, `name`, `position`, `yaw`, `pitch` when not 0 |
+| `effects` | The map's own effects (the scene's `.EFECTOS`): `id`, `name`, `effect` (its `effect/<name>`) and `dummy`, where it stands |
 
 `missions/<Mission>.json` (format `opencsf-mission`, version 1) is data
 only: nothing in it is interpreted or translated into logic. It holds:
@@ -365,7 +382,7 @@ only: nothing in it is interpreted or translated into logic. It holds:
 | `events` | Each event: `name`, `builtin` (raised by the engine), `listeners` and `senders` (script IDs) |
 | `scripts` | Every script of the mission (`.gsc`) and cutscene (`.csc`) programs: `program` (`mission`, `cutscene`), `id`, `name`, `folder`, `trigger`, `enabled`, `events` (what starts it), `sends`, `defines`/`completes` (objective numbers), `cutscenes`, `mission_success`/`mission_failure`, local `variables`, `conditions` and `actions` as lines (below), and `uses`, the instructions and operations it runs |
 | `texts` | Every string of `GlobalEK/Texts/<Mission>.fli`, and each string of `Global.fli` the scripts show, by ID (`"0012"`, `"G014"`; scripts write the global ones as `g014`) |
-| `names` | By kind (`actor`, `dummy`, `area`, `route`, `point` as `group/point`, `script`, `cutscene_script`, `cutscene`, `variable`, `anim`, `sound`, `class`, `weapon`, `effect`), every number the scripts use with its name: an actor's or area's `.NOMBRE`, `sound/<name>`, `Efectos.bdd` record names, ...; an `anim` has `name` (the `Anims.bdd` record) and `roles` (`<library>/<role>` in the clip libraries, when it is one). `""` when it has no name |
+| `names` | By kind (`actor`, `dummy`, `area`, `route`, `point` as `group/point`, `script`, `cutscene_script`, `cutscene`, `variable`, `anim`, `sound`, `class`, `weapon`, `effect`), every number the scripts use with its name: an actor's or area's `.NOMBRE`, `sound/<name>`, `effect/<name>`, ...; an `anim` has `name` (the `Anims.bdd` record) and `roles` (`<library>/<role>` in the clip libraries, when it is one). `""` when it has no name |
 | `unresolved` | Numbers that name nothing in the mission: `kind`, `id`, and `off` when only switched-off actions use it |
 | `missing_texts` | Text IDs the scripts show that no `.fli` has, when there are any |
 | `findings` | The flow's findings (`csf-mod mission-flow`): `severity`, `script`, `message` |

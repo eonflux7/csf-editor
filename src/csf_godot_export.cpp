@@ -196,7 +196,7 @@ private:
 // read from their bind pose: the model faces +Z and its left is +X, as in
 // glTF. Others (the Biped centre, the motion node, hand and holster dummies,
 // finger and head ends) keep bone_<id>.
-std::string humanoid_joint_name(const std::int32_t node_id) {
+const std::map<std::int32_t, std::string_view>& humanoid_joints() {
     static const std::map<std::int32_t, std::string_view> names{
         {2000, "Root"},          {1045, "Hips"},           {20, "Spine"},           {30, "Chest"},
         {1040, "Neck"},          {60, "Head"},             {1046, "Jaw"},
@@ -207,6 +207,10 @@ std::string humanoid_joint_name(const std::int32_t node_id) {
         {1023, "LeftUpperLeg"},  {1002, "LeftLowerLeg"},   {1019, "LeftFoot"},      {1024, "LeftToes"},
         {1077, "RightUpperLeg"}, {1056, "RightLowerLeg"},  {1073, "RightFoot"},     {1078, "RightToes"},
     };
+    return names;
+}
+std::string humanoid_joint_name(const std::int32_t node_id) {
+    const auto& names = humanoid_joints();
     const auto it = names.find(node_id);
     return it == names.end() ? std::string{} : std::string(it->second);
 }
@@ -481,13 +485,12 @@ using Transform = std::array<float, 12>;  // basis columns x, y, z, then origin
 struct WeaponFrames {
     std::optional<Transform> grip, muzzle;
 };
-WeaponFrames weapon_frames(const rws::Chunk& clump, const std::span<const std::byte> bytes, const bool held = false) {
-    WeaponFrames result;
-    const auto* list = rws::find_child(clump, 0x0E);
-    const auto frames = list ? rws::decode_frame_list(*list, bytes) : rws::DecodeResult<rws::FrameListInfo>{};
-    if (!frames) return result;
-    const auto& info = frames.value->frames;
-    // RenderWare stores a frame's axes as rows (right, up, at): they are the basis columns.
+
+// Each frame's transform in the Clump's space, in metres (none when its
+// parents loop). RenderWare stores a frame's axes as rows (right, up, at):
+// they are the basis columns. `held` leaves out the root frame's matrix.
+std::vector<std::optional<Transform>> frame_transforms(const rws::FrameListInfo& frames, const bool held = false) {
+    const auto& info = frames.frames;
     std::vector<std::optional<Transform>> world(info.size());
     const auto resolve = [&](auto&& self, const std::size_t index, const int depth) -> std::optional<Transform> {
         if (index >= info.size() || depth > 64) return std::nullopt;
@@ -511,10 +514,21 @@ WeaponFrames weapon_frames(const rws::Chunk& clump, const std::span<const std::b
         }
         return world[index] = local;
     };
+    for (std::size_t i = 0; i < info.size(); ++i) (void)resolve(resolve, i, 0);
+    return world;
+}
+
+WeaponFrames weapon_frames(const rws::Chunk& clump, const std::span<const std::byte> bytes, const bool held = false) {
+    WeaponFrames result;
+    const auto* list = rws::find_child(clump, 0x0E);
+    const auto frames = list ? rws::decode_frame_list(*list, bytes) : rws::DecodeResult<rws::FrameListInfo>{};
+    if (!frames) return result;
+    const auto world = frame_transforms(*frames.value, held);
+    const auto at = [&](const std::size_t index) { return index < world.size() ? world[index] : std::nullopt; };
     for (const auto& child : clump.children)
         if (child.type == 0x14) {
             if (const auto atomic = rws::decode_atomic(child, bytes); atomic && atomic.value->frame_index >= 0)
-                result.grip = resolve(resolve, static_cast<std::size_t>(atomic.value->frame_index), 0);
+                result.grip = at(static_cast<std::size_t>(atomic.value->frame_index));
             break;
         }
     // Frame extensions follow the list's Struct, one per frame, in order.
@@ -525,10 +539,104 @@ WeaponFrames weapon_frames(const rws::Chunk& clump, const std::span<const std::b
             if (const auto data = rws::decode_user_data(*user, bytes))
                 for (const auto& array : data.value->arrays)
                     for (const auto& text : array.strings)
-                        if (text == "tag=100") result.muzzle = resolve(resolve, index, 0);
+                        if (text == "tag=100") result.muzzle = at(index);
         ++index;
     }
     return result;
+}
+
+// A model's named frames (the scripts' DUMMY_BICHO: an alarm's LuzAlarma, a
+// truck's rastro1): each frame whose Pyro metadata is present, with its ID
+// (the metadata's number), its name and its transform in the Clump's space,
+// in metres, which is the space its glTF is written in.
+struct NamedFrame {
+    std::int32_t id{};
+    std::string name;
+    Transform transform{};
+};
+std::vector<NamedFrame> named_frames(const rws::Chunk& clump, const std::span<const std::byte> bytes) {
+    std::vector<NamedFrame> result;
+    const auto* list = rws::find_child(clump, 0x0E);
+    const auto frames = list ? rws::decode_frame_list(*list, bytes) : rws::DecodeResult<rws::FrameListInfo>{};
+    if (!frames) return result;
+    const auto world = frame_transforms(*frames.value);
+    std::size_t index = 0;
+    for (const auto& extension : list->children) {
+        if (extension.type != 0x03) continue;
+        const auto* pyro = rws::find_child(extension, 0xFFFFFF00U);
+        const auto metadata = pyro ? rws::decode_pyro_extension(*pyro, 0x0E, bytes) : rws::DecodeResult<rws::PyroExtensionInfo>{};
+        if (metadata && metadata.value->present && metadata.value->words.size() >= 2 && index < world.size() && world[index])
+            result.push_back({static_cast<std::int32_t>(metadata.value->words[1]), std::string(metadata.value->object_name()),
+                              *world[index]});
+        ++index;
+    }
+    return result;
+}
+
+// A CSFFBS value as JSON, as written: a number, a string, a list as an
+// array, a record (labelled fields) as an object.
+std::string csffbs_fields(const Document& document, const Node& record);
+std::string csffbs_value(const Document& document, const Node& node) {
+    if (!node.children.empty()) {
+        if (node.children.front().identifier_index) return csffbs_fields(document, node);
+        std::string out = "[";
+        for (std::size_t i = 0; i < node.children.size(); ++i) out += (i ? ", " : "") + csffbs_value(document, node.children[i]);
+        return out + "]";
+    }
+    if (const auto* value = std::get_if<std::int32_t>(&node.scalar)) return std::to_string(*value);
+    if (const auto* value = std::get_if<float>(&node.scalar)) return json_number(*value);
+    if (const auto* value = std::get_if<std::uint32_t>(&node.scalar)) {
+        const auto* text = document.string(*value);
+        return json_string(text ? text->display_utf8() : "");
+    }
+    return "[]";
+}
+// A record's fields as a JSON object: `.PART_LIFE 1` becomes "part_life": 1.
+// The first of a repeated field wins (Efectos.bdd writes .AUTOSTART twice).
+std::string csffbs_fields(const Document& document, const Node& record) {
+    std::set<std::string> seen;
+    std::string out;
+    for (const auto& child : record.children) {
+        const auto* label = child.identifier_index ? document.identifier(*child.identifier_index) : nullptr;
+        auto key = label ? lower(label->display_utf8()) : std::string{};
+        if (key.starts_with('.')) key.erase(0, 1);
+        if (key.empty() || !seen.insert(key).second) continue;
+        out += std::string(out.empty() ? "" : ", ") + json_string(key) + ": " + csffbs_value(document, child);
+    }
+    return "{" + out + "}";
+}
+// A record's field by name (without the dot, any case), or null.
+const Node* csffbs_field(const Document& document, const Node& record, const std::string_view name) {
+    for (const auto& child : record.children) {
+        const auto* label = child.identifier_index ? document.identifier(*child.identifier_index) : nullptr;
+        if (label && lower(label->display_utf8()) == "." + lower(std::string(name))) return &child;
+    }
+    return nullptr;
+}
+std::string csffbs_string(const Document& document, const Node* node) {
+    const auto* index = node ? std::get_if<std::uint32_t>(&node->scalar) : nullptr;
+    const auto* text = index ? document.string(*index) : nullptr;
+    return text ? text->display_utf8() : std::string{};
+}
+
+// A file a BDD names (`Gfx\\1FU.sp`) under the package, matching each part
+// of the path in any case, as Windows does.
+std::optional<std::filesystem::path> find_in_package(const std::filesystem::path& root, std::string reference) {
+    std::ranges::replace(reference, '\\', '/');
+    auto path = root;
+    for (const auto& part : std::filesystem::path(reference)) {
+        if (part.empty()) continue;
+        std::optional<std::filesystem::path> next;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(path, error))
+            if (lower(entry.path().filename().string()) == lower(part.string())) {
+                next = entry.path();
+                break;
+            }
+        if (!next) return std::nullopt;
+        path = *next;
+    }
+    return std::filesystem::is_regular_file(path) ? std::optional(path) : std::nullopt;
 }
 
 std::string json_transform(const Transform& transform) {
@@ -551,7 +659,8 @@ std::string godot_stance(const ObjectDefinition& definition, const WeaponDatabas
 std::string godot_markers_json(const MissionScene& scene, const ObjectDatabase& objects,
                                const std::map<std::int32_t, std::string>& class_assets,
                                const std::map<std::int32_t, std::string>& class_stances,
-                               const std::map<std::int32_t, std::string>& class_weapons) {
+                               const std::map<std::int32_t, std::string>& class_weapons,
+                               const std::map<std::int32_t, std::string>& effect_assets) {
     std::string out = "{\n\"format\":" + json_string(markers_format) +
                       ",\n\"version\":1,\n\"units\":\"metres\",\n\"up\":\"Y\",\n\"actors\":[";
     bool first = true;
@@ -642,6 +751,18 @@ std::string godot_markers_json(const MissionScene& scene, const ObjectDatabase& 
                ",\"yaw\":" + json_number(dummy.heading.value_or(0));
         if (dummy.pitch.value_or(0) != 0) out += ",\"pitch\":" + json_number(*dummy.pitch);
         out += "}";
+        first = false;
+    }
+    // The map's own effects, each at a dummy: {id, name, effect, dummy}.
+    out += "\n],\n\"effects\":[";
+    first = true;
+    for (const auto& effect : scene.effects()) {
+        if (!effect.id || !effect.class_id || !effect.dummy_id) continue;
+        const auto found = effect_assets.find(*effect.class_id);
+        if (found == effect_assets.end()) continue;
+        out += std::string(first ? "\n" : ",\n") + "{\"id\":" + std::to_string(*effect.id) +
+               ",\"name\":" + json_string(effect.name.value_or("")) + ",\"effect\":" + json_string(found->second) +
+               ",\"dummy\":" + std::to_string(*effect.dummy_id) + "}";
         first = false;
     }
     return out + "\n]\n}\n";
@@ -746,12 +867,47 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
     std::map<std::int32_t, std::string> class_ids;  // class -> logical ID
     if (editor) {
         const auto resources = editor->resource_index(package);
-        for (const auto& association : associate_actors(editor->scene(), editor->objects(), resources)) {
+        auto associations = associate_actors(editor->scene(), editor->objects(), resources);
+        const auto placed = associations.size();
+        // And the classes the scripts create (CREAR_BICHO: a broken alarm, a
+        // burst drum), which no actor of the scene may be.
+        std::set<std::int32_t> scripted;
+        for (const auto kind : {MissionFileKind::mission_script, MissionFileKind::cutscene_script})
+            if (const auto file = editor->file_of_kind(kind)) {
+                const auto collect = [&](auto&& self, const ProgramOperand& operand) -> void {
+                    if (operand.tag == "CLASSID")
+                        if (const auto* number = std::get_if<std::int32_t>(&operand.value)) scripted.insert(*number);
+                    for (const auto& child : operand.children) self(self, child);
+                };
+                const auto program = ProgramDocument::project(editor->document(*file));
+                for (const auto& script : program.scripts())
+                    for (const auto* list : {&script.conditions, &script.actions})
+                        for (const auto& instruction : *list)
+                            for (const auto& operand : instruction.operands) collect(collect, operand);
+            }
+        for (const auto class_id : scripted) {
+            ActorAssociation association;
+            association.class_id = class_id;
+            for (const auto* definition : editor->objects().find_class(class_id))
+                for (const auto& reference : definition->references) {
+                    if (reference.kind != ObjectReference::Kind::visual_model) continue;
+                    const auto resolution = resources.resolve(reference.path);
+                    AssociationEvidence evidence{"Objetos.bdd " + reference.field, reference.source, reference.field, resolution,
+                                                 std::nullopt};
+                    if (resolution.candidate_indices.size() == 1 && resolution.status != ResolutionStatus::ambiguous)
+                        evidence.resolved_path = resources.resources()[resolution.candidate_indices.front()].path;
+                    association.visual_models.push_back(std::move(evidence));
+                }
+            associations.push_back(std::move(association));
+        }
+        for (std::size_t index = 0; index < associations.size(); ++index) {
+            const auto& association = associations[index];
             if (!association.class_id || class_ids.contains(*association.class_id)) continue;
             const auto class_name = "class " + std::to_string(*association.class_id);
             if (association.visual_models.size() != 1 || !association.visual_models.front().resolved_path) {
-                result.problems.push_back(class_name + ": no single resolved visual model (" +
-                                          std::to_string(association.visual_models.size()) + " named)");
+                if (index < placed)
+                    result.problems.push_back(class_name + ": no single resolved visual model (" +
+                                              std::to_string(association.visual_models.size()) + " named)");
                 continue;
             }
             const auto& model_path = *association.visual_models.front().resolved_path;
@@ -761,6 +917,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
             const auto id = std::string(character ? "character/" : "prop/") + stem;
             const auto file = std::filesystem::path(character ? "characters" : "props") / (stem + ".gltf");
             if (!assets.contains(id)) {
+                std::pair<std::string, std::string> hang;  // joints or dummies, when it has them
                 try {
                     const auto model = rws::Document::load(model_path);
                     // A character with a skin keeps its skeleton; anything else is a static model.
@@ -780,11 +937,29 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                     if (!skinned)
                         (void)rws::export_scene_gltf(model.chunks(), model.scene_instances(), model.bytes(), options.out / file,
                                                      textures.resolver(model_path, options.out / file));
+                    // Where effects and links hang (DUMMY_BICHO): a skinned
+                    // character's joints by HAnim ID (the others are bone_<id>),
+                    // any other model's named frames.
+                    if (skinned) {
+                        std::string joints;
+                        for (const auto& [joint, name] : humanoid_joints())
+                            joints += std::string(joints.empty() ? "" : ", ") + json_string(std::to_string(joint)) + ": " +
+                                      json_string(std::string(name));
+                        hang = {"joints", "{" + joints + "}"};
+                    } else if (clump) {
+                        std::string dummies;
+                        for (const auto& frame : named_frames(*clump, model.bytes()))
+                            dummies += std::string(dummies.empty() ? "" : ", ") + "{\"id\": " + std::to_string(frame.id) +
+                                       ", \"name\": " + json_string(windows_1252_to_utf8(frame.name)) +
+                                       ", \"transform\": " + json_transform(frame.transform) + "}";
+                        if (!dummies.empty()) hang = {"dummies", "[" + dummies + "]"};
+                    }
                 } catch (const std::exception& error) {
                     result.problems.push_back(class_name + " (" + source(model_path) + "): " + error.what());
                     continue;
                 }
                 assets[id] = {{"file", json_string(file.generic_string())}, {"source", json_string(source(model_path))}};
+                if (!hang.second.empty()) assets[id].push_back(std::move(hang));
                 result.lines.push_back(std::string(character ? "character\t" : "prop\t") + file.generic_string());
             }
             class_ids[*association.class_id] = id;
@@ -868,6 +1043,82 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                             entry.emplace_back(key, json_string(found->second));
                 assets.try_emplace("surface/" + id_part(surface.name), std::move(entry));
             }
+    }
+    // Effects (Efectos.bdd), as effect/<name>: `kind` (.TIPO lower case:
+    // particle_system, glow, light, estela), `fields`, the record's own as
+    // written, lower case without the dot (the engine reads them), and
+    // `texture`: a glow's or trail's .FILE, a particle system's .TEXTURE.
+    // A particle system's .sp file comes as `system`, its fields likewise.
+    // A light that shares its name with a glow (luz verde) is
+    // effect/<name>_light. The first mission's record of a name wins.
+    std::map<std::int32_t, std::string> effect_ids;  // Efectos.bdd ID -> logical ID
+    if (const auto efectos = package_root / "BDD" / "Efectos.bdd"; std::filesystem::is_regular_file(efectos)) {
+        const auto document = Document::load(efectos);
+        std::vector<const Node*> records;
+        const auto collect = [&](auto&& self, const Node& node) -> void {
+            if (csffbs_field(document, node, "ID") && csffbs_field(document, node, "TIPO")) {
+                records.push_back(&node);
+                return;
+            }
+            for (const auto& child : node.children) self(self, child);
+        };
+        for (const auto& root : document.roots()) collect(collect, root);
+        std::size_t written = 0;
+        std::set<std::string> unfound;
+        for (const auto* record : records) {
+            const auto* id_node = csffbs_field(document, *record, "ID");
+            const auto* id = id_node ? std::get_if<std::int32_t>(&id_node->scalar) : nullptr;
+            const auto name = csffbs_string(document, csffbs_field(document, *record, "NOMBRE"));
+            const auto kind = lower(csffbs_string(document, csffbs_field(document, *record, "TIPO")));
+            if (!id || name.empty() || kind.empty()) continue;
+            auto logical = "effect/" + id_part(name);
+            const auto kind_of = [&](const std::string& key) -> std::string {
+                const auto found = assets.find(key);
+                if (found == assets.end()) return {};
+                for (const auto& [field, value] : found->second)
+                    if (field == "kind") return value;
+                return {};
+            };
+            if (const auto taken = kind_of(logical); !taken.empty() && taken != json_string(kind)) logical += "_" + kind;
+            effect_ids[*id] = logical;
+            if (assets.contains(logical)) continue;
+            ManifestEntry entry{{"kind", json_string(kind)}, {"fields", csffbs_fields(document, *record)}};
+            const auto file = csffbs_string(document, csffbs_field(document, *record, "FILE"));
+            std::string texture_name;
+            std::filesystem::path texture_from = efectos;
+            if (kind == "particle_system" && !file.empty()) {
+                const auto system = find_in_package(package_root, file);
+                if (!system) {
+                    unfound.insert(file);
+                } else {
+                    const auto sp = Document::load(*system);
+                    if (!sp.roots().empty()) {
+                        entry.emplace_back("system", csffbs_fields(sp, sp.roots().front()));
+                        texture_name = csffbs_string(sp, csffbs_field(sp, sp.roots().front(), "TEXTURE"));
+                        texture_from = *system;
+                    }
+                }
+            } else if (!file.empty()) {
+                auto reference = file;
+                std::ranges::replace(reference, '\\', '/');
+                texture_name = std::filesystem::path(reference).filename().string();
+                if (const auto found = find_in_package(package_root, file)) texture_from = *found;
+            }
+            if (!texture_name.empty()) {
+                if (const auto texture = textures.resolver(texture_from, options.out / "manifest.json")(texture_name))
+                    entry.emplace_back("texture", json_string(texture->uri));
+                else
+                    unfound.insert(texture_name);
+            }
+            assets[logical] = std::move(entry);
+            ++written;
+        }
+        result.lines.push_back("effects\t" + std::to_string(written) + " effects");
+        if (!unfound.empty()) {
+            std::string names;
+            for (const auto& item : unfound) names += (names.empty() ? "" : ", ") + item;
+            result.problems.push_back("effects: " + std::to_string(unfound.size()) + " files not found: " + names);
+        }
     }
     // A weapon's sounds as a manifest field: {"shoot": "sound/...", ...}.
     const auto weapon_sounds = [&](const WeaponDefinition& weapon, const bool player) {
@@ -1139,7 +1390,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
 
     // Actors, routes, areas and dummies, in metres and radians.
     const auto markers = map_folder / "markers.json";
-    write_file(options.out / markers, editor ? godot_markers_json(editor->scene(), editor->objects(), class_ids, class_stances, class_weapons)
+    write_file(options.out / markers, editor ? godot_markers_json(editor->scene(), editor->objects(), class_ids, class_stances, class_weapons, effect_ids)
                                              : godot_markers_json(MissionScene{}, ObjectDatabase{}, {}));
     result.lines.push_back("markers\t" + markers.generic_string());
     assets["map/" + lower(slot->mission)] = {
@@ -1186,8 +1437,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
             for (const auto& weapon : weapons.definitions())
                 if (weapon.id && weapon.name) sources.weapons.try_emplace(*weapon.id, *weapon.name);
         }
-        if (const auto efectos = package_root / "BDD" / "Efectos.bdd"; std::filesystem::is_regular_file(efectos))
-            sources.effects = record_names(Document::load(efectos));
+        sources.effects = effect_ids;
         const auto mission_file = std::filesystem::path("missions") / (slot->mission + ".json");
         std::filesystem::create_directories(options.out / "missions");
         write_file(options.out / mission_file, godot_mission_json(slot->mission, sources));
@@ -1195,8 +1445,13 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                                std::to_string((sources.mission ? sources.mission->scripts().size() : 0) +
                                               (sources.cutscene ? sources.cutscene->scripts().size() : 0)) +
                                " scripts");
+        // Each class's model, for actors the scripts create: {"204": "prop/alarmarota"}.
+        std::string classes;
+        for (const auto& [class_id, asset] : class_ids)
+            classes += std::string(classes.empty() ? "" : ", ") + json_string(std::to_string(class_id)) + ": " + json_string(asset);
         assets["mission/" + lower(slot->mission)] = {{"file", json_string(mission_file.generic_string())},
-                                                     {"map", json_string("map/" + lower(slot->mission))}};
+                                                     {"map", json_string("map/" + lower(slot->mission))},
+                                                     {"classes", "{" + classes + "}"}};
     }
 
     result.lines.push_back("textures\t" + std::to_string(textures.converted()) + " PNG");

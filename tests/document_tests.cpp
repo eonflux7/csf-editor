@@ -1027,6 +1027,10 @@ void test_godot_markers() {
     [ .NOMBRE Barrel .ID 3 .CLASSID 29 .POS (250.0 50.0 -100.0) .ANGULO -180.0 .ANGULO_X 90.0 ]
     [ .NOMBRE Nothing .ID 4 .CLASSID 77 .POS (0.0 0.0 0.0) .ANGULO 0.0 ]
   )
+  .EFECTOS (
+    [ .ID 7 .NOMBRE Fire .CLASSID 35 .DUMMY 2 .PRIORITY -1 .SHARE_GROUP -1 ]
+    [ .ID 8 .NOMBRE Unknown .CLASSID 99 .DUMMY 2 .PRIORITY -1 .SHARE_GROUP -1 ]
+  )
   .MALLA_NAVEGACION [
     .GRUPOS (
       [ .ID 3 .NOMBRE Parapets .TIPO 3 .PUNTOS (
@@ -1071,6 +1075,11 @@ void test_godot_markers() {
     CHECK(has(R"({"id":2,"name":"Cam","position":[1,2,3],"yaw":0.5,"pitch":-0.25})"));
     CHECK(csf::godot_markers_json(editor.scene(), editor.objects(), {}) ==
           csf::godot_markers_json(editor.scene(), editor.objects(), {}));
+    // The map's own effects, by the logical ID their class is given; one
+    // whose class has none is left out.
+    CHECK(has("\"effects\":[\n]"));
+    CHECK(csf::godot_markers_json(editor.scene(), editor.objects(), {}, {}, {}, {{35, "effect/fue1"}})
+              .ends_with("\"effects\":[\n{\"id\":7,\"name\":\"Fire\",\"effect\":\"effect/fue1\",\"dummy\":2}\n]\n}\n"));
     // A class's stance is its first weapon held like a rifle, SMG or pistol, or
     // empty hands; items are passed over, and a class without either has none.
     const auto weapons = csf::WeaponDatabase::project(csf::Document::from_bytes(compile_source(R"([ .VERSION 10 .LISTADATOS (

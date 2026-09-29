@@ -50,11 +50,14 @@ GodotExportResult export_godot(const GodotExportOptions& options);
 // faction, `asset`, the logical ID `class_assets` gives its class, and
 // `stance` (rifle, smg, pistol, unarmed) and `weapon` (the logical ID of the
 // model in its hands), which `class_stances` and `class_weapons` give it.
+// The map's own effects (.EFECTOS: fires, smoke, glows at dummies) name
+// theirs by the logical ID `effect_assets` gives it.
 // docs/guides/cli.md describes the fields.
 [[nodiscard]] std::string godot_markers_json(const MissionScene& scene, const ObjectDatabase& objects,
                                              const std::map<std::int32_t, std::string>& class_assets,
                                              const std::map<std::int32_t, std::string>& class_stances = {},
-                                             const std::map<std::int32_t, std::string>& class_weapons = {});
+                                             const std::map<std::int32_t, std::string>& class_weapons = {},
+                                             const std::map<std::int32_t, std::string>& effect_assets = {});
 
 // What missions/<Mission>.json is made from: the scene, its mission (.gsc) and
 // cutscene (.csc) programs, and the names the scripts' numbers stand for.
@@ -69,7 +72,7 @@ struct GodotMissionSources {
     std::map<std::string, std::vector<std::string>> animation_roles;  // lower-case record name -> "<library>/<role>"
     std::map<std::int32_t, std::string> classes;      // Objetos.bdd class -> name
     std::map<std::int32_t, std::string> weapons;      // Armas.bdd ID -> name
-    std::map<std::int32_t, std::string> effects;      // Efectos.bdd ID -> name
+    std::map<std::int32_t, std::string> effects;      // Efectos.bdd ID -> effect/<name>
 };
 
 // missions/<Mission>.json (format `opencsf-mission`): what the mission's data
