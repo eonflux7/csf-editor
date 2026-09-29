@@ -172,10 +172,17 @@ std::vector<MissionSlot> mission_slots(const std::filesystem::path& corpus) {
         const auto name = mission.filename().string();
         const auto maps = child_named(mission, "Maps");
         if (!maps) continue;
-        std::vector<std::filesystem::path> folders;
+        // Maps/<map>/ (Ambush: Maps/ST08) or one level deeper, Maps/<area>/<map>/
+        // (Gestapo: Maps/ST07/ST07A).
+        std::vector<std::filesystem::path> folders, nested;
         for (const auto& entry : std::filesystem::directory_iterator(*maps, error))
             if (entry.is_directory()) folders.push_back(entry.path());
+        for (const auto& folder : folders)
+            for (const auto& entry : std::filesystem::directory_iterator(folder, error))
+                if (entry.is_directory()) nested.push_back(entry.path());
         std::ranges::sort(folders);
+        std::ranges::sort(nested);
+        folders.insert(folders.end(), nested.begin(), nested.end());
         for (const auto& folder : folders) {
             // <mission>.scn, or the folder's only scene; the map is <folder>.rws
             // with <folder>_col.rws, or the folder's only such pair.

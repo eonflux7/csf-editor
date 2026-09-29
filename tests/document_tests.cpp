@@ -5128,6 +5128,18 @@ int run_tests() {
             const auto slots = csf::mission_slots(root / "corpus");
             CHECK(slots.size() == 1 && slots[0].mission == "M1" && slots[0].scene == "Maps/X/M1.scn" &&
                   slots[0].archive == "maps/M1.pak" && slots[0].collision_map == "Maps/X/X_col.rws");
+            {
+                // A map one folder deeper, Maps/<area>/<map>/ (Gestapo: Maps/ST07/ST07A).
+                const auto nested = root / "nested-corpus" / "M2" / "Maps" / "Y" / "YA";
+                std::filesystem::create_directories(nested);
+                std::filesystem::create_directories(root / "nested-corpus" / "M2" / "Maps" / "Secs");
+                std::ofstream(nested / "M2.scn") << "";
+                std::ofstream(nested / "YA.rws") << "";
+                std::ofstream(nested / "YA_COL.rws") << "";
+                const auto deeper = csf::mission_slots(root / "nested-corpus");
+                CHECK(deeper.size() == 1 && deeper[0].scene == "Maps/Y/YA/M2.scn" &&
+                      deeper[0].visual_map == "Maps/Y/YA/YA.rws" && deeper[0].collision_map == "Maps/Y/YA/YA_COL.rws");
+            }
 
             // The Godot export (csf/godot_export): the map, markers and manifest
             // even when the scene cannot be opened, byte-identical on a re-run,
