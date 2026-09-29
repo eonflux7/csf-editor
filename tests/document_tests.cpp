@@ -5198,6 +5198,17 @@ int run_tests() {
                       bound.find(R"("baseColorTexture": {"index": 0, "texCoord": 0})") != std::string::npos &&
                       bound.find(R"("alphaMode": "MASK")") != std::string::npos);
                 std::filesystem::remove(maps / "Textures" / (texture + ".png"));
+                // Off the editor's path (no Textures folder between the map and
+                // the package holds it), anywhere in the package will do.
+                const auto deco = root / "corpus" / "M1" / "Models" / "Deco" / "Textures";
+                std::filesystem::create_directories(deco);
+                CHECK(rws::write_png_rgba(deco / (texture + ".png"), 2, 2, cut_out, error));
+                const auto elsewhere = csf::export_godot({root / "corpus", "M1", godot});
+                CHECK(std::ranges::count(elsewhere.problems, "texture " + texture + ": not found") == 0);
+                auto deco_png = "textures/m1/models/deco/textures/" + texture + ".png";
+                std::ranges::transform(deco_png, deco_png.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                CHECK(export_files().at("maps/M1/visual.gltf").find(R"("uri": "../../)" + deco_png + '"') != std::string::npos);
+                std::filesystem::remove_all(root / "corpus" / "M1" / "Models");
             }
 
             // Text ranges: hundreds from 900, clear of the donor's IDs and other projects'.

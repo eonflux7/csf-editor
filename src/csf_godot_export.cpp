@@ -5,6 +5,7 @@
 #include "csf/mission_edit.hpp"
 #include "csf/object_database.hpp"
 #include "csf/project_pipeline.hpp"
+#include "csf/tree.hpp"
 #include "rws/document.hpp"
 #include "rws/scene_export.hpp"
 #include "rws/texture_image.hpp"
@@ -79,7 +80,11 @@ rws::SceneTexture::Alpha alpha_of(const std::vector<std::uint8_t>& rgba) {
 // Converts the DDS/PNG textures glTF files name into PNGs under textures/,
 // mirroring their corpus folders (lower case) so equal names never collide.
 // A texture is looked up as the editor does: beside the file that names it,
-// then in each Textures folder from there up to the mission package.
+// then in each Textures folder from there up to the mission package. The game
+// finds more than that (a prop may use the map's textures, a weapon one kept
+// under Models/Deco), so a name found neither way is taken from anywhere in
+// the package, the first by path. Names are Windows-1252 (LEÑERA_Lm), the
+// unpacked files UTF-8.
 class TextureConverter {
 public:
     TextureConverter(std::filesystem::path out, std::filesystem::path corpus, std::filesystem::path package_root)
@@ -94,10 +99,12 @@ public:
     rws::SceneTextureResolver resolver(const std::vector<std::filesystem::path>& sources, const std::filesystem::path& gltf) {
         return [this, sources, gltf](const std::string_view name) -> std::optional<rws::SceneTexture> {
             std::optional<std::filesystem::path> found;
+            const auto utf8 = windows_1252_to_utf8(name);
             for (const auto& source : sources)
-                if (!found) found = find(source, lower(std::string(name)));
+                if (!found) found = find(source, lower(utf8));
+            if (!found) found = find_anywhere(lower(utf8));
             if (!found) {
-                missing_.insert(std::string(name));
+                missing_.insert(utf8);
                 return std::nullopt;
             }
             const auto png = convert(*found);
@@ -137,6 +144,23 @@ private:
             folder = folder.parent_path();
         }
     }
+    std::optional<std::filesystem::path> find_anywhere(const std::string& name) {
+        if (package_files_.empty()) {
+            std::vector<std::filesystem::path> files;
+            std::error_code error;
+            for (auto it = std::filesystem::recursive_directory_iterator(package_root_, error);
+                 !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+                const auto file = lower(it->path().filename().string());
+                if (it->is_regular_file() && (file.ends_with(".dds") || file.ends_with(".png"))) files.push_back(it->path());
+            }
+            std::ranges::sort(files);
+            for (const auto& file : files) package_files_.try_emplace(lower(file.filename().string()), file);
+        }
+        const auto has_extension = std::filesystem::path(name).has_extension();
+        for (const auto& candidate : has_extension ? std::vector{name} : std::vector{name + ".dds", name + ".png"})
+            if (const auto it = package_files_.find(candidate); it != package_files_.end()) return it->second;
+        return std::nullopt;
+    }
     std::optional<std::pair<std::filesystem::path, rws::SceneTexture::Alpha>> convert(const std::filesystem::path& image) {
         if (const auto it = converted_.find(image); it != converted_.end()) return it->second;
         if (failed_.contains(image.generic_string())) return std::nullopt;
@@ -160,6 +184,7 @@ private:
 
     std::filesystem::path out_, corpus_, package_root_;
     std::map<std::filesystem::path, std::map<std::string, std::filesystem::path>> listings_;
+    std::map<std::string, std::filesystem::path> package_files_;  // lower-case name -> first by path
     std::map<std::filesystem::path, std::pair<std::filesystem::path, rws::SceneTexture::Alpha>> converted_;
     std::map<std::string, std::string> failed_;  // path -> why
     std::set<std::string> missing_;              // names found nowhere
