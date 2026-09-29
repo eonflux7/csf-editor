@@ -1094,6 +1094,117 @@ void test_godot_markers() {
     std::filesystem::remove_all(root);
 }
 
+void test_godot_mission() {
+    const auto root = std::filesystem::temp_directory_path() / "csf-editor-godot-mission-tests";
+    std::filesystem::remove_all(root);
+    const auto package = root / "Mission";
+    const auto map = package / "Maps" / "M1";
+    write_bytes(map / "M1.scn", compile_source(R"([
+  .VERSION 17
+  .PLAYER 1
+  .BICHOS (
+    [ .NOMBRE Spy .ID 1 .CLASSID 10 .POS (0.0 0.0 0.0) .ANGULO 0.0 ]
+    [ .NOMBRE Officer .ID 2 .CLASSID 10 .POS (0.0 0.0 0.0) .ANGULO 0.0 .PORTRAIT "Menus\\Retratos\\Foto.fbs" .SCRIPT (7) ]
+  )
+  .MALLA_NAVEGACION [ .GRUPOS (
+      [ .ID 3 .NOMBRE Rounds .TIPO 2 .PUNTOS ( [ .ID 1 .NOMBRE Gate .POS (0.0 0.0 0.0) .ROT 0.0 .ROT_X 0.0 ]
+                                               [ .ID 2 .NOMBRE "" .POS (100.0 0.0 0.0) .ROT 0.0 .ROT_X 0.0 ] )
+        .CONEXIONES ( ) ] )
+    .CONEXIONES ( ) ]
+  .MALLA_DUMMIES [ .DUMMIES ( [ .ID 4 .NOMBRE "" .POS (1.0 2.0 3.0) .ROT 0.0 .ROT_X 0.0 ] ) ]
+  .MALLA_AREAS [ .AREAS ( [ .ID 5 .FLAGS 1 .OCLUSION 1 .NOMBRE Yard .HEIGHT 200.0 .REVERB 0 .LIMITREVERB 0
+    .PUNTOS ( [ .POS (0.0 0.0 0.0) ] [ .POS (10.0 0.0 0.0) ] [ .POS (10.0 0.0 10.0) ] ) ] ) ]
+])"));
+    write_bytes(map / "M1.gsc", compile_source(R"([
+  .RECURSOS [ .ANIMACIONES (100) .CLASSID ( ) ]
+  .VARIABLES ( [ .ID 8388608 .TYPE BOOL .NOMBRE Alarm .VALOR FALSE ] [ .ID 8388609 .TYPE NUMERO .NOMBRE Count .VALOR 3.0 ] )
+  .SCRIPTS (
+    [ .ID 6 .NOMBRE START .CARPETA Control .FLAGS [ .TRIGGER 1 .ENABLED 1 .VALIDO 1 ] .EVENTOS ( (START_GAME) )
+      .ACCIONES {
+        COMENTARIO (CADENA "Send him on his rounds")
+        IF (NOT (VAR 8388608))
+          IR_A_PATHPOINT (BICHO 2) (PATHPOINT 3 1) (BOOL FALSE)
+        ENDIF
+        ACT_BICHO_EVENT_ZONA (BICHO 2) (ZONA 5) (BOOL TRUE)
+        TIMED_STRING_V2 (FLI "0012") (NUMERO 5.0) (NUMERO 1.0)
+        TIMED_STRING_V2 (FLI g014) (NUMERO 5.0) (NUMERO 1.0)
+        CAMARA_EN_DUMMY (DUMMY 4)
+        COMENTARIO_ACCION (PLAY_ANMBDD (BICHO 99) (ANM_BDD 100))
+        SEND_EVENT (EVENT ROUNDS)
+      } ]
+    [ .ID 7 .NOMBRE ROUNDS .CARPETA "" .FLAGS [ .TRIGGER 0 .ENABLED 1 .VALIDO 1 ] .EVENTOS ( (ROUNDS) )
+      .VARIABLES ( [ .ID 1 .TYPE BICHO .NOMBRE Me .VALOR 0 ] )
+      .ACCIONES {
+        SET (VAR 1) (THIS)
+        PLAY_ANMBDD (VAR 1) (ANM_BDD 100)
+      } ]
+  )
+  .POOL ( )
+])"));
+    write_bytes(package / "BDD" / "Objetos.bdd", compile_source(R"([ .VERSION 10 .LISTADATOS (
+  [ .ID 10 .NOMBRE Soldier .TIPO ALEMAN .MODELO "Models\\Char\\AlSt.dff" ]
+) ])"));
+    write_bytes(package / "BDD" / "Anims.bdd",
+                compile_source(R"([ .VERSION 1 .LISTADATOS ( [ .ID 100 .NOMBRE SMIdDPie .FILE "Anims\\Enem\\a.anm" ] ) ])"));
+    const auto editor = csf::MissionEditor::open(map / "M1.scn", package);
+    const auto program = csf::ProgramDocument::project(editor.document(*editor.file_of_kind(csf::MissionFileKind::mission_script)));
+
+    // Texts: an ID line, the quoted string, a blank line; UTF-16 LE with a BOM.
+    std::vector<std::byte> fli{std::byte{0xFF}, std::byte{0xFE}};
+    for (const char16_t c : std::u16string(u"0012\r\n\"THE TRAITOR ÉSCAPES\"\r\n\r\nG014\r\n\"MISSION COMPLETED\"\r\n")) {
+        fli.push_back(static_cast<std::byte>(c & 0xFF));
+        fli.push_back(static_cast<std::byte>(c >> 8));
+    }
+    const auto strings = csf::fli_strings(fli);
+    CHECK(strings.size() == 2 && strings.at("0012") == "THE TRAITOR \xc3\x89SCAPES" && strings.at("G014") == "MISSION COMPLETED");
+    CHECK((csf::record_names(csf::Document::from_bytes(compile_source(
+               R"([ .VERSION 1 .REGISTROS ( [ .ID 8 .NOMBRE PFX_IMPACTO .TIPO PARTICLE_SYSTEM ] [ .ID 9 .TIPO X ] ) ])"))) ==
+           std::map<std::int32_t, std::string>{{8, "PFX_IMPACTO"}}));
+
+    csf::GodotMissionSources sources;
+    sources.scene = &editor.scene();
+    sources.mission = &program;
+    sources.texts = {{"0012", strings.at("0012")}, {"0013", "UNUSED BUT KEPT"}};
+    sources.global_texts = {{"G014", "MISSION COMPLETED"}, {"G015", "NOT SHOWN"}};
+    sources.animations = {{100, "SMIdDPie"}};
+    sources.animation_roles = {{"smiddpie", {"smg/idle"}}};
+    const auto json = csf::godot_mission_json("M1", sources);
+    const auto has = [&](const std::string_view text) {
+        const bool found = json.find(text) != std::string::npos;
+        if (!found) std::cerr << "godot mission: missing " << text << "\nin " << json << '\n';
+        return found;
+    };
+    CHECK(json.starts_with("{\n\"format\":\"opencsf-mission\",\n\"version\":1,\n\"mission\":\"M1\""));
+    CHECK(has(R"j("player":{"actor":1})j"));
+    CHECK(has(R"j({"id":2,"name":"Officer","scripts":[7],"portrait":"Menus\\Retratos\\Foto.fbs"})j"));
+    CHECK(has(R"j({"id":8388608,"name":"Alarm","type":"BOOL","value":false})j"));
+    CHECK(has(R"j({"id":8388609,"name":"Count","type":"NUMERO","value":3})j"));
+    CHECK(has(R"j({"name":"ROUNDS","builtin":false,"listeners":[7],"senders":[6]})j"));
+    CHECK(has(R"j({"program":"mission","id":6,"name":"START","folder":"Control","trigger":true,"enabled":true,)j"
+              R"j("events":["START_GAME"],"sends":["ROUNDS"],"actions":[)j"));
+    // Numbers that name something carry the name; texts shown follow as a comment.
+    CHECK(has(R"j("# Send him on his rounds")j"));
+    CHECK(has(R"j("IF (NOT (VAR 8388608 Alarm))")j"));
+    CHECK(has(R"j("  IR_A_PATHPOINT (BICHO 2 Officer) (PATHPOINT 3 1 Rounds/Gate) (BOOL FALSE)")j"));
+    CHECK(has(R"j("ACT_BICHO_EVENT_ZONA (BICHO 2 Officer) (ZONA 5 Yard) (BOOL TRUE)")j"));
+    CHECK(has(R"j("TIMED_STRING_V2 (FLI \"0012\") (NUMERO 5.0) (NUMERO 1.0)  # 0012: \"THE TRAITOR ÉSCAPES\"")j"));
+    CHECK(has(R"j("TIMED_STRING_V2 (FLI g014) (NUMERO 5.0) (NUMERO 1.0)  # G014: \"MISSION COMPLETED\"")j"));
+    CHECK(has(R"j("CAMARA_EN_DUMMY (DUMMY 4)")j"));
+    CHECK(has(R"j("# off: PLAY_ANMBDD (BICHO 99) (ANM_BDD 100 SMIdDPie)")j"));
+    CHECK(has(R"j("uses":["ACT_BICHO_EVENT_ZONA","CAMARA_EN_DUMMY","ENDIF","IF","IR_A_PATHPOINT","NOT","SEND_EVENT","TIMED_STRING_V2"]})j"));
+    CHECK(has("\"variables\":[{\"id\":1,\"name\":\"Me\",\"type\":\"BICHO\"}],\"actions\":[\n\"SET (VAR 1 Me) (THIS)\""));
+    CHECK(has(R"j("uses":["PLAY_ANMBDD","SET","THIS"]})j"));
+    // The mission's own texts all; global ones only when shown.
+    CHECK(has("\"texts\":{\n\"0012\":") && has(R"j("0013":"UNUSED BUT KEPT")j") && has(R"j("G014":"MISSION COMPLETED")j") &&
+          json.find("NOT SHOWN") == std::string::npos);
+    CHECK(has(R"j("anim":{"100":{"name":"SMIdDPie","roles":["smg/idle"]}})j"));
+    CHECK(has(R"j("dummy":{"4":""})j") && has(R"j("point":{"3/1":"Rounds/Gate"})j") && has(R"j("area":{"5":"Yard"})j"));
+    // Actor 99 exists nowhere, and only a switched-off action names it.
+    CHECK(has("\"unresolved\":[\n{\"kind\":\"actor\",\"id\":\"99\",\"off\":true}\n]"));
+    CHECK(json == csf::godot_mission_json("M1", sources));
+    std::filesystem::remove_all(root);
+}
+
 void test_actor_look() {
     const auto root = std::filesystem::temp_directory_path() / "csf-editor-actor-look-tests";
     std::filesystem::remove_all(root);
@@ -2435,6 +2546,7 @@ int run_tests() {
     test_mission_editor();
     test_actor_look();
     test_godot_markers();
+    test_godot_mission();
     {
         const std::array primitives{csf::ScreenOverlayPrimitive{1, csf::OverlayPrimitiveKind::point,
                                                                 10, 10, 10, 10, 0, true, false},

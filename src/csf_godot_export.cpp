@@ -744,6 +744,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
     // `positional` (.ES3D) and `radius` (metres). A record's .FILE names a wave
     // by its stem; the bank names some with a suffix (`CAMION_MOVER_01 (44)`).
     std::map<std::int32_t, std::string> sound_ids;  // Sonidos.bdd ID -> logical ID
+    std::map<std::int32_t, std::string> sound_names;  // every named Sonidos.bdd record, with a wave or not
     {
         std::map<std::string, std::string> waves;  // lower-case wave name -> file
         std::vector<std::filesystem::path> banks;
@@ -772,6 +773,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                                         ? SoundDatabase::project(Document::load(sonidos))
                                         : SoundDatabase{};
         for (const auto& sound : sound_database.definitions()) {
+                if (!sound.name.empty()) sound_names[sound.id] = "sound/" + id_part(sound.name);
                 std::string files;
                 for (auto reference : sound.files) {
                     std::ranges::replace(reference, '\\', '/');
@@ -883,6 +885,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
     // game picks one at random (our reading). `custom` holds the one-off scene
     // clips (Anims/Costum: smoking, talking, repairing, ...) under their own
     // names, for missions to play.
+    std::map<std::string, std::vector<std::string>> animation_roles;  // lower-case record name -> "<library>/<role>"
     if (editor && !skeletons.empty()) {
         const auto& [skeleton_id, skeleton_path] = *skeletons.begin();
         const auto resources = editor->resource_index(package);
@@ -941,6 +944,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 }
                 if (variants.empty()) continue;
                 // The engine moves the actor at .VEL game units a second; the clips stay in place.
+                animation_roles[lower(record->logical_name)].push_back(stance + "/" + role->role);
                 role_fields.emplace_back(role->role, "\"loop\": " + std::string(loop ? "true" : "false") +
                                                          ", \"speed\": " + json_number(record->velocity_scalar.value_or(0.0F) * 0.01F) +
                                                          ", \"clip\": " + json_string(role->clip));
@@ -1123,6 +1127,55 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         {"source", json_string(source(package_root / slot->scene))},
     };
     if (sky) assets["map/" + lower(slot->mission)].emplace_back("sky", json_string(sky->generic_string()));
+
+    // The mission's data for logic written by hand: texts, objectives, scripts
+    // as readable text, and the names behind their numbers.
+    if (editor) {
+        const auto program = [&](const MissionFileKind kind) -> std::optional<ProgramDocument> {
+            if (const auto file = editor->file_of_kind(kind)) return ProgramDocument::project(editor->document(*file));
+            return std::nullopt;
+        };
+        const auto mission_program = program(MissionFileKind::mission_script);
+        const auto cutscene_program = program(MissionFileKind::cutscene_script);
+        GodotMissionSources sources;
+        sources.scene = &editor->scene();
+        sources.mission = mission_program ? &*mission_program : nullptr;
+        sources.cutscene = cutscene_program ? &*cutscene_program : nullptr;
+        const auto read_texts = [&](const std::string& name) -> std::map<std::string, std::string> {
+            const auto path = corpus / "GlobalEK" / "Texts" / name;
+            if (!std::filesystem::is_regular_file(path)) {
+                result.problems.push_back("texts " + name + ": not found");
+                return {};
+            }
+            std::ifstream in(path, std::ios::binary);
+            const std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            return fli_strings(std::as_bytes(std::span(bytes)));
+        };
+        sources.texts = read_texts(slot->mission + ".fli");
+        sources.global_texts = read_texts("Global.fli");
+        sources.sounds = sound_names;
+        for (const auto& record : editor->animations().records())
+            if (record.id) sources.animations.try_emplace(*record.id, record.logical_name);
+        sources.animation_roles = animation_roles;
+        for (const auto& definition : editor->objects().definitions())
+            if (definition.class_id && definition.name) sources.classes.try_emplace(*definition.class_id, *definition.name);
+        if (const auto file = editor->file_of_kind(MissionFileKind::weapons)) {
+            const auto weapons = WeaponDatabase::project(editor->document(*file));
+            for (const auto& weapon : weapons.definitions())
+                if (weapon.id && weapon.name) sources.weapons.try_emplace(*weapon.id, *weapon.name);
+        }
+        if (const auto efectos = package_root / "BDD" / "Efectos.bdd"; std::filesystem::is_regular_file(efectos))
+            sources.effects = record_names(Document::load(efectos));
+        const auto mission_file = std::filesystem::path("missions") / (slot->mission + ".json");
+        std::filesystem::create_directories(options.out / "missions");
+        write_file(options.out / mission_file, godot_mission_json(slot->mission, sources));
+        result.lines.push_back("mission\t" + mission_file.generic_string() + '\t' +
+                               std::to_string((sources.mission ? sources.mission->scripts().size() : 0) +
+                                              (sources.cutscene ? sources.cutscene->scripts().size() : 0)) +
+                               " scripts");
+        assets["mission/" + lower(slot->mission)] = {{"file", json_string(mission_file.generic_string())},
+                                                     {"map", json_string("map/" + lower(slot->mission))}};
+    }
 
     result.lines.push_back("textures\t" + std::to_string(textures.converted()) + " PNG");
     for (const auto& name : textures.missing()) result.problems.push_back("texture " + name + ": not found");

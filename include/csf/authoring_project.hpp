@@ -250,6 +250,10 @@ private:
 // The numeric string IDs a .fli file has ("0001", "0900").
 [[nodiscard]] std::set<std::string> fli_string_ids(std::span<const std::byte> fli);
 
+// A .fli file's strings by ID as the file writes it ("0012", "G017"), in
+// UTF-8 without their quotes. Scripts name them as (FLI "0012") or (FLI g017).
+[[nodiscard]] std::map<std::string, std::string> fli_strings(std::span<const std::byte> fli);
+
 class MissionScene;
 
 // The reference a modelling tool shows around its sources (the Blender

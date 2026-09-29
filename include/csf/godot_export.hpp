@@ -2,6 +2,7 @@
 
 #include "csf/mission_scene.hpp"
 #include "csf/object_database.hpp"
+#include "csf/program.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -51,5 +52,29 @@ GodotExportResult export_godot(const GodotExportOptions& options);
                                              const std::map<std::int32_t, std::string>& class_assets,
                                              const std::map<std::int32_t, std::string>& class_stances = {},
                                              const std::map<std::int32_t, std::string>& class_weapons = {});
+
+// What missions/<Mission>.json is made from: the scene, its mission (.gsc) and
+// cutscene (.csc) programs, and the names the scripts' numbers stand for.
+struct GodotMissionSources {
+    const MissionScene* scene{};
+    const ProgramDocument* mission{};
+    const ProgramDocument* cutscene{};
+    std::map<std::string, std::string> texts;         // Texts/<Mission>.fli: ID as written ("0012") -> UTF-8
+    std::map<std::string, std::string> global_texts;  // Texts/Global.fli ("G017"), which scripts name as g017
+    std::map<std::int32_t, std::string> sounds;       // Sonidos.bdd ID -> sound/<name>
+    std::map<std::int32_t, std::string> animations;   // Anims.bdd ID -> record name
+    std::map<std::string, std::vector<std::string>> animation_roles;  // lower-case record name -> "<library>/<role>"
+    std::map<std::int32_t, std::string> classes;      // Objetos.bdd class -> name
+    std::map<std::int32_t, std::string> weapons;      // Armas.bdd ID -> name
+    std::map<std::int32_t, std::string> effects;      // Efectos.bdd ID -> name
+};
+
+// missions/<Mission>.json (format `opencsf-mission`): what the mission's data
+// says, for logic written by hand: texts, objectives, global variables, events,
+// every script with its body as readable text (numbers that name something
+// followed by that name), the names behind those numbers, what the scene sets
+// per actor at load (its player, attached scripts, portraits) and the flow's
+// findings. It interprets nothing. docs/guides/cli.md describes the fields.
+[[nodiscard]] std::string godot_mission_json(const std::string& mission, const GodotMissionSources& sources);
 
 } // namespace csf

@@ -239,6 +239,21 @@ std::vector<SurfaceDefinition> project_surfaces(const Document& document) {
     return result;
 }
 
+std::map<std::int32_t, std::string> record_names(const Document& document) {
+    std::vector<const Node*> records;
+    for (const auto& root : document.roots())
+        collect_records(document, root, records);
+    std::map<std::int32_t, std::string> names;
+    for (const auto* record : records) {
+        const auto* id = field(document, *record, {"ID"});
+        const auto* name = field(document, *record, {"NOMBRE", "NAME"});
+        const auto value = id ? integer(*id) : std::nullopt;
+        if (value && name)
+            if (const auto text = string_value(document, *name)) names.try_emplace(*value, *text);
+    }
+    return names;
+}
+
 SoundDatabase SoundDatabase::project(const Document& document) {
     SoundDatabase result;
     std::vector<const Node*> records;

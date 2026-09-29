@@ -739,6 +739,47 @@ std::set<std::string> fli_ids(const std::vector<char16_t>& text) {
 
 std::set<std::string> fli_string_ids(const std::span<const std::byte> fli) { return fli_ids(fli_text(fli)); }
 
+std::map<std::string, std::string> fli_strings(const std::span<const std::byte> fli) {
+    const auto text = fli_text(fli);
+    std::vector<std::u16string> lines(1);
+    for (const auto c : text) {
+        if (c == u'\n') lines.emplace_back();
+        else lines.back().push_back(c);
+    }
+    const auto utf8 = [](const std::u16string_view line) {
+        std::string out;
+        for (std::size_t i = 0; i < line.size(); ++i) {
+            std::uint32_t c = line[i];
+            if (c >= 0xD800 && c < 0xDC00 && i + 1 < line.size() && line[i + 1] >= 0xDC00 && line[i + 1] < 0xE000)
+                c = 0x10000 + ((c - 0xD800) << 10) + (line[++i] - 0xDC00);
+            if (c < 0x80) out += static_cast<char>(c);
+            else if (c < 0x800) out += {static_cast<char>(0xC0 | c >> 6), static_cast<char>(0x80 | (c & 0x3F))};
+            else if (c < 0x10000)
+                out += {static_cast<char>(0xE0 | c >> 12), static_cast<char>(0x80 | (c >> 6 & 0x3F)),
+                        static_cast<char>(0x80 | (c & 0x3F))};
+            else
+                out += {static_cast<char>(0xF0 | c >> 18), static_cast<char>(0x80 | (c >> 12 & 0x3F)),
+                        static_cast<char>(0x80 | (c >> 6 & 0x3F)), static_cast<char>(0x80 | (c & 0x3F))};
+        }
+        return out;
+    };
+    const auto trim = [](std::string value) {
+        const auto first = value.find_first_not_of(" \t"), last = value.find_last_not_of(" \t");
+        return first == std::string::npos ? std::string() : value.substr(first, last - first + 1);
+    };
+    // An ID line (letters and digits), then the quoted string on the next.
+    std::map<std::string, std::string> strings;
+    for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+        const auto id = trim(utf8(lines[i]));
+        if (id.empty() || !std::ranges::all_of(id, [](const unsigned char c) { return std::isalnum(c) != 0; })) continue;
+        const auto value = trim(utf8(lines[i + 1]));
+        if (value.size() < 2 || value.front() != '"' || value.back() != '"') continue;
+        strings.try_emplace(id, value.substr(1, value.size() - 2));
+        ++i;
+    }
+    return strings;
+}
+
 std::vector<std::byte> append_fli_strings(const std::span<const std::byte> donor, const std::vector<ProjectText>& strings) {
     auto text = fli_text(donor);
     // The IDs the donor already has: lines of digits.

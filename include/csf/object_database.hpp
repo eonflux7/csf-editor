@@ -3,6 +3,8 @@
 #include "csf/mission.hpp"
 #include "csf/mission_scene.hpp"
 
+#include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -136,5 +138,9 @@ associate_actors(const MissionScene& scene, const ObjectDatabase& objects,
                  const ResourceIndex& resources,
                  std::optional<std::size_t> preferred_root = std::nullopt);
 [[nodiscard]] const char* object_reference_kind_name(ObjectReference::Kind) noexcept;
+
+// Every record of a BDD that has an .ID and a .NOMBRE, by ID (Efectos.bdd,
+// or any table the typed databases above don't read).
+[[nodiscard]] std::map<std::int32_t, std::string> record_names(const Document& document);
 
 } // namespace csf

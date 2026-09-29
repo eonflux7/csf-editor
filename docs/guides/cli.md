@@ -233,6 +233,7 @@ It writes:
 | `fp/<hands>_<weapon>.gltf` | First person: a player class's hands (`.MODELO`) holding a weapon's first-person model (`.FILE`), with its first-person clips (`.ANIMACIONES_PLAYER`), as `fp/<hands>_<weapon>` (below) |
 | `props/<model>.gltf` | One model per other actor class |
 | `sounds/<wave>.wav` | Every wave of the mission's audio bank (the `.wad` beside its scene), as 16-bit PCM WAV (below) |
+| `missions/<Mission>.json` | The mission's data for logic written by hand: texts, objectives, variables, events, every script as readable text, and the names behind the scripts' numbers (below); `mission/<mission>` in the manifest |
 | `textures/<corpus path>.png` | Every texture those files name, decoded from DDS; the path is the source's, in lower case (`textures/ambush/maps/st08/textures/sdet_01a.png`) |
 
 In every glTF it writes, a material's base texture is its `baseColorTexture`
@@ -341,6 +342,32 @@ order: `rotation = (pitch, yaw, 0)`). It holds:
 | `route_links` | Links between two groups' points: `[group, point, group, point]` |
 | `areas` | `id`, `name`, floor polygon `points` and `height` |
 | `dummies` | `id`, `name`, `position`, `yaw`, `pitch` when not 0 |
+
+`missions/<Mission>.json` (format `opencsf-mission`, version 1) is data
+only: nothing in it is interpreted or translated into logic. It holds:
+
+| Key | Contents |
+|---|---|
+| `player` | What the scene says about the player: `actor` (`.PLAYER`, the actor ID the player starts as), `commando_start`, `sniper_start`, `spy_start` |
+| `actors` | Actors the scene sets up at load beyond `markers.json`: `id`, `name`, `scripts` (`.SCRIPT`, attached script IDs), `portrait` |
+| `objectives` | Objectives whose number the scripts give as a literal (`csf::MissionFlow`): `number`, `secondary`, `label` (text ID), `defined_by`, `completed_by`. Shipped missions mostly compute the number (`ARRAY_GET`), so this can be empty: the scripts are the record |
+| `variables` | The mission program's global variables: `id`, `name`, `type`, and `value` (its start value) or `array` |
+| `events` | Each event: `name`, `builtin` (raised by the engine), `listeners` and `senders` (script IDs) |
+| `scripts` | Every script of the mission (`.gsc`) and cutscene (`.csc`) programs: `program` (`mission`, `cutscene`), `id`, `name`, `folder`, `trigger`, `enabled`, `events` (what starts it), `sends`, `defines`/`completes` (objective numbers), `cutscenes`, `mission_success`/`mission_failure`, local `variables`, `conditions` and `actions` as lines (below), and `uses`, the instructions and operations it runs |
+| `texts` | Every string of `GlobalEK/Texts/<Mission>.fli`, and each string of `Global.fli` the scripts show, by ID (`"0012"`, `"G014"`; scripts write the global ones as `g014`) |
+| `names` | By kind (`actor`, `dummy`, `area`, `route`, `point` as `group/point`, `script`, `cutscene_script`, `cutscene`, `variable`, `anim`, `sound`, `class`, `weapon`, `effect`), every number the scripts use with its name: an actor's or area's `.NOMBRE`, `sound/<name>`, `Efectos.bdd` record names, ...; an `anim` has `name` (the `Anims.bdd` record) and `roles` (`<library>/<role>` in the clip libraries, when it is one). `""` when it has no name |
+| `unresolved` | Numbers that name nothing in the mission: `kind`, `id`, and `off` when only switched-off actions use it |
+| `missing_texts` | Text IDs the scripts show that no `.fli` has, when there are any |
+| `findings` | The flow's findings (`csf-mod mission-flow`): `severity`, `script`, `message` |
+
+A script line is the instruction as `csf-mod decompile` prints it, indented
+two spaces per block, with the name after each number that names something
+(`(BICHO 535 Wehrmacht_01)`, `(PATHPOINT 3 1 Rounds/Gate)`,
+`(SCRIPT 19 SET_Werhmacht)`) and the texts it shows as a comment
+(`TIMED_STRING_V2 (FLI g014) (NUMERO 5.0) (NUMERO 4.0)  # G014: "MISSION
+COMPLETED"`). `COMENTARIO` lines print as `# <text>`, and an action switched
+off in the editor (`COMENTARIO_ACCION`) as `# off: <action>`. A `VAR` with bit
+`0x800000` names a global variable, without it one of its script's own.
 
 The output folder must be new, empty or an earlier export; the command refuses
 any other folder. Re-running it on the same corpus writes byte-identical files.
