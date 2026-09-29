@@ -210,13 +210,23 @@ It is read-only: it does not modify the files it scans.
 
 ## Export a mission for a game engine
 
-`csf-mod export-godot` converts one mission of an unpacked corpus into files a
+`csf-mod export-godot` converts missions of an unpacked corpus into files a
 game engine reads without knowing RenderWare: glTF for geometry and JSON for
 everything else.
 
 ```bash
-./build/Release/csf-mod export-godot ../CSF_unpacks Ambush ~/dev/godot-opencsf/legacy
+./build/Release/csf-mod export-godot ../CSF_unpacks Ambush Fiord ~/dev/godot-opencsf/legacy
 ```
+
+Several missions share the folder. Maps, markers and mission files are per
+mission. Models, weapons, first-person views and sounds are written once,
+from the first mission that has them (they are the same in every mission but
+for where their textures come from). Each clip library holds every mission's
+clips, a role taken from the first mission that has it. A clip of the same
+name is the same clip in all 17 missions. With more than one mission, each
+problem it reports starts with its mission's name. It finds a mission's map
+in `Maps/<map>/` or one folder deeper (`Maps/ST07/ST07A/`); FR02A, FR02B and
+FR02C, whose maps are made of several pieces, are not exported yet.
 
 It writes:
 

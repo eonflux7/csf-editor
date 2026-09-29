@@ -59,7 +59,7 @@ void usage() {
            "  csf-mod mission-components <workspace> <scene.scn> [--package <root>] [--ground <source.csfworld>] list | check\n"
            "                      | set <id> <line> <key>=<value>... | regenerate <id> | detach <id> | delete <id>\n"
            "  csf-mod mission-flow <scene.scn> [--package <root>] [--workspace <dir>]\n"
-           "  csf-mod export-godot <corpus> <mission> <out-dir>\n"
+           "  csf-mod export-godot <corpus> <mission>... <out-dir>\n"
            "  csf-mod project-new <project-dir> --slot <mission> [--name <text>] [--corpus <root>]\n"
            "                      [--flat <size-cm> | --no-terrain] [--projects-root <dir>] [--test-install <dir>]\n"
            "  csf-mod project-archives <project-dir> [--original-mission <pak>] [--original-texts <pak>]\n"
@@ -453,8 +453,8 @@ int main(int argc, char** argv) try {
     }
     if (command == "export-godot") {
         // A mission as glTF and JSON for the Godot port (manifest.json maps logical IDs to files).
-        if (argc != 5) { usage(); return 1; }
-        const auto result = csf::export_godot({argv[2], argv[3], argv[4]});
+        if (argc < 5) { usage(); return 1; }
+        const auto result = csf::export_godot({argv[2], std::vector<std::string>(argv + 3, argv + argc - 1), argv[argc - 1]});
         for (const auto& line : result.lines) std::cout << line << '\n';
         for (const auto& problem : result.problems) std::cout << "problem\t" << problem << '\n';
         return 0;

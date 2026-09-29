@@ -5156,7 +5156,7 @@ int run_tests() {
                         }
                     return files;
                 };
-                const auto exported = csf::export_godot({root / "corpus", "m1", godot});
+                const auto exported = csf::export_godot({root / "corpus", {"m1"}, godot});
                 CHECK(!exported.problems.empty() && exported.problems[0].starts_with("scene M1/Maps/X/M1.scn"));
                 const auto files = export_files();
                 CHECK(files.contains("maps/M1/visual.gltf") && files.contains("maps/M1/collision.gltf") &&
@@ -5164,13 +5164,13 @@ int run_tests() {
                 const auto& manifest = files.at("manifest.json");
                 CHECK(manifest.find(R"("map/m1": {"visual": "maps/M1/visual.gltf")") != std::string::npos &&
                       manifest.find(R"("source": "M1/Maps/X/M1.scn")") != std::string::npos);
-                (void)csf::export_godot({root / "corpus", "M1", godot});
+                (void)csf::export_godot({root / "corpus", {"M1"}, godot});
                 CHECK(export_files() == files);
                 std::filesystem::create_directories(root / "someone");
                 std::ofstream(root / "someone" / "notes.txt") << "mine";
                 bool threw = false;
                 try {
-                    (void)csf::export_godot({root / "corpus", "M1", root / "someone"});
+                    (void)csf::export_godot({root / "corpus", {"M1"}, root / "someone"});
                 } catch (const std::runtime_error&) {
                     threw = true;
                 }
@@ -5187,7 +5187,7 @@ int run_tests() {
                 std::string error;
                 const std::vector<std::uint8_t> cut_out{255, 0, 0, 255, 0, 0, 0, 0, 0, 255, 0, 255, 0, 0, 255, 255};
                 CHECK(rws::write_png_rgba(maps / "Textures" / (texture + ".png"), 2, 2, cut_out, error));
-                const auto with_texture = csf::export_godot({root / "corpus", "M1", godot});
+                const auto with_texture = csf::export_godot({root / "corpus", {"M1"}, godot});
                 CHECK(std::ranges::count(with_texture.problems, "texture " + texture + ": not found") == 0);
                 const auto textured = export_files();
                 auto png = "textures/m1/maps/x/textures/" + texture + ".png";
@@ -5203,12 +5203,28 @@ int run_tests() {
                 const auto deco = root / "corpus" / "M1" / "Models" / "Deco" / "Textures";
                 std::filesystem::create_directories(deco);
                 CHECK(rws::write_png_rgba(deco / (texture + ".png"), 2, 2, cut_out, error));
-                const auto elsewhere = csf::export_godot({root / "corpus", "M1", godot});
+                const auto elsewhere = csf::export_godot({root / "corpus", {"M1"}, godot});
                 CHECK(std::ranges::count(elsewhere.problems, "texture " + texture + ": not found") == 0);
                 auto deco_png = "textures/m1/models/deco/textures/" + texture + ".png";
                 std::ranges::transform(deco_png, deco_png.begin(), [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
                 CHECK(export_files().at("maps/M1/visual.gltf").find(R"("uri": "../../)" + deco_png + '"') != std::string::npos);
                 std::filesystem::remove_all(root / "corpus" / "M1" / "Models");
+                // Two missions in one folder: a map and markers each, one
+                // manifest naming both, problems told apart by mission.
+                const auto m2 = root / "corpus" / "M2" / "Maps" / "X";
+                std::filesystem::create_directories(m2);
+                for (const auto* file : {"X.rws", "X_col.rws"}) std::filesystem::copy_file(maps / file, m2 / file);
+                std::ofstream(m2 / "M2.scn") << "";
+                const auto both = csf::export_godot({root / "corpus", {"M1", "m2", "M1"}, godot});
+                const auto both_files = export_files();
+                CHECK(both_files.contains("maps/M1/markers.json") && both_files.contains("maps/M2/markers.json"));
+                const auto& both_manifest = both_files.at("manifest.json");
+                CHECK(both_manifest.find(R"("missions": ["M1", "M2"])") != std::string::npos &&
+                      both_manifest.find(R"("map/m1": )") != std::string::npos &&
+                      both_manifest.find(R"("map/m2": )") != std::string::npos);
+                CHECK(std::ranges::any_of(both.problems, [](const std::string& p) { return p.starts_with("M1: scene "); }) &&
+                      std::ranges::any_of(both.problems, [](const std::string& p) { return p.starts_with("M2: scene "); }));
+                std::filesystem::remove_all(root / "corpus" / "M2");
             }
 
             // Text ranges: hundreds from 900, clear of the donor's IDs and other projects'.

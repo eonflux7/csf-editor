@@ -650,16 +650,45 @@ std::string godot_markers_json(const MissionScene& scene, const ObjectDatabase& 
 GodotExportResult export_godot(const GodotExportOptions& options) {
     GodotExportResult result;
     const auto slots = mission_slots(options.corpus);
-    const auto slot = std::ranges::find_if(slots, [&](const MissionSlot& value) { return lower(value.mission) == lower(options.mission); });
-    if (slot == slots.end()) throw std::runtime_error("No mission '" + options.mission + "' in " + options.corpus.generic_string());
+    std::vector<const MissionSlot*> chosen;
+    for (const auto& mission : options.missions) {
+        const auto slot = std::ranges::find_if(slots, [&](const MissionSlot& value) { return lower(value.mission) == lower(mission); });
+        if (slot == slots.end()) throw std::runtime_error("No mission '" + mission + "' in " + options.corpus.generic_string());
+        if (std::ranges::find(chosen, &*slot) == chosen.end()) chosen.push_back(&*slot);
+    }
+    if (chosen.empty()) throw std::runtime_error("No mission to export");
     check_out_folder(options.out);
     const auto corpus = std::filesystem::weakly_canonical(std::filesystem::absolute(options.corpus));
-    const auto package_root = corpus / slot->mission;
     // Provenance names files as corpus-relative paths, the same on every machine.
     const auto source = [&](const std::filesystem::path& path) {
         return std::filesystem::weakly_canonical(std::filesystem::absolute(path)).lexically_relative(corpus).generic_string();
     };
+    // Shared by the missions: an asset (model, weapon, sound, first-person
+    // view) comes from the first mission that has it, the same in all of them
+    // but for where its textures are. Clip libraries are the union of the
+    // missions' clips, each role from the first that has it (a clip of the
+    // same name is the same clip in every mission).
     std::map<std::string, ManifestEntry> assets;
+    std::map<std::string, std::filesystem::path> skeletons;  // skinned character ID -> model
+    std::set<std::string> written_waves;
+    struct LibraryRole {
+        std::string role, fields;                                   // its manifest fields but for `clips`
+        std::vector<std::pair<std::string, std::string>> variants;  // each clip's name and fields
+    };
+    std::map<std::string, std::vector<LibraryRole>> libraries;         // stance -> roles, in the order found
+    std::map<std::string, std::vector<rws::CharacterClip>> library_clips;  // stance -> clips
+    std::vector<std::pair<std::string, std::string>> missing_roles;    // "<stance>/<role>" -> problem
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> first_person;  // character -> weapon name, ID
+    const auto collected = [&](const std::string& stance, const std::string& role) {
+        const auto found = libraries.find(stance);
+        return found != libraries.end() && std::ranges::any_of(found->second, [&](const LibraryRole& r) { return r.role == role; });
+    };
+
+    for (const auto* slot : chosen) {
+    const auto first_problem = result.problems.size();
+    std::set<std::string> earlier_assets;
+    for (const auto& [id, fields] : assets) earlier_assets.insert(id);
+    const auto package_root = corpus / slot->mission;
     TextureConverter textures(options.out, corpus, package_root);
 
     // The map: visual and collision glTF, beside each other.
@@ -715,7 +744,6 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         result.problems.push_back("scene " + source(package_root / slot->scene) + ": " + error.what());
     }
     std::map<std::int32_t, std::string> class_ids;  // class -> logical ID
-    std::map<std::string, std::filesystem::path> skeletons;  // skinned character ID -> model
     if (editor) {
         const auto resources = editor->resource_index(package);
         for (const auto& association : associate_actors(editor->scene(), editor->objects(), resources)) {
@@ -784,8 +812,10 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
             for (const auto& wave : read_audio_bank(bytes)) {
                 const auto file = (std::filesystem::path("sounds") / (id_part(wave.name) + ".wav")).generic_string();
                 if (waves.contains(lower(wave.name))) continue;
-                write_wav(options.out / file, wave, bytes);
-                ++written;
+                if (written_waves.insert(file).second) {
+                    write_wav(options.out / file, wave, bytes);
+                    ++written;
+                }
                 waves[lower(wave.name)] = file;
                 if (const auto paren = wave.name.find(" ("); paren != std::string::npos)
                     waves.try_emplace(lower(wave.name.substr(0, paren)), file);
@@ -811,7 +841,10 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 }
                 if (files.empty() || sound.name.empty()) continue;
                 const auto id = "sound/" + id_part(sound.name);
-                if (assets.contains(id)) continue;
+                if (assets.contains(id)) {
+                    if (earlier_assets.contains(id)) sound_ids[sound.id] = id;
+                    continue;
+                }
                 ManifestEntry entry{{"files", "[" + files + "]"},
                                     {"volume", json_number(sound.volume.value_or(100.0F) * 0.01F)},
                                     {"loop", sound.loop ? "true" : "false"},
@@ -903,16 +936,11 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
             }
         }
 
-    // Clip libraries: per stance, the role clips on the first skinned
-    // character's skeleton (every human shares it), named by role. A role
-    // whose record has several files (die, fidgets) gets one clip each: the
-    // first under the role's name, the others as <role>_2, <role>_3, ...; the
-    // game picks one at random (our reading). `custom` holds the one-off scene
-    // clips (Anims/Costum: smoking, talking, repairing, ...) under their own
-    // names, for missions to play.
+    // This mission's role clips that the libraries don't have yet (they are
+    // written once all missions are read, below), and which roles each of its
+    // animation records plays.
     std::map<std::string, std::vector<std::string>> animation_roles;  // lower-case record name -> "<library>/<role>"
     if (editor && !skeletons.empty()) {
-        const auto& [skeleton_id, skeleton_path] = *skeletons.begin();
         const auto resources = editor->resource_index(package);
         const auto& records = editor->animations().records();
         auto roles = clip_roles();
@@ -927,16 +955,16 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         std::map<std::string, std::vector<const ClipRole*>> stances;
         for (const auto& role : roles) stances[role.stance].push_back(&role);
         for (const auto& [stance, stance_roles] : stances) {
-            std::vector<rws::CharacterClip> clips;
-            // Per role: its manifest fields but for `clips`, then each clip's name and fields.
-            std::vector<std::pair<std::string, std::string>> role_fields;
-            std::vector<std::vector<std::pair<std::string, std::string>>> role_clips;
             for (const auto* role : stance_roles) {
                 const auto record = std::ranges::find_if(records, [&](const AnimationRecord& r) {
                     return lower(r.logical_name) == lower(role->clip);
                 });
                 if (record == records.end() || record->variants.empty()) {
-                    result.problems.push_back("anim " + stance + "/" + role->role + ": no clip " + role->clip);
+                    missing_roles.emplace_back(stance + "/" + role->role, "anim " + stance + "/" + role->role + ": no clip " + role->clip);
+                    continue;
+                }
+                if (collected(stance, role->role)) {
+                    animation_roles[lower(record->logical_name)].push_back(stance + "/" + role->role);
                     continue;
                 }
                 const bool loop = record->loop.value_or(false);
@@ -955,7 +983,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                         result.problems.push_back("anim " + source(path) + ": no Animation chunk");
                         continue;
                     }
-                    clips.push_back({name, rws::decode_animation(*clip_chunk, document.bytes()), loop});
+                    library_clips[stance].push_back({name, rws::decode_animation(*clip_chunk, document.bytes()), loop});
                     // Sounds the clip starts at a time: [seconds, sound ID]. What -2 is, is
                     // unknown: its times don't line up with the walk's foot plants.
                     std::string sounds;
@@ -970,41 +998,12 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 if (variants.empty()) continue;
                 // The engine moves the actor at .VEL game units a second; the clips stay in place.
                 animation_roles[lower(record->logical_name)].push_back(stance + "/" + role->role);
-                role_fields.emplace_back(role->role, "\"loop\": " + std::string(loop ? "true" : "false") +
-                                                         ", \"speed\": " + json_number(record->velocity_scalar.value_or(0.0F) * 0.01F) +
-                                                         ", \"clip\": " + json_string(role->clip));
-                role_clips.push_back(std::move(variants));
+                libraries[stance].push_back({role->role,
+                                             "\"loop\": " + std::string(loop ? "true" : "false") +
+                                                 ", \"speed\": " + json_number(record->velocity_scalar.value_or(0.0F) * 0.01F) +
+                                                 ", \"clip\": " + json_string(role->clip),
+                                             std::move(variants)});
             }
-            if (clips.empty()) continue;
-            const auto file = std::filesystem::path("anims") / (stance + ".gltf");
-            std::set<std::string> skipped;
-            try {
-                const auto model = rws::Document::load(skeleton_path);
-                const auto stats = rws::export_character_gltf(model.chunks().front(), model.bytes(), options.out / file,
-                                                              std::move(clips), {}, humanoid_joint_name,
-                                                              humanoid_joint_parent, false);
-                for (const auto& why : stats.skipped_clips) {
-                    result.problems.push_back("anim " + stance + "/" + why);
-                    skipped.insert(why.substr(0, why.find(':')));
-                }
-                result.lines.push_back("anims\t" + file.generic_string() + '\t' + std::to_string(stats.clips) + " clips");
-            } catch (const std::exception& error) {
-                result.problems.push_back("anim " + stance + ": " + error.what());
-                continue;
-            }
-            std::string clip_fields;
-            for (std::size_t i = 0; i < role_fields.size(); ++i) {
-                std::string variants;
-                for (const auto& [name, fields] : role_clips[i])
-                    if (!skipped.contains(name))
-                        variants += std::string(variants.empty() ? "" : ", ") + json_string(name) + ": " + fields;
-                if (variants.empty()) continue;
-                clip_fields += std::string(clip_fields.empty() ? "" : ", ") + json_string(role_fields[i].first) + ": {" +
-                               role_fields[i].second + ", \"clips\": {" + variants + "}}";
-            }
-            assets["anim/" + stance] = {{"file", json_string(file.generic_string())},
-                                        {"skeleton", json_string(skeleton_id)},
-                                        {"roles", "{" + clip_fields + "}"}};
         }
     }
 
@@ -1040,7 +1039,6 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 const auto hands = rws::Document::load(*hands_path);
                 if (hands.chunks().empty() || hands.chunks().front().type != 0x10) continue;
                 const auto hands_stem = lower(hands_path->stem().string());
-                std::string first_person;  // "name": "fp/...", ...
                 for (const auto& weapon : weapons.definitions()) {
                     if (!weapon.first_person_model || weapon.first_person_model->empty() || weapon.player_animations.empty())
                         continue;
@@ -1050,7 +1048,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                         continue;
                     }
                     const auto id = "fp/" + hands_stem + "_" + lower(weapon_path->stem().string());
-                    const auto listed = "\"" + lower(weapon.name.value_or(id)) + "\"";
+                    const auto listed = lower(weapon.name.value_or(id));
                     if (!assets.contains(id)) {
                         const auto held = rws::Document::load(*weapon_path);
                         if (held.chunks().empty() || held.chunks().front().type != 0x10) {
@@ -1132,11 +1130,10 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                         }
                         assets[id] = std::move(entry);
                     }
-                    if (first_person.find(listed + ":") == std::string::npos)
-                        first_person += std::string(first_person.empty() ? "" : ", ") + listed + ": " + json_string(id);
+                    auto& views = first_person[character_id];
+                    if (std::ranges::none_of(views, [&](const auto& view) { return view.first == listed; }))
+                        views.emplace_back(listed, id);
                 }
-                if (!first_person.empty() && assets.contains(character_id))
-                    assets[character_id].emplace_back("first_person", "{" + first_person + "}");
             }
         }
 
@@ -1206,10 +1203,67 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
     for (const auto& name : textures.missing()) result.problems.push_back("texture " + name + ": not found");
     for (const auto& [path, why] : textures.failed())
         result.problems.push_back("texture " + source(path) + ": " + why);
+    if (chosen.size() > 1)
+        for (auto i = first_problem; i < result.problems.size(); ++i)
+            result.problems[i] = slot->mission + ": " + result.problems[i];
+    }
+
+    // Clip libraries: per stance, the role clips on the first skinned
+    // character's skeleton (every human shares it), named by role. A role
+    // whose record has several files (die, fidgets) gets one clip each: the
+    // first under the role's name, the others as <role>_2, <role>_3, ...; the
+    // game picks one at random (our reading). `custom` holds the one-off scene
+    // clips (Anims/Costum: smoking, talking, repairing, ...) under their own
+    // names, for missions to play.
+    for (const auto& [key, problem] : missing_roles) {
+        const auto slash = key.find('/');
+        if (!collected(key.substr(0, slash), key.substr(slash + 1))) result.problems.push_back(problem);
+    }
+    for (auto& [stance, roles] : libraries) {
+        const auto& [skeleton_id, skeleton_path] = *skeletons.begin();
+        const auto file = std::filesystem::path("anims") / (stance + ".gltf");
+        std::set<std::string> skipped;
+        try {
+            const auto model = rws::Document::load(skeleton_path);
+            const auto stats = rws::export_character_gltf(model.chunks().front(), model.bytes(), options.out / file,
+                                                          std::move(library_clips[stance]), {}, humanoid_joint_name,
+                                                          humanoid_joint_parent, false);
+            for (const auto& why : stats.skipped_clips) {
+                result.problems.push_back("anim " + stance + "/" + why);
+                skipped.insert(why.substr(0, why.find(':')));
+            }
+            result.lines.push_back("anims\t" + file.generic_string() + '\t' + std::to_string(stats.clips) + " clips");
+        } catch (const std::exception& error) {
+            result.problems.push_back("anim " + stance + ": " + error.what());
+            continue;
+        }
+        std::string clip_fields;
+        for (const auto& role : roles) {
+            std::string variants;
+            for (const auto& [name, fields] : role.variants)
+                if (!skipped.contains(name))
+                    variants += std::string(variants.empty() ? "" : ", ") + json_string(name) + ": " + fields;
+            if (variants.empty()) continue;
+            clip_fields += std::string(clip_fields.empty() ? "" : ", ") + json_string(role.role) + ": {" + role.fields +
+                           ", \"clips\": {" + variants + "}}";
+        }
+        assets["anim/" + stance] = {{"file", json_string(file.generic_string())},
+                                    {"skeleton", json_string(skeleton_id)},
+                                    {"roles", "{" + clip_fields + "}"}};
+    }
+    for (const auto& [character_id, views] : first_person) {
+        if (views.empty() || !assets.contains(character_id)) continue;
+        std::string fields;
+        for (const auto& [name, id] : views) fields += std::string(fields.empty() ? "" : ", ") + json_string(name) + ": " + json_string(id);
+        assets[character_id].emplace_back("first_person", "{" + fields + "}");
+    }
+
+    std::string missions;
+    for (const auto* slot : chosen) missions += std::string(missions.empty() ? "" : ", ") + json_string(slot->mission);
 
     std::string manifest = "{\n  \"format\": " + json_string(manifest_format) +
                            ",\n  \"version\": 1,\n  \"units\": \"metres\",\n  \"up\": \"Y\",\n  \"missions\": [" +
-                           json_string(slot->mission) + "],\n  \"assets\": {";
+                           missions + "],\n  \"assets\": {";
     bool first = true;
     for (const auto& [id, fields] : assets) {
         manifest += std::string(first ? "\n" : ",\n") + "    " + json_string(id) + ": {";
