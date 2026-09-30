@@ -899,6 +899,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         result.problems.push_back("scene " + source(package_root / slot->scene) + ": " + error.what());
     }
     std::map<std::int32_t, std::string> class_ids;  // class -> logical ID
+    std::set<std::int32_t> scripted_weapons;         // ARMA_CLASSID the scripts give (ADD_ARMA)
     if (editor) {
         const auto resources = editor->resource_index(package);
         auto associations = associate_actors(editor->scene(), editor->objects(), resources);
@@ -911,6 +912,8 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 const auto collect = [&](auto&& self, const ProgramOperand& operand) -> void {
                     if (operand.tag == "CLASSID")
                         if (const auto* number = std::get_if<std::int32_t>(&operand.value)) scripted.insert(*number);
+                    if (operand.tag == "ARMA_CLASSID")
+                        if (const auto* number = std::get_if<std::int32_t>(&operand.value)) scripted_weapons.insert(*number);
                     for (const auto& child : operand.children) self(self, child);
                 };
                 const auto program = ProgramDocument::project(editor->document(*file));
@@ -1220,29 +1223,26 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
     // weapon/<model stem>: its mesh, and its grip and muzzle frames in the
     // manifest.
     std::map<std::int32_t, std::string> class_stances, class_weapons;
+    // The weapons the scripts give (ADD_ARMA): {"41": {"name": ..., "stance": ..., "weapon": ...}}.
+    std::string script_weapons;
     if (editor)
         if (const auto file = editor->file_of_kind(MissionFileKind::weapons)) {
             const auto weapons = WeaponDatabase::project(editor->document(*file));
             const auto resources = editor->resource_index(package);
-            for (const auto& [class_id, id] : class_ids) {
-                if (!id.starts_with("character/")) continue;
-                const auto definitions = editor->objects().find_class(class_id);
-                if (definitions.size() != 1) continue;
-                const auto* weapon = held_weapon(*definitions.front(), weapons);
-                if (!weapon) continue;
-                class_stances[class_id] = weapon_stance(*weapon);
-                if (!weapon->third_person_model || weapon->third_person_model->empty()) continue;
+            // A weapon's third-person model written once, as weapon/<stem>; empty if it has none.
+            const auto export_weapon = [&](const WeaponDefinition& definition) -> std::string {
+                const auto* weapon = &definition;
+                if (!weapon->third_person_model || weapon->third_person_model->empty()) return {};
                 const auto resolution = resources.resolve(*weapon->third_person_model);
                 if (resolution.candidate_indices.size() != 1) {
                     result.problems.push_back("weapon " + weapon->name.value_or("?") + ": " + *weapon->third_person_model +
                                               " not found");
-                    continue;
+                    return {};
                 }
                 const auto& model_path = resources.resources()[resolution.candidate_indices.front()].path;
                 const auto stem = lower(model_path.stem().string());
                 const auto weapon_id = "weapon/" + stem;
-                class_weapons[class_id] = weapon_id;
-                if (assets.contains(weapon_id)) continue;
+                if (assets.contains(weapon_id)) return weapon_id;
                 const auto weapon_file = std::filesystem::path("weapons") / (stem + ".gltf");
                 try {
                     const auto model = rws::Document::load(model_path);
@@ -1262,8 +1262,26 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                     result.lines.push_back("weapon\t" + weapon_file.generic_string());
                 } catch (const std::exception& error) {
                     result.problems.push_back(weapon_id + " (" + source(model_path) + "): " + error.what());
-                    class_weapons.erase(class_id);
+                    return {};
                 }
+                return weapon_id;
+            };
+            for (const auto& [class_id, id] : class_ids) {
+                if (!id.starts_with("character/")) continue;
+                const auto definitions = editor->objects().find_class(class_id);
+                if (definitions.size() != 1) continue;
+                const auto* weapon = held_weapon(*definitions.front(), weapons);
+                if (!weapon) continue;
+                class_stances[class_id] = weapon_stance(*weapon);
+                if (const auto weapon_id = export_weapon(*weapon); !weapon_id.empty()) class_weapons[class_id] = weapon_id;
+            }
+            for (const auto id : scripted_weapons) {
+                const auto* weapon = weapons.find_id(id);
+                if (!weapon) continue;
+                std::string fields = "\"name\": " + json_string(windows_1252_to_utf8(weapon->name.value_or("")));
+                if (const auto stance = weapon_stance(*weapon); !stance.empty()) fields += ", \"stance\": " + json_string(stance);
+                if (const auto weapon_id = export_weapon(*weapon); !weapon_id.empty()) fields += ", \"weapon\": " + json_string(weapon_id);
+                script_weapons += std::string(script_weapons.empty() ? "" : ", ") + json_string(std::to_string(id)) + ": {" + fields + "}";
             }
         }
 
@@ -1535,12 +1553,22 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                                               (sources.cutscene ? sources.cutscene->scripts().size() : 0)) +
                                " scripts");
         // Each class's model, for actors the scripts create: {"204": "prop/alarmarota"}.
-        std::string classes;
-        for (const auto& [class_id, asset] : class_ids)
+        std::string classes, class_kits;
+        for (const auto& [class_id, asset] : class_ids) {
             classes += std::string(classes.empty() ? "" : ", ") + json_string(std::to_string(class_id)) + ": " + json_string(asset);
+            // And a character class's stance and weapon (SET_CLASSID): {"36": {"stance": "pistol", "weapon": "weapon/tpluger"}}.
+            std::string kit;
+            if (const auto found = class_stances.find(class_id); found != class_stances.end())
+                kit += "\"stance\": " + json_string(found->second);
+            if (const auto found = class_weapons.find(class_id); found != class_weapons.end())
+                kit += std::string(kit.empty() ? "" : ", ") + "\"weapon\": " + json_string(found->second);
+            if (!kit.empty()) class_kits += std::string(class_kits.empty() ? "" : ", ") + json_string(std::to_string(class_id)) + ": {" + kit + "}";
+        }
         assets["mission/" + lower(slot->mission)] = {{"file", json_string(mission_file.generic_string())},
                                                      {"map", json_string("map/" + lower(slot->mission))},
-                                                     {"classes", "{" + classes + "}"}};
+                                                     {"classes", "{" + classes + "}"},
+                                                     {"class_kits", "{" + class_kits + "}"},
+                                                     {"weapons", "{" + script_weapons + "}"}};
     }
 
     result.lines.push_back("textures\t" + std::to_string(textures.converted()) + " PNG");
