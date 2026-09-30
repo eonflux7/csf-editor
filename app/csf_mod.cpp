@@ -59,7 +59,7 @@ void usage() {
            "  csf-mod mission-components <workspace> <scene.scn> [--package <root>] [--ground <source.csfworld>] list | check\n"
            "                      | set <id> <line> <key>=<value>... | regenerate <id> | detach <id> | delete <id>\n"
            "  csf-mod mission-flow <scene.scn> [--package <root>] [--workspace <dir>]\n"
-           "  csf-mod export-godot <corpus> <mission>... <out-dir>\n"
+           "  csf-mod export-godot <corpus> <mission>... <out-dir> [--sounds <game SOUNDS dir>]\n"
            "  csf-mod project-new <project-dir> --slot <mission> [--name <text>] [--corpus <root>]\n"
            "                      [--flat <size-cm> | --no-terrain] [--projects-root <dir>] [--test-install <dir>]\n"
            "  csf-mod project-archives <project-dir> [--original-mission <pak>] [--original-texts <pak>]\n"
@@ -453,8 +453,17 @@ int main(int argc, char** argv) try {
     }
     if (command == "export-godot") {
         // A mission as glTF and JSON for the Godot port (manifest.json maps logical IDs to files).
-        if (argc < 5) { usage(); return 1; }
-        const auto result = csf::export_godot({argv[2], std::vector<std::string>(argv + 3, argv + argc - 1), argv[argc - 1]});
+        std::vector<std::string> args(argv + 2, argv + argc);
+        std::filesystem::path sounds;
+        if (const auto flag = std::ranges::find(args, "--sounds"); flag != args.end()) {
+            if (flag + 1 == args.end()) { usage(); return 1; }
+            sounds = *(flag + 1);
+            args.erase(flag, flag + 2);
+        }
+        if (args.size() < 3) { usage(); return 1; }
+        csf::GodotExportOptions options{args.front(), std::vector<std::string>(args.begin() + 1, args.end() - 1), args.back()};
+        options.sounds = sounds;
+        const auto result = csf::export_godot(options);
         for (const auto& line : result.lines) std::cout << line << '\n';
         for (const auto& problem : result.problems) std::cout << "problem\t" << problem << '\n';
         return 0;

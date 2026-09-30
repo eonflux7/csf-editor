@@ -26,6 +26,10 @@ struct GodotExportOptions {
     // Written into; it must not exist, be empty, or hold an earlier export
     // (manifest.json of this format).
     std::filesystem::path out;
+    // The game's SOUNDS folder: sounds the missions' banks lack are looked
+    // for there (the streamed voices, Sounds/Scenes/...) and written as
+    // sounds/<name>.ogg. Empty: none.
+    std::filesystem::path sounds;
 };
 
 struct GodotExportResult {

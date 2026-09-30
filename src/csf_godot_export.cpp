@@ -409,6 +409,36 @@ std::string id_part(const std::string& name) {
     return result;
 }
 
+// A streamed sound's file under the game's SOUNDS folder, or empty:
+// `reference` as Sonidos.bdd names it (Sounds/Scenes/ST08/amb036.rws). Names
+// match in any case; a folder may carry its language (Scenes: ScenesEK, the
+// English voices), the name as written winning. The file must be Ogg Vorbis
+// (the .rws streams are).
+std::filesystem::path find_streamed(const std::filesystem::path& sounds, const std::string& reference) {
+    std::vector<std::string> parts;
+    for (const auto& part : std::filesystem::path(reference)) parts.push_back(part.string());
+    if (!parts.empty() && lower(parts.front()) == "sounds") parts.erase(parts.begin());
+    auto at = sounds;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        const auto want = lower(parts[i]);
+        const bool last = i + 1 == parts.size();
+        std::filesystem::path exact, localized;
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(at, error)) {
+            const auto name = lower(entry.path().filename().string());
+            if (last != entry.is_regular_file()) continue;
+            if (name == want) exact = entry.path();
+            else if (!last && name.starts_with(want) && localized.empty()) localized = entry.path();
+        }
+        at = !exact.empty() ? exact : localized;
+        if (at.empty()) return {};
+    }
+    std::ifstream in(at, std::ios::binary);
+    char magic[4]{};
+    if (!in.read(magic, 4) || std::string_view(magic, 4) != "OggS") return {};
+    return at;
+}
+
 std::string json_number(const float value) {
     std::array<char, 32> buffer{};
     const auto end = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value == 0.0F ? 0.0F : value).ptr;
@@ -1034,6 +1064,7 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
         if (!banks.empty()) result.lines.push_back("sounds\tsounds/\t" + std::to_string(written) + " waves");
         const auto sonidos = package_root / "BDD" / "Sonidos.bdd";
         std::size_t missing = 0;
+        std::size_t streamed_count = 0;
         const auto sound_database = std::filesystem::is_regular_file(sonidos) && !waves.empty()
                                         ? SoundDatabase::project(Document::load(sonidos))
                                         : SoundDatabase{};
@@ -1042,7 +1073,19 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 std::string files;
                 for (auto reference : sound.files) {
                     std::ranges::replace(reference, '\\', '/');
-                    const auto found = waves.find(lower(std::filesystem::path(reference).stem().string()));
+                    const auto stem = lower(std::filesystem::path(reference).stem().string());
+                    auto found = waves.find(stem);
+                    // Not in the bank: a streamed one (the voices), from the game's SOUNDS.
+                    if (found == waves.end() && !options.sounds.empty())
+                        if (const auto streamed = find_streamed(options.sounds, reference); !streamed.empty()) {
+                            const auto file = (std::filesystem::path("sounds") / (id_part(stem) + ".ogg")).generic_string();
+                            if (written_waves.insert(file).second) {
+                                std::filesystem::copy_file(streamed, options.out / file,
+                                                           std::filesystem::copy_options::overwrite_existing);
+                                ++streamed_count;
+                            }
+                            found = waves.emplace(stem, file).first;
+                        }
                     if (found == waves.end()) {
                         ++missing;
                         continue;
@@ -1063,7 +1106,9 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
                 assets[id] = std::move(entry);
                 sound_ids[sound.id] = id;
             }
-        if (missing) result.problems.push_back("sounds: " + std::to_string(missing) + " waves Sonidos.bdd names are not in the bank");
+        if (streamed_count) result.lines.push_back("sounds\tsounds/\t" + std::to_string(streamed_count) + " streamed");
+        if (missing) result.problems.push_back("sounds: " + std::to_string(missing) + " waves Sonidos.bdd names are not in the bank" +
+                                               (options.sounds.empty() ? "" : " nor streamed"));
         // Surface types (Materiales.bdd), as surface/<name>: the sounds of
         // stepping on it (`step`) and hitting it (`impact`). The collision
         // map's materials name theirs (`rws_surface_name`).
