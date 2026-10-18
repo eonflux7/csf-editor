@@ -672,6 +672,110 @@ std::string json_transform(const Transform& transform) {
     return out + "]";
 }
 
+// A packed scene colour (0xAARRGGBB, as FUN_00479240 unpacks .AMBIENTE) as
+// [r, g, b] in 0..1, sRGB as authored.
+std::string json_packed_rgb(const std::uint32_t packed) {
+    return "[" + json_number(static_cast<float>((packed >> 16) & 0xFF) / 255.0F) + "," +
+           json_number(static_cast<float>((packed >> 8) & 0xFF) / 255.0F) + "," +
+           json_number(static_cast<float>(packed & 0xFF) / 255.0F) + "]";
+}
+
+// The map's light: the RenderWare lights in the visual .rws's Clumps (the
+// sun is a directional one; it shines along its frame's at axis), the scene's
+// ambient, 2x modulation and fog (.MUNDOVIS), and its point lights
+// (.MALLA_LUCES), in metres.
+std::string godot_lighting_json(const std::vector<rws::Chunk>& visual, const std::span<const std::byte> bytes,
+                                const MissionScene& scene) {
+    std::string out = "{\n\"format\":\"opencsf-lighting\",\n\"version\":1,\n\"units\":\"metres\",\n\"up\":\"+Y\",\n";
+
+    std::string lights;
+    for (const auto& clump : visual) {
+        if (clump.type != 0x10) continue;
+        const auto* list = rws::find_child(clump, 0x0E);
+        const auto frames = list ? rws::decode_frame_list(*list, bytes) : rws::DecodeResult<rws::FrameListInfo>{};
+        if (!frames) continue;
+        const auto world = frame_transforms(*frames.value);
+        // Each Light follows a Struct holding its frame's index.
+        for (std::size_t i = 1; i < clump.children.size(); ++i) {
+            const auto& child = clump.children[i];
+            const auto& index_struct = clump.children[i - 1];
+            if (child.type != 0x12 || index_struct.type != 0x01 || index_struct.available_size < 4) continue;
+            const auto light = rws::decode_light(child, bytes);
+            if (!light) continue;
+            std::uint32_t frame_index{};
+            std::memcpy(&frame_index, bytes.data() + index_struct.payload_offset, 4);
+            if (frame_index >= world.size() || !world[frame_index]) continue;
+            const auto& frame = *world[frame_index];
+            const auto& value = *light.value;
+            std::string kind = value.type == 1      ? "directional"
+                               : value.type == 2    ? "ambient"
+                               : value.type == 0x80 ? "point"
+                                                    : "spot";
+            lights += std::string(lights.empty() ? "" : ",\n") + "{\"kind\":" + json_string(kind) +
+                      ",\"color\":[" + json_number(value.color[0]) + "," + json_number(value.color[1]) + "," +
+                      json_number(value.color[2]) + "],\"direction\":[" + json_number(frame[6]) + "," +
+                      json_number(frame[7]) + "," + json_number(frame[8]) + "],\"position\":[" +
+                      json_number(frame[9]) + "," + json_number(frame[10]) + "," + json_number(frame[11]) +
+                      "],\"radius\":" + json_number(value.radius / units_per_metre) +
+                      ",\"minus_cos_angle\":" + json_number(value.minus_cos_angle) +
+                      ",\"flags\":" + std::to_string(value.flags) + "}";
+        }
+    }
+    out += "\"rws_lights\":[\n" + lights + "\n],\n";
+
+    const auto field = [&](const std::string_view name) -> const EnvironmentField* {
+        const auto found =
+            std::ranges::find_if(scene.environment(), [&](const EnvironmentField& item) { return item.name == name; });
+        return found == scene.environment().end() ? nullptr : &*found;
+    };
+    const auto integer_field = [&](const std::string_view name) -> std::optional<std::int32_t> {
+        if (const auto* item = field(name))
+            if (const auto* value = std::get_if<std::int32_t>(&item->value)) return *value;
+        return std::nullopt;
+    };
+    const auto real_field = [&](const std::string_view name) -> std::optional<float> {
+        if (const auto* item = field(name)) {
+            if (const auto* value = std::get_if<float>(&item->value)) return *value;
+            if (const auto* value = std::get_if<std::int32_t>(&item->value)) return static_cast<float>(*value);
+        }
+        return std::nullopt;
+    };
+    const auto colour = [&](const std::string_view name) {
+        const auto value = integer_field(name);
+        return value ? json_packed_rgb(static_cast<std::uint32_t>(*value)) : std::string("null");
+    };
+    const auto flag = [&](const std::string_view name) {
+        const auto value = integer_field(name);
+        return value ? std::string(*value ? "true" : "false") : std::string("null");
+    };
+    const auto number = [&](const std::string_view name) {
+        const auto value = real_field(name);
+        return value ? json_number(*value) : std::string("null");
+    };
+    const auto metres = [&](const std::string_view name) {
+        const auto value = real_field(name);
+        return value ? json_number(*value / units_per_metre) : std::string("null");
+    };
+    out += "\"ambient\":" + colour(".AMBIENTE") + ",\n\"scene_ambient\":" + colour(".AMBESCENA") +
+           ",\n\"viewport_ambient_add\":" + number(".VIEWPORT_AMB_ADD") + ",\n\"modulate_2x\":" + flag(".MODULATE2X") +
+           ",\n\"sky_modulate_2x\":" + flag(".CIELO_MODULATE2X") + ",\n\"fog\":{\"enabled\":" + flag(".FOGENABLED") +
+           ",\"type\":" + number(".FOGTYPE") + ",\"color\":" + colour(".FOGCOLOR") + ",\"alpha\":" + number(".FOGALPHA") +
+           ",\"density\":" + number(".FOGDENSITY") + ",\"distance\":" + metres(".FOGDISTANCE") + "},\n";
+
+    std::string points;
+    for (const auto& light : scene.lights()) {
+        if (!light.position) continue;
+        points += std::string(points.empty() ? "" : ",\n") + "{\"id\":" + std::to_string(light.id.value_or(-1)) +
+                  ",\"name\":" + json_string(windows_1252_to_utf8(light.name.value_or(""))) +
+                  ",\"position\":" + json_metres(*light.position) +
+                  ",\"color\":" + (light.color ? json_packed_rgb(*light.color) : std::string("null")) +
+                  ",\"modulate\":" + std::to_string(light.modulate.value_or(0)) +
+                  ",\"radius\":" + json_number(light.radius.value_or(0.0F) / units_per_metre) + "}";
+    }
+    out += "\"points\":[\n" + points + "\n]\n}\n";
+    return out;
+}
+
 } // namespace
 
 std::string godot_stance(const ObjectDefinition& definition, const WeaponDatabase& weapons) {
@@ -1500,10 +1604,16 @@ GodotExportResult export_godot(const GodotExportOptions& options) {
     write_file(options.out / markers, editor ? godot_markers_json(editor->scene(), editor->objects(), class_ids, class_stances, class_weapons, effect_ids)
                                              : godot_markers_json(MissionScene{}, ObjectDatabase{}, {}));
     result.lines.push_back("markers\t" + markers.generic_string());
+    // The sun, ambient, fog and point lights, for baking the map again.
+    const auto lighting = map_folder / "lighting.json";
+    write_file(options.out / lighting,
+               godot_lighting_json(visual.chunks(), visual.bytes(), editor ? editor->scene() : MissionScene{}));
+    result.lines.push_back("lighting\t" + lighting.generic_string());
     assets["map/" + lower(slot->mission)] = {
         {"visual", json_string((map_folder / "visual.gltf").generic_string())},
         {"collision", json_string((map_folder / "collision.gltf").generic_string())},
         {"markers", json_string(markers.generic_string())},
+        {"lighting", json_string(lighting.generic_string())},
         {"source", json_string(source(package_root / slot->scene))},
     };
     if (sky) assets["map/" + lower(slot->mission)].emplace_back("sky", json_string(sky->generic_string()));

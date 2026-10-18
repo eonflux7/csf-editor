@@ -53,6 +53,16 @@ struct AtomicInfo {
     std::uint32_t unused{};
 };
 
+// RpLight: type 1 directional, 2 ambient, 0x80 point, 0x81/0x82 spot. A
+// directional light shines along its frame's at axis.
+struct LightInfo {
+    float radius{};
+    std::array<float, 3> color{};
+    float minus_cos_angle{};
+    std::uint16_t flags{};
+    std::uint16_t type{};
+};
+
 struct MaterialInfo {
     std::uint32_t flags{};
     std::array<std::uint8_t, 4> color{};
@@ -317,6 +327,7 @@ struct DecodeResult {
 [[nodiscard]] DecodeResult<FrameListInfo> decode_frame_list(const Chunk&,
                                                             std::span<const std::byte>);
 [[nodiscard]] DecodeResult<AtomicInfo> decode_atomic(const Chunk&, std::span<const std::byte>);
+[[nodiscard]] DecodeResult<LightInfo> decode_light(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<MaterialInfo> decode_material(const Chunk&, std::span<const std::byte>);
 [[nodiscard]] DecodeResult<MaterialListInfo> decode_material_list(const Chunk&,
                                                                   std::span<const std::byte>);

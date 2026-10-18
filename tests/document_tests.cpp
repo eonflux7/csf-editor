@@ -3186,6 +3186,17 @@ int run_tests() {
     }
     {
         std::vector<std::byte> bytes;
+        append_header(bytes, 0x12, 36);
+        append_header(bytes, 0x01, 24);
+        for (const float value : {0.0F, 0.7F, 0.5F, 0.25F, 0.0F}) append_f32(bytes, value);
+        append_u32(bytes, 0x00010001U); // flags 1, type 1 (directional)
+        const auto document = rws::Document::from_bytes(std::move(bytes));
+        const auto light = rws::decode_light(document.chunks()[0], document.bytes());
+        CHECK(light && light.value->type == 1 && light.value->flags == 1);
+        CHECK(light && light.value->color[0] == 0.7F && light.value->color[2] == 0.25F);
+    }
+    {
+        std::vector<std::byte> bytes;
         append_header(bytes, 0x0B, 100);
         append_u32(bytes, 0);
         const auto document = rws::Document::from_bytes(std::move(bytes));

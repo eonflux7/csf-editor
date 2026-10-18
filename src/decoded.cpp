@@ -435,6 +435,18 @@ DecodeResult<AtomicInfo> decode_atomic(const Chunk& parent,
     return success(result);
 }
 
+DecodeResult<LightInfo> decode_light(const Chunk& parent, const std::span<const std::byte> bytes) {
+    const auto* data = payload_struct(parent);
+    if (!data) return failure<LightInfo>("Light has no Struct child");
+    Reader reader(bytes, *data);
+    LightInfo result;
+    if (!reader.f32(result.radius) || !reader.f32(result.color[0]) || !reader.f32(result.color[1]) ||
+        !reader.f32(result.color[2]) || !reader.f32(result.minus_cos_angle) || !reader.u16(result.flags) ||
+        !reader.u16(result.type))
+        return failure<LightInfo>("Light Struct is shorter than 24 bytes");
+    return success(result);
+}
+
 DecodeResult<MaterialInfo> decode_material(const Chunk& parent,
                                            const std::span<const std::byte> bytes) {
     const auto* data = payload_struct(parent);
