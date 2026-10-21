@@ -239,6 +239,84 @@ std::string material_surface_name(const std::span<const std::byte> material) {
     return decoded ? std::string(decoded.value->object_name()) : std::string{};
 }
 
+namespace {
+
+// The game's collision surfaces, the rows of BDD/Materiales.bdd (the same in
+// every mission) in file order. A collision Material's Pyro words name its
+// row: word 3 is the row's FLAG0..FLAG7 as bits, word 4 the row index (not
+// its .ID), and the Material's RGB is the row's COLOR; every shipped _col.rws
+// material agrees. Cristal and Carne are in no shipped map.
+struct GameSurface {
+    std::string_view name;
+    std::uint32_t flags, rgb;
+};
+constexpr std::array<GameSurface, 21> game_surfaces{{
+    {"Intangible", 0x20, 0xFF0000},
+    {"Tierra", 0xFF, 0xDBADF5},
+    {"Piedra", 0xFF, 0xF0EFEB},
+    {"Metal", 0xFF, 0xFFB923},
+    {"Reja_metal", 0x32, 0x7EEE47},
+    {"Vegetacion", 0xFF, 0x9EB87C},
+    {"Madera", 0xFF, 0x844D1B},
+    {"Cristal_opaco", 0xFF, 0x65DFE3},
+    {"Cristal", 0x3B, 0xF169EE},
+    {"Barro", 0xFF, 0x9816E2},
+    {"Baldosa", 0xFF, 0xAF51B2},
+    {"Cemento", 0xFF, 0x6734A6},
+    {"Escaleras", 0xFF, 0x328C74},
+    {"Setos", 0x44, 0x333A37},
+    {"Agua", 0xCC, 0x618072},
+    {"Nieve", 0xFF, 0xEE7FD8},
+    {"Setos2", 0x04, 0x087500},
+    {"Intangible_Colisionable", 0x30, 0x460000},
+    {"Escaleras_Piedra", 0xFF, 0x000836},
+    {"Compacto", 0x28, 0xFF0030},
+    {"Carne", 0x7F, 0xFFFFFF},
+}};
+
+void put_u32(std::vector<std::byte>& bytes, const std::size_t at, const std::uint32_t value) {
+    for (int i = 0; i < 4; ++i) bytes[at + static_cast<std::size_t>(i)] = static_cast<std::byte>(value >> (8 * i) & 0xFFU);
+}
+
+// A donor collision Material (`like`, any surface) made into the material of
+// game surface `row`: its colour, Pyro flags, row index and name.
+DecodeResult<std::vector<std::byte>> surface_material(const std::span<const std::byte> like, const std::size_t row) {
+    DecodeResult<std::vector<std::byte>> result;
+    const auto& surface = game_surfaces[row];
+    Document holder;
+    const auto chunk = material_chunk(like, holder);
+    const auto* data = chunk ? find_child(*chunk, 0x01U) : nullptr;
+    const auto* extension = chunk ? find_child(*chunk, 0x03U) : nullptr;
+    const auto* pyro = extension ? find_child(*extension, pyro_metadata_chunk) : nullptr;
+    const auto decoded = pyro ? decode_pyro_extension(*pyro, 0x07U, holder.bytes()) : DecodeResult<PyroExtensionInfo>{};
+    if (!data || data->available_size < 8 || !decoded || !decoded.value->present) {
+        result.error = "the donor collision material has no Pyro surface";
+        return result;
+    }
+    const auto bytes = holder.bytes();
+    const auto words = static_cast<std::size_t>(decoded.value->version > 1 ? 5 : 4);
+    const auto string = pyro->payload_offset + 8 + 4 * words;  // u32 length, then the name
+    const auto old_size = u32_at(bytes, string);
+    std::vector<std::byte> out(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(string));
+    out.resize(out.size() + 4);
+    put_u32(out, string, static_cast<std::uint32_t>(surface.name.size()));
+    for (const char c : surface.name) out.push_back(static_cast<std::byte>(c));
+    out.insert(out.end(), bytes.begin() + static_cast<std::ptrdiff_t>(string + 4 + old_size), bytes.end());
+    const auto delta = static_cast<std::int64_t>(surface.name.size()) - static_cast<std::int64_t>(old_size);
+    for (const auto header : {chunk->offset, extension->offset, pyro->offset})
+        put_u32(out, header + 4, static_cast<std::uint32_t>(static_cast<std::int64_t>(u32_at(out, header + 4)) + delta));
+    // Payload: version, present, then words 1..: flags at 16, row at 20.
+    put_u32(out, pyro->payload_offset + 16, surface.flags);
+    put_u32(out, pyro->payload_offset + 20, static_cast<std::uint32_t>(row));
+    for (std::size_t i = 0; i < 3; ++i)
+        out[data->payload_offset + 4 + i] = static_cast<std::byte>(surface.rgb >> (8 * (2 - i)) & 0xFFU);
+    out[data->payload_offset + 7] = std::byte{0xFF};
+    result.value = std::move(out);
+    return result;
+}
+
+} // namespace
+
 DecodeResult<WorldSource> parse_world_source(const std::string_view text) {
     DecodeResult<WorldSource> result;
     WorldSource source;
@@ -395,6 +473,8 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
         const auto name = lower(material_surface_name((*collision_materials.value)[i]));
         if (!name.empty()) surface_slot.try_emplace(name, static_cast<std::uint16_t>(i));
     }
+    auto collision_list = *collision_materials.value;
+    bool collision_list_grew = false;
     std::vector<WorldBuildTriangle> visual, collision;
     for (const auto& face : source.faces) {
         const auto& material = source.materials[face.material];
@@ -463,10 +543,35 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
             visual.push_back(triangle);
         }
         if (face.collision) {
-            const auto slot = surface_slot.find(lower(material.surface));
+            auto slot = surface_slot.find(lower(material.surface));
             if (slot == surface_slot.end()) {
-                result.error = "no donor collision material is named '" + material.surface + "'";
-                return result;
+                // A game surface the donor has no material for: one made from
+                // a donor material, appended.
+                const auto row = std::ranges::find(game_surfaces, lower(material.surface),
+                                                   [](const GameSurface& s) { return lower(s.name); });
+                if (row == game_surfaces.end()) {
+                    result.error = "no donor collision material is named '" + material.surface +
+                                   "' and Materiales.bdd has no such surface (";
+                    for (const auto& surface : game_surfaces)
+                        result.error += std::string(surface.name) + (&surface == &game_surfaces.back() ? ")" : ", ");
+                    return result;
+                }
+                if (collision_list.empty()) {
+                    result.error = "the donor has no collision material to make surface '" + material.surface + "' from";
+                    return result;
+                }
+                auto made = surface_material(collision_list.front(), static_cast<std::size_t>(row - game_surfaces.begin()));
+                if (!made) {
+                    result.error = "surface '" + material.surface + "': " + made.error;
+                    return result;
+                }
+                collision_list.push_back(std::move(*made.value));
+                collision_list_grew = true;
+                slot = surface_slot.emplace(lower(material.surface), static_cast<std::uint16_t>(collision_list.size() - 1)).first;
+                compiled.notes.push_back("collision surface " + std::string(row->name) +
+                                         " = Materiales.bdd row " + std::to_string(row - game_surfaces.begin()) +
+                                         ", not in the donor: made from donor material 0, appended as " +
+                                         std::to_string(slot->second));
             }
             triangle.material = slot->second;
             triangle.pyro = material.shade;
@@ -483,8 +588,6 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
         std::map<std::uint16_t, std::uint16_t> visual_slot, collision_slot;
     };
     std::map<std::string, PieceDonor> piece_donors;
-    auto collision_list = *collision_materials.value;
-    bool collision_list_grew = false;
     std::set<DonorTexture> donor_textures;
     const auto piece_donor = [&](const std::string& key) -> PieceDonor* {
         if (const auto found = piece_donors.find(key); found != piece_donors.end()) return &found->second;
@@ -673,7 +776,8 @@ DecodeResult<CompiledWorlds> compile_world_source(const WorldSource& source,
         return result;
     }
     for (const auto& [name, slot] : surface_slot)
-        if (std::ranges::any_of(source.materials, [&](const auto& m) { return lower(m.surface) == name; }))
+        if (slot < collision_materials.value->size() &&
+            std::ranges::any_of(source.materials, [&](const auto& m) { return lower(m.surface) == name; }))
             compiled.notes.push_back("collision surface " + name + " = donor material " + std::to_string(slot));
     WorldBuildOptions visual_options;
     visual_options.library_id = donor_visual.library_id;

@@ -4575,6 +4575,23 @@ int run_tests() {
         unknown.materials[1].surface = "Hormigon";
         CHECK(rws::compile_world_source(unknown, donor_visual, donor_collision).error.find("Hormigon") !=
               std::string::npos);
+        {
+            // A game surface the donor lacks is made from a donor material:
+            // Materiales.bdd's row 8, its flags and colour.
+            auto glass = *source.value;
+            glass.materials[1].surface = "cristal";
+            const auto made = rws::compile_world_source(glass, donor_visual, donor_collision);
+            CHECK(made);
+            const auto list = rws::split_material_list(made.value->collision.material_list, 0x1C020037);
+            CHECK(list && list.value->size() == 4);
+            const auto& cristal = list.value->back();
+            CHECK(rws::material_surface_name(cristal) == "Cristal" && rws::material_color_name(cristal) == "F169EEFF");
+            const auto document = rws::Document::from_bytes(cristal);
+            const auto* pyro = rws::find_child(*rws::find_child(document.chunks().front(), 0x03U), 0xFFFFFF00U);
+            const auto words = rws::decode_pyro_extension(*pyro, 0x07U, document.bytes());
+            CHECK(words && words.value->material_flags() == 0x3BU && words.value->material_surface_type() == 8U);
+            CHECK(rws::material_surface_name((*list.value)[0]) == "Madera");
+        }
         // WALL is used only by a collision face, so no visual material needs it.
         const auto compiled = rws::compile_world_source(*source.value, donor_visual, donor_collision);
         CHECK(compiled);

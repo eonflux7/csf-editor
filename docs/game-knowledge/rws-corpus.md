@@ -189,6 +189,11 @@ Material value correlation identifies record word 3 as a flags/mask field and wo
 `5=Vegetacion`, `6=Madera`, `7=Cristal_opaco`, `9=Barro`, `10=Baldosa`,
 `11=Cemento`, `12=Escaleras`, and `18=escaleras_piedra`. The names strongly support
 a collision/audio/gameplay surface classification rather than rendering state.
+Word 4 is the zero-based row of `BDD/Materiales.bdd` (not its `.ID`), word 3 that
+row's `FLAG0`..`FLAG7` as bits and the Material RGB its `COLOR`: every collision
+material of the shipped `_col.rws` files agrees (checked 2026-10-21). Rows 8
+(`Cristal`) and 20 (`Carne`) appear in no shipped map; `world-build` makes such
+materials itself (`src/world_source.cpp`, `game_surfaces`).
 
 Of the 369 Atomic records, 204 carry the optional six-float bounds and four carry a
 non-empty first string: `ARBOL_3`, `BANDERA_A`, `BANDERA_B`, and `CABLES`. The second

@@ -102,7 +102,9 @@ object visible: hidden objects are not exported.
 so untouched vertices come back where they were. `world-build` resolves
 materials in the donor map: a texture must be one of its visual materials
 (with its lightmap if it names one) and a surface one of its collision
-materials. For textures and lightmaps of your own, pass them to the build:
+materials, or any other surface of `Materiales.bdd` (Cristal, Agua, Nieve, …):
+the build makes that one's material from a donor material, with the row's
+index, flags and colour, and appends it (the build notes say so). For textures and lightmaps of your own, pass them to the build:
 
 ```bash
 csf-mod world-build work/FR03-edited.csfworld ../CSF_unpacks/Convoy/Maps/FR03/FR03.rws \

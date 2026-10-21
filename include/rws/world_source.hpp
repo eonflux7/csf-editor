@@ -42,7 +42,9 @@ namespace rws {
 // donor visual material (`-`: an untextured one, `-#RRGGBBAA` the one of
 // that colour; one naming a lightmap
 // prefers the donor material lit by it), surfaces a donor collision material
-// by its Pyro name. A name with spaces is written in double quotes.
+// by its Pyro name; a game surface (a Materiales.bdd row) the donor has none
+// of gets a material made from a donor one, with that row's index, flags and
+// colour. A name with spaces is written in double quotes.
 //
 // A surface line gives the colour of a collision surface: its donor collision
 // Material's RGBA, which is the colour Materiales.bdd lists for that surface
